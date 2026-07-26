@@ -1,12 +1,13 @@
 # kzonix
 
-Three small HTTP services, each demonstrating a different Scala 3 web stack, sharing one sbt 2 build.
+Three small HTTP services, each on a different Scala 3 web stack, sharing one sbt 2 build. Named after metals,
+loosely by character.
 
-| Module | Stack | Entry point |
-| --- | --- | --- |
-| `play-service` | Play 3 (`PlayService` + Pekko HTTP) | routed by `play.http.router` |
-| `cask-service` | Cask | `io.kzonix.cask.CaskService` |
-| `tapir-service` | Tapir endpoints served by Vert.x 5 | `io.kzonix.tapir.Main` |
+| Service | Stack | Character | Entry point |
+| --- | --- | --- | --- |
+| **ferrite** | Play 3 (`PlayService` + Pekko HTTP) | structural, the heavyweight | routed by `play.http.router` |
+| **cobalt** | Cask | small and dense | `io.kzonix.cobalt.CobaltService` |
+| **wolfram** | Tapir endpoints on Vert.x 5 | built for load | `io.kzonix.wolfram.Main` |
 
 All three expose the same two endpoints, so the stacks can be compared directly:
 
@@ -29,14 +30,14 @@ sbt test            # every module (the root aggregates all three)
 sbt verify          # fmtCheck + headerCheck + test — what CI runs
 sbt fmt             # scalafmt, including build sources
 
-sbt play-service/run                   # dev mode on :9000
-sbt cask-service/run                   # :8080, override with HTTP_PORT
-sbt tapir-service/run                  # :8080, override with HTTP_PORT
+sbt ferrite/run     # dev mode on :9000
+sbt cobalt/run      # :8080, override with HTTP_PORT
+sbt wolfram/run     # :8080, override with HTTP_PORT
 
-sbt play-service/Docker/publishLocal   # per-module container image
+sbt ferrite/Docker/publishLocal   # per-module container image
 ```
 
-Run a single test with `sbt "cask-service/testOnly io.kzonix.cask.GreetingsSuite"`.
+Run a single test with `sbt "cobalt/testOnly io.kzonix.cobalt.GreetingsSuite"`.
 
 ## Configuration
 
@@ -44,9 +45,9 @@ Every service reads its configuration from the environment, with development-onl
 
 | Variable | Applies to | Purpose |
 | --- | --- | --- |
-| `APPLICATION_SECRET` | play-service | required outside development |
-| `ALLOWED_HOSTS` | play-service | allowed-hosts filter |
-| `HTTP_HOST` / `HTTP_PORT` | cask, tapir | server binding |
+| `APPLICATION_SECRET` | ferrite | required outside development |
+| `ALLOWED_HOSTS` | ferrite | allowed-hosts filter |
+| `HTTP_HOST` / `HTTP_PORT` | cobalt, wolfram | server binding |
 | `BUILD_VERSION` | all | artifact version (default `0.1.0-SNAPSHOT`) |
 
 ## Licence

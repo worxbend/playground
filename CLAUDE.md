@@ -4,9 +4,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-Three small HTTP services on one sbt 2 build, each on a different Scala 3 web stack — Play 3, Cask, and Tapir on
-Vert.x. All three expose the same `GET /health` and `GET /greet/:name`, so the point of the repo is comparing the
-stacks side by side. Keep that parity when adding an endpoint to one of them.
+Three small HTTP services on one sbt 2 build, each on a different Scala 3 web stack. They are named after metals,
+not after their frameworks, so the name does not have to change if the stack does:
+
+| Module | Stack | Package |
+| --- | --- | --- |
+| `ferrite` | Play 3 (`PlayService` + Pekko HTTP) | `io.kzonix.ferrite` |
+| `cobalt` | Cask | `io.kzonix.cobalt` |
+| `wolfram` | Tapir endpoints on Vert.x 5 | `io.kzonix.wolfram` |
+
+All three expose the same `GET /health` and `GET /greet/:name`, so the point of the repo is comparing the stacks
+side by side. Keep that parity when adding an endpoint to one of them.
+
+The packages deliberately avoid the framework names: `io.kzonix.cask` and `io.kzonix.tapir` would shadow the
+`cask` and `sttp.tapir` library packages inside their own sources.
 
 ## Commands
 
@@ -15,12 +26,12 @@ sbt test      # every module; the root aggregates all three
 sbt verify    # fmtCheck + headerCheck + test — exactly what CI runs
 sbt fmt       # scalafmt, build sources included
 
-sbt play-service/run     # :9000
-sbt cask-service/run     # :8080
-sbt tapir-service/run    # :8080
+sbt ferrite/run   # :9000
+sbt cobalt/run    # :8080
+sbt wolfram/run   # :8080
 
-sbt "cask-service/testOnly io.kzonix.cask.GreetingsSuite"
-sbt play-service/Docker/publishLocal
+sbt "cobalt/testOnly io.kzonix.cobalt.GreetingsSuite"
+sbt ferrite/Docker/publishLocal
 ```
 
 Run `sbt verify` before handing work back — `headerCheck` fails on any file `sbt-header` has not stamped, and
@@ -52,9 +63,10 @@ returns an `Assertion` and every multi-assertion test would otherwise fail. Do n
 
 ## Module layout
 
-Three flat modules under `applications/`, each `<name>-service`, all aggregated by the root so `sbt test` covers
-everything. There is no path/name DSL and no shared component library — earlier revisions had both, and both were
-removed. Add a module with a plain `project in file("applications/…")`.
+Three flat modules under `applications/<name>`, all aggregated by the root so `sbt test` covers everything. The
+sbt project id, the directory name and `name :=` are all the same string — there is no path/name DSL and no shared
+component library, both of which earlier revisions had and neither of which survived. Add a module with a plain
+`project in file("applications/…")`.
 
 Dependencies live in `project/Dependencies.scala`. `Versions` is public, so `build.sbt` can reference it directly.
 Every module automatically gets pureconfig, quicklens, scala-logging and logback (main) plus scalatest, scalacheck,
@@ -68,7 +80,7 @@ Two coordinate traps, both already resolved in `Dependencies.scala`:
 
 ## Per-service notes
 
-**play-service** — built on `PlayService` (minimal Play: no Twirl, no assets, no routes compiler) plus
+**ferrite** (Play) — built on `PlayService` (minimal Play: no Twirl, no assets, no routes compiler) plus
 `PlayPekkoHttpServer` for the backend it deliberately omits. **There is no `conf/routes` file.** Routing is
 `AppRouter`, a plain `SimpleRouter` using SIRD interpolation, selected by `play.http.router` in `application.conf`.
 Adding an endpoint means: controller method → `case` in `AppRouter.routes`. Do not introduce a routes file; it would
@@ -77,11 +89,11 @@ require the routes compiler that `PlayService` does not provide.
 Play's test helpers stream the result, so a suite calling `Helpers.call` needs both a `Materializer` in scope and
 `Helpers.writeableOf_AnyContentAsEmpty`. `AppRouterSuite` shows the working setup.
 
-**cask-service** — routes are annotations on `cask.MainRoutes`. Handler bodies delegate to pure functions in
+**cobalt** (Cask) — routes are annotations on `cask.MainRoutes`. Handler bodies delegate to pure functions in
 `Greetings` so behaviour is testable without binding a socket; keep new logic there rather than inline in the
 annotated method.
 
-**tapir-service** — endpoints are **values** in `Endpoints`, with the logic in separate pure functions and
+**wolfram** (Tapir + Vert.x) — endpoints are **values** in `Endpoints`, with the logic in separate pure functions and
 `Endpoints.all` binding them for the server. The server interpreter is Vert.x. Tests exercise the logic functions
 directly. Keep descriptions and logic separate so the same endpoints could drive a client or OpenAPI document.
 
@@ -91,8 +103,8 @@ directly. Keep descriptions and logic separate so the same endpoints could drive
 configuration, which meant every upstream change had to be merged by hand — don't reintroduce that.
 
 Secrets and bindings come from the environment with development-only defaults: `APPLICATION_SECRET`,
-`ALLOWED_HOSTS` (play), `HTTP_HOST` / `HTTP_PORT` (cask, tapir), `BUILD_VERSION` (all). CSRF is disabled on
-play-service on purpose: it is API-only, with no cookie session and no browser-submitted forms.
+`ALLOWED_HOSTS` (ferrite), `HTTP_HOST` / `HTTP_PORT` (cobalt, wolfram), `BUILD_VERSION` (all). CSRF is disabled on
+ferrite on purpose: it is API-only, with no cookie session and no browser-submitted forms.
 
 `version` comes from `BUILD_VERSION` and defaults to `0.1.0-SNAPSHOT`. It used to be a per-build timestamp, so no
 two builds were comparable; keep it deterministic.

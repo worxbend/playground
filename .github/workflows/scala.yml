@@ -49,4 +49,4 @@ jobs:
       # Stages the images without publishing: proves packaging still works on
       # every push without needing registry credentials.
       - name: Stage Docker images
-        run: sbt -batch play-service/Docker/stage cask-service/Docker/stage tapir-service/Docker/stage
+        run: sbt -batch ferrite/Docker/stage cobalt/Docker/stage wolfram/Docker/stage
