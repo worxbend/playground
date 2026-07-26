@@ -33,16 +33,18 @@ object BaseSettings:
   val buildVersion: String = sys.env.getOrElse("BUILD_VERSION", "0.1.0-SNAPSHOT")
 
   val defaultSettings: Seq[Setting[?]] = Seq(
-    organization     := "io.kzonix",
+    organization := "io.kzonix",
     organizationName := "Kzonix Projects",
-    startYear        := Some(2020),
-    licenses         := Seq(License.MIT),
-    versionScheme    := Some("semver-spec"),
-    version          := buildVersion,
-    scalaVersion     := "3.8.4",
-    scalacOptions    := scalacFlags,
-    // Fail fast in CI on formatting drift rather than after a long compile.
+    startYear := Some(2020),
+    licenses := Seq(License.MIT),
+    versionScheme := Some("semver-spec"),
+    version := buildVersion,
+    scalaVersion := "3.8.4",
+    scalacOptions := scalacFlags,
     Test / testOptions += Tests.Argument(TestFrameworks.ScalaTest, "-oD"),
-    run / fork       := true,
-    Test / fork      := true
+    // ScalaTest's `assert` returns an Assertion, so every intermediate assertion in
+    // a test body trips -Wnonunit-statement. The check earns its keep in main code.
+    Test / scalacOptions := scalacFlags.filterNot(_ == "-Wnonunit-statement"),
+    run / fork := true,
+    Test / fork := true
   )

@@ -3,73 +3,65 @@ import sbt.Keys.*
 
 /** Central dependency catalogue.
   *
-  * `Versions` is deliberately public: `build.sbt` references it directly for the coordinates that are not part of a
-  * named group.
+  * `Versions` is public so `build.sbt` can reference coordinates that are not part of a named group.
   */
 object Dependencies:
 
   object Versions:
-    val Play             = "3.1.0-M9"
-    val Pekko            = "1.6.0"
-    val PekkoKafka       = "1.1.0"
-    val KafkaClients     = "4.3.1"
-    val ScalaGuice       = "7.0.0"
-    val ScalaLogging     = "3.9.6"
-    val Logback          = "1.5.38"
-    val Circe            = "0.14.16"
-    val AwsSdk           = "2.49.3"
-    val AzureStorageBlob = "12.35.0"
+    val Play = "3.1.0-M9"
+    val Circe = "0.14.16"
+    val Cask = "0.11.3"
+    val Tapir = "1.13.29"
+    val Vertx = "5.1.5"
+    val PureConfig = "0.17.10"
+    val Quicklens = "1.9.15"
+    val ScalaLogging = "3.9.6"
+    val Logback = "1.5.38"
     // Test
-    val ScalaTest        = "3.2.20"
-    val ScalaMock        = "7.5.5"
+    val ScalaTest = "3.2.20"
+    val ScalaCheck = "1.19.0"
+    val MUnit = "1.3.4"
+    val MUnitCheck = "1.3.0"
 
-  /** Applied to every module: structured logging only. Everything else is opted into per module. */
+  /** Available in every module, main scope.
+    *
+    * `scala-logging` is the `com.typesafe.scala-logging` artifact: the scala-garden fork listed on Scaladex publishes
+    * nothing to Maven Central, so depending on it would require a non-Central resolver.
+    *
+    * On Scala 3, pureconfig derivation lives in `pureconfig-core` — there is no `pureconfig_3` aggregate.
+    */
   def commonDependencies: Seq[Setting[?]] =
     Seq(
       libraryDependencies ++= Seq(
-        "com.typesafe.scala-logging" %% "scala-logging"   % Versions.ScalaLogging,
-        "ch.qos.logback"              % "logback-classic" % Versions.Logback
+        "com.github.pureconfig" %% "pureconfig-core" % Versions.PureConfig,
+        "com.softwaremill.quicklens" %% "quicklens" % Versions.Quicklens,
+        "com.typesafe.scala-logging" %% "scala-logging" % Versions.ScalaLogging,
+        "ch.qos.logback" % "logback-classic" % Versions.Logback
       )
     )
 
+  /** Available in every module, test scope. ScalaTest and MUnit coexist; sbt discovers both frameworks. */
   def testDependencies: Seq[Setting[?]] =
     Seq(
       libraryDependencies ++= Seq(
         "org.scalatest" %% "scalatest" % Versions.ScalaTest,
-        "org.scalamock" %% "scalamock" % Versions.ScalaMock
+        "org.scalacheck" %% "scalacheck" % Versions.ScalaCheck,
+        "org.scalameta" %% "munit" % Versions.MUnit,
+        "org.scalameta" %% "munit-scalacheck" % Versions.MUnitCheck
       ).map(_ % Test)
     )
 
-  val scalaGuice: ModuleID = "net.codingwell" %% "scala-guice" % Versions.ScalaGuice
+  val cask: ModuleID = "com.lihaoyi" %% "cask" % Versions.Cask
 
-  /** Pekko replaces Akka throughout; Play 3 is itself built on Pekko. */
-  val pekko: Seq[ModuleID] = Seq(
-    "pekko-actor-typed",
-    "pekko-stream",
-    "pekko-slf4j",
-    "pekko-serialization-jackson"
-  ).map("org.apache.pekko" %% _ % Versions.Pekko)
+  val circeGeneric: ModuleID = "io.circe" %% "circe-generic" % Versions.Circe
 
-  val pekkoCluster: Seq[ModuleID] = Seq(
-    "org.apache.pekko" %% "pekko-cluster-typed" % Versions.Pekko
-  )
+  val tapir: Seq[ModuleID] = Seq(
+    "tapir-core",
+    "tapir-json-circe",
+    "tapir-vertx-server"
+  ).map("com.softwaremill.sttp.tapir" %% _ % Versions.Tapir)
 
-  val pekkoTest: Seq[ModuleID] = Seq(
-    "org.apache.pekko" %% "pekko-actor-testkit-typed" % Versions.Pekko,
-    "org.apache.pekko" %% "pekko-stream-testkit"      % Versions.Pekko
-  ).map(_ % Test)
-
-  val pekkoKafka: Seq[ModuleID] = Seq(
-    "org.apache.pekko" %% "pekko-connectors-kafka" % Versions.PekkoKafka,
-    "org.apache.kafka"  % "kafka-clients"          % Versions.KafkaClients
-  )
-
-  val circe: Seq[ModuleID] = Seq(
-    "circe-core",
-    "circe-parser",
-    "circe-generic"
-  ).map("io.circe" %% _ % Versions.Circe)
-
-  val awsSsm: ModuleID = "software.amazon.awssdk" % "ssm" % Versions.AwsSdk
-
-  val azureStorageBlob: ModuleID = "com.azure" % "azure-storage-blob" % Versions.AzureStorageBlob
+  /** tapir-vertx-server already pulls vertx-web; vertx-core is declared so the server bootstrap does not rely on a
+    * transitive coordinate.
+    */
+  val vertx: ModuleID = "io.vertx" % "vertx-core" % Versions.Vertx

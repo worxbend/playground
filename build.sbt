@@ -1,151 +1,71 @@
 import BaseSettings.*
 import Dependencies.*
-import ProjectUtils.*
 
 Global / onChangedBuildSource := ReloadOnSourceChanges
 
-// native-packager defines Debian/Rpm keys we never use; without this every build
-// prints ~110 "unused key" warnings that bury real ones.
+// native-packager defines Debian/Rpm keys this build never sets; without these
+// every run prints ~110 "unused key" warnings that bury real ones.
 Global / excludeLintKeys += Docker / daemonUser
 Global / excludeLintKeys += Docker / daemonUserUid
-
-/* --------------------------------------------------------------------------------------------------------------- */
-/* Shared settings                                                                                                   */
-/* --------------------------------------------------------------------------------------------------------------- */
 
 lazy val commonSettings: Seq[Setting[?]] =
   defaultSettings ++ commonDependencies ++ testDependencies
 
-/** API-only Play service: `PlayService` is the minimal Play 3 plugin (no Twirl, no assets, no routes compiler) and
-  * `PlayPekkoHttpServer` supplies the server backend it deliberately leaves out.
-  */
-def playService(project: Project): Project =
-  project
-    .enablePlugins(PlayService, PlayPekkoHttpServer, AutomateHeaderPlugin)
-    .settings(commonSettings*)
-    .settings(libraryDependencies ++= Seq(guice, scalaGuice))
+/** Docker packaging shared by the services that are not built by Play's plugin. */
+lazy val packagingSettings: Seq[Setting[?]] = Seq(
+  dockerBaseImage := "eclipse-temurin:25-jre-alpine",
+  dockerUpdateLatest := true,
+  Docker / daemonUserUid := None,
+  Docker / daemonUser := "daemon"
+)
 
-/** Packaged, runnable non-Play application. */
-def packagedApp(project: Project): Project =
-  project
-    .enablePlugins(JavaAppPackaging, DockerPlugin, AutomateHeaderPlugin)
-    .settings(commonSettings*)
-    .settings(
-      dockerBaseImage    := "eclipse-temurin:25-jre-alpine",
-      dockerUpdateLatest := true,
-      Docker / daemonUserUid := None,
-      Docker / daemonUser    := "daemon"
-    )
-
-/* --------------------------------------------------------------------------------------------------------------- */
-/* Root                                                                                                             */
-/* --------------------------------------------------------------------------------------------------------------- */
-
-/** Aggregates every module so `sbt test` at the root actually exercises the whole build. */
+/** Aggregates every module, so `sbt test` at the root exercises the whole build. */
 lazy val kzonix = (project in file("."))
-  .settings(defaultSettings*)
+  .settings(defaultSettings *)
   .settings(
-    name           := "kzonix",
+    name := "kzonix",
     publish / skip := true
   )
-  .aggregate(
-    `sird-provider-api`,
-    `sird-provider`,
-    `play-utile`,
-    `play-underpressure-api`,
-    `play-underpressure`,
-    cogwheel,
-    `index-service`,
-    `redprime-service`,
-    `pekko-quickstart-service`,
-    `pekko-cluster-bootstrap-service`
-  )
+  .aggregate(`play-service`, `cask-service`, `tapir-service`)
 
-/* --------------------------------------------------------------------------------------------------------------- */
-/* Components — Play                                                                                                */
-/* --------------------------------------------------------------------------------------------------------------- */
-
-lazy val `sird-provider-api` = playService(
-  project in file(ProjectPaths.Components.Play.api("sird-provider"))
-).settings(name := ProjectNames.api("sird-provider"))
-
-lazy val `sird-provider` = playService(
-  project in file(ProjectPaths.Components.Play.lib("sird-provider"))
-)
-  .settings(name := ProjectNames.lib("sird-provider"))
-  .dependsOn(`sird-provider-api`)
-
-lazy val `play-underpressure-api` = playService(
-  project in file(ProjectPaths.Components.Play.api("play-underpressure"))
-).settings(name := ProjectNames.api("play-underpressure"))
-
-lazy val `play-underpressure` = playService(
-  project in file(ProjectPaths.Components.Play.lib("play-underpressure"))
-)
-  .settings(name := ProjectNames.lib("play-underpressure"))
-  .dependsOn(`play-underpressure-api`, `sird-provider-api`)
-
-lazy val `play-utile` = playService(
-  project in file(ProjectPaths.Components.Play.lib("play-utile"))
-)
-  .settings(name := ProjectNames.lib("play-utile"))
-  .dependsOn(`sird-provider`)
-
-/* --------------------------------------------------------------------------------------------------------------- */
-/* Components — Common                                                                                              */
-/* --------------------------------------------------------------------------------------------------------------- */
-
-lazy val cogwheel = (project in file(ProjectPaths.Components.Common.lib("cogwheel")))
-  .enablePlugins(AutomateHeaderPlugin)
-  .settings(commonSettings*)
+/** Minimal Play 3 API service.
+  *
+  * `PlayService` is Play's minimal plugin — no Twirl, no assets, no static routes file — and `PlayPekkoHttpServer`
+  * supplies the server backend it deliberately leaves out. Routing is a plain `SimpleRouter` selected through
+  * `play.http.router`, so there is no `conf/routes` to compile.
+  */
+lazy val `play-service` = (project in file("applications/play-service"))
+  .enablePlugins(PlayService, PlayPekkoHttpServer, AutomateHeaderPlugin)
+  .settings(commonSettings *)
   .settings(
-    name                := ProjectNames.lib("cogwheel"),
-    libraryDependencies := libraryDependencies.value ++ circe :+ awsSsm
+    name := "play-service",
+    libraryDependencies ++= Seq(guice, filters, playTest % Test)
   )
 
-/* --------------------------------------------------------------------------------------------------------------- */
-/* Applications                                                                                                     */
-/* --------------------------------------------------------------------------------------------------------------- */
-
-lazy val `index-service` = playService(
-  project in file(ProjectPaths.Applications.Root.service("index"))
-)
+/** Cask service — routes are annotations on a `cask.MainRoutes` object. */
+lazy val `cask-service` = (project in file("applications/cask-service"))
+  .enablePlugins(JavaAppPackaging, DockerPlugin, AutomateHeaderPlugin)
+  .settings(commonSettings *)
+  .settings(packagingSettings *)
   .settings(
-    name := ProjectNames.service("index"),
-    libraryDependencies ++= Seq(caffeine, filters, azureStorageBlob)
+    name := "cask-service",
+    libraryDependencies += cask
   )
-  .dependsOn(`sird-provider`, `play-utile`, `play-underpressure`)
 
-lazy val `redprime-service` = playService(
-  project in file(ProjectPaths.Applications.Root.service("redprime"))
-)
+/** Tapir endpoints served by Vert.x.
+  *
+  * Endpoint descriptions are values, so the same definitions drive the server and could drive a client or an OpenAPI
+  * document without restating them.
+  */
+lazy val `tapir-service` = (project in file("applications/tapir-service"))
+  .enablePlugins(JavaAppPackaging, DockerPlugin, AutomateHeaderPlugin)
+  .settings(commonSettings *)
+  .settings(packagingSettings *)
   .settings(
-    name := ProjectNames.service("redprime"),
-    libraryDependencies ++= Seq(caffeine, filters, ws)
-  )
-  .dependsOn(`sird-provider`, `play-utile`, `play-underpressure`)
-
-lazy val `pekko-quickstart-service` = packagedApp(
-  project in file(ProjectPaths.Applications.Sandbox.service("pekko-quickstart"))
-)
-  .settings(
-    name := ProjectNames.service("pekko-quickstart"),
-    libraryDependencies ++= pekko ++ pekkoTest ++ pekkoKafka :+ scalaGuice
+    name := "tapir-service",
+    libraryDependencies ++= tapir ++ Seq(vertx, circeGeneric)
   )
 
-lazy val `pekko-cluster-bootstrap-service` = packagedApp(
-  project in file(ProjectPaths.Applications.Sandbox.service("pekko-cluster-bootstrap"))
-)
-  .settings(
-    name := ProjectNames.service("pekko-cluster-bootstrap"),
-    libraryDependencies ++= pekko ++ pekkoCluster ++ pekkoTest
-  )
-
-/* --------------------------------------------------------------------------------------------------------------- */
-/* Aliases                                                                                                          */
-/* --------------------------------------------------------------------------------------------------------------- */
-
-// `Global / …` so the alias formats every module, not only the root's aggregates.
-addCommandAlias("fmt", "; scalafmtSbt; +scalafmtAll")
-addCommandAlias("fmtCheck", "; scalafmtSbtCheck; +scalafmtCheckAll")
+addCommandAlias("fmt", "; scalafmtSbt; scalafmtAll")
+addCommandAlias("fmtCheck", "; scalafmtSbtCheck; scalafmtCheckAll")
 addCommandAlias("verify", "; fmtCheck; headerCheck; test")
