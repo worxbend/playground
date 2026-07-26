@@ -184,6 +184,11 @@ object Dependencies:
     "org.apache.pekko" %% "pekko-actor" % Versions.Pekko,
     "org.apache.pekko" %% "pekko-actor-typed" % Versions.Pekko,
     "org.apache.pekko" %% "pekko-slf4j" % Versions.Pekko,
+    // Pekko refuses to start an ActorSystem when its own artifacts disagree on
+    // version. Play drags these two in at 1.5.0 while the rest is forced to 1.6.0,
+    // which fails at ActorSystem construction — i.e. only at runtime, in a test.
+    "org.apache.pekko" %% "pekko-serialization-jackson" % Versions.Pekko,
+    "org.apache.pekko" %% "pekko-protobuf-v3" % Versions.Pekko,
     "org.postgresql" % "postgresql" % Versions.Postgres,
     "io.prometheus" % "prometheus-metrics-core" % Versions.PrometheusJava,
     "ch.qos.logback" % "logback-classic" % Versions.Logback

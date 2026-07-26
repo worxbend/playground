@@ -151,8 +151,10 @@ lazy val wolfram = (project in file("applications/wolfram"))
 
 addCommandAlias("fmt", "; scalafmtSbt; scalafmtAll")
 addCommandAlias("fmtCheck", "; scalafmtSbtCheck; scalafmtCheckAll")
-// `Test/test` is spelled out: inside an alias, bare `test` resolves to `testQuick`,
-// which runs nothing at all after a clean — so `verify` passed without testing.
-addCommandAlias("verify", "; fmtCheck; headerCheck; Test/test")
+// `testFull`, not `test`. sbt 2 INVERTED sbt 1's naming: here `test` is the
+// incremental task (`testQuick` is merely its alias) and `testFull` is the one
+// that runs everything. Spelling it `Test/test` still selects the incremental
+// task, so `verify` reported success while executing zero tests.
+addCommandAlias("verify", "; fmtCheck; headerCheck; Test/testFull")
 // The slow tier: integration tests need a working Docker daemon.
-addCommandAlias("verifyIt", "; IT/test")
+addCommandAlias("verifyIt", "; IT/testFull")

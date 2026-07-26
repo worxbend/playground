@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Shared structured-logging configuration (ADR §7.3).
+
+  This is an *includable* fragment, not a `logback.xml`. A `logback.xml` shipped inside a library jar auto-configures
+  every consumer that happens to have it on the classpath — including Play, whose own configuration would then win or
+  lose depending on classpath order. Explicit inclusion keeps the ownership obvious. Each service's own
+  `src/main/resources/logback.xml` is:
+
+      <configuration>
+        <include resource="io/kzonix/observability/logback-json.xml"/>
+      </configuration>
+
+  One JSON line per event on stdout, because the container runtime is the log shipper. `trace_id` and `span_id` come
+  from the MDC (see LogContext) and are what joins this stream to the trace store; without them a trace tells you
+  where the time went but never why.
+-->
+<included>
+
+  <appender name="JSON" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder class="net.logstash.logback.encoder.LogstashEncoder">
+      <!--
+        Field names are pinned rather than left at their defaults so that a log query written against one service
+        keeps working against the others, and against a future encoder upgrade that changes a default.
+      -->
+      <fieldNames>
+        <timestamp>timestamp</timestamp>
+        <version>[ignore]</version>
+        <levelValue>[ignore]</levelValue>
+        <message>message</message>
+        <logger>logger</logger>
+        <thread>thread</thread>
+        <level>level</level>
+        <stackTrace>stack_trace</stackTrace>
+      </fieldNames>
+
+      <timestampPattern>yyyy-MM-dd'T'HH:mm:ss.SSSXXX</timestampPattern>
+
+      <!--
+        The MDC is included wholesale so `trace_id`/`span_id` and any per-request fields a service adds arrive without
+        this file having to enumerate them. Structured key/value arguments (LogContext.kv) are included for the same
+        reason — that is the mechanism that makes a log line queryable rather than merely greppable.
+      -->
+      <includeMdc>true</includeMdc>
+      <includeStructuredArguments>true</includeStructuredArguments>
+      <includeContext>false</includeContext>
+
+      <!--
+        Stack traces are truncated and reflection/proxy frames elided. A single un-truncated Pekko or Play stack trace
+        runs to hundreds of frames; at any real error rate that is the log bill, and the informative frames are the
+        first twenty.
+      -->
+      <throwableConverter class="net.logstash.logback.stacktrace.ShortenedThrowableConverter">
+        <maxDepthPerThrowable>30</maxDepthPerThrowable>
+        <maxLength>8192</maxLength>
+        <shortenedClassNameLength>40</shortenedClassNameLength>
+        <exclude>^sun\.reflect\..*\.invoke</exclude>
+        <exclude>^java\.lang\.reflect\.Method\.invoke</exclude>
+        <rootCauseFirst>true</rootCauseFirst>
+      </throwableConverter>
+    </encoder>
+  </appender>
+
+  <!--
+    Libraries that are chatty at INFO and say nothing actionable. Each of these has, at some point, been the majority
+    of the log volume of a service that was doing nothing wrong.
+  -->
+  <logger name="org.apache.kafka.clients.NetworkClient" level="WARN"/>
+  <logger name="org.apache.kafka.clients.consumer.internals" level="WARN"/>
+  <logger name="org.apache.kafka.common.utils.AppInfoParser" level="WARN"/>
+  <logger name="org.apache.kafka.common.metrics.Metrics" level="WARN"/>
+  <logger name="com.zaxxer.hikari.pool.HikariPool" level="WARN"/>
+  <logger name="org.flywaydb.core.internal" level="WARN"/>
+
+  <!--
+    Levels come from the environment, not from a constant: raising log level is the first thing done during an
+    incident, and requiring a rebuild for it makes the change take longer than the incident. `io.kzonix` is separated
+    from the root so application logging can be turned up without the frameworks it sits on drowning it out.
+  -->
+  <logger name="io.kzonix" level="${LOG_APP_LEVEL:-INFO}"/>
+
+  <root level="${LOG_LEVEL:-INFO}">
+    <appender-ref ref="JSON"/>
+  </root>
+
+</included>

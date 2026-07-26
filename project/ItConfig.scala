@@ -15,9 +15,9 @@ object ItConfig:
 
   lazy val itSettings: Seq[Setting[?]] =
     inConfig(IT)(Defaults.testSettings) ++ Seq(
-      IT / scalaSource       := baseDirectory.value / "src" / "it" / "scala",
+      IT / scalaSource := baseDirectory.value / "src" / "it" / "scala",
       IT / resourceDirectory := baseDirectory.value / "src" / "it" / "resources",
       // Containers bind host ports; running suites concurrently makes them collide.
       IT / parallelExecution := false,
-      IT / fork              := true
+      IT / fork := true
     )
