@@ -21,4 +21,33 @@
 
 package io.kzonix.hraesvelgr
 
-class Main {}
+import com.typesafe.config.ConfigFactory
+import org.apache.pekko.actor.typed.ActorSystem
+import org.apache.pekko.actor.typed.Behavior
+import org.apache.pekko.actor.typed.scaladsl.Behaviors
+import org.apache.pekko.cluster.ClusterEvent.MemberEvent
+import org.apache.pekko.cluster.typed.Cluster
+import org.apache.pekko.cluster.typed.Subscribe
+
+/** Minimal Pekko cluster node.
+  *
+  * Replaces the empty `class Main {}` this module used to contain: it now starts an actor system, joins the cluster and
+  * reports membership transitions, so the module does what its name says.
+  */
+object Main:
+
+  private val Name = "hraesvelgr"
+
+  private def rootBehavior: Behavior[MemberEvent] =
+    Behaviors.setup: context =>
+      val cluster = Cluster(context.system)
+      context.log.info(s"Cluster node starting at ${cluster.selfMember.address}")
+      cluster.subscriptions ! Subscribe(context.self, classOf[MemberEvent])
+
+      Behaviors.receiveMessage: event =>
+        context.log.info(s"Cluster membership changed: $event")
+        Behaviors.same
+
+  def main(args: Array[String]): Unit =
+    val config = ConfigFactory.load()
+    val _      = ActorSystem(rootBehavior, Name, config)

@@ -50,6 +50,10 @@ object Dependencies:
     "pekko-serialization-jackson"
   ).map("org.apache.pekko" %% _ % Versions.Pekko)
 
+  val pekkoCluster: Seq[ModuleID] = Seq(
+    "org.apache.pekko" %% "pekko-cluster-typed" % Versions.Pekko
+  )
+
   val pekkoTest: Seq[ModuleID] = Seq(
     "org.apache.pekko" %% "pekko-actor-testkit-typed" % Versions.Pekko,
     "org.apache.pekko" %% "pekko-stream-testkit"      % Versions.Pekko

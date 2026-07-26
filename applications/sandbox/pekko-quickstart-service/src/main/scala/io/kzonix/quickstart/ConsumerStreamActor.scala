@@ -1,95 +1,110 @@
+/*
+ * Copyright (c) 2020 Kzonix Projects
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy of
+ * this software and associated documentation files (the "Software"), to deal in
+ * the Software without restriction, including without limitation the rights to
+ * use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+ * the Software, and to permit persons to whom the Software is furnished to do so,
+ * subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+ * FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+ * COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+ * IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+ * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
+
 package io.kzonix.quickstart
 
-import akka.Done
-import akka.actor.ClassicActorSystemProvider
-import akka.actor.typed.ActorSystem
-import akka.actor.typed.Behavior
-import akka.actor.typed.scaladsl.ActorContext
-import akka.actor.typed.scaladsl.Behaviors
-import akka.kafka.ConsumerMessage.CommittableOffsetBatch
-import akka.kafka.CommitterSettings
-import akka.kafka.ConsumerSettings
-import akka.kafka.Subscriptions
-import akka.kafka.scaladsl.Committer
-import akka.kafka.scaladsl.Consumer
-import akka.kafka.scaladsl.Consumer.DrainingControl
-import akka.stream.scaladsl.RunnableGraph
-import io.kzonix.quickstart.ConsumerStreamActor.ConsumerCommand
 import org.apache.kafka.clients.consumer.ConsumerConfig
 import org.apache.kafka.common.serialization.StringDeserializer
-
-import java.util.concurrent.atomic.AtomicReference
-import scala.concurrent.Future
+import org.apache.pekko.Done
+import org.apache.pekko.actor.typed.Behavior
+import org.apache.pekko.actor.typed.PostStop
+import org.apache.pekko.actor.typed.scaladsl.ActorContext
+import org.apache.pekko.actor.typed.scaladsl.Behaviors
+import org.apache.pekko.kafka.CommitterSettings
+import org.apache.pekko.kafka.ConsumerMessage.CommittableOffsetBatch
+import org.apache.pekko.kafka.ConsumerSettings
+import org.apache.pekko.kafka.Subscriptions
+import org.apache.pekko.kafka.scaladsl.Committer
+import org.apache.pekko.kafka.scaladsl.Consumer
+import org.apache.pekko.kafka.scaladsl.Consumer.DrainingControl
+import org.apache.pekko.stream.Materializer
+import scala.concurrent.ExecutionContext
 import scala.concurrent.duration.DurationInt
 
-class ConsumerStreamActor(context: ActorContext[ConsumerCommand])(implicit ac: ClassicActorSystemProvider) {
-
-  val controlContainer = new AtomicReference[Consumer.Control](Consumer.NoopControl)
-
-  def start(): Unit = {
-    val consumerSettings: ConsumerSettings[String, String] = getConsumerSettings(ac.classicSystem)
-
-    val control: RunnableGraph[DrainingControl[Done]] = Consumer
-      .committableSource(
-        consumerSettings,
-        Subscriptions.topics("backblaze_smart")
-      )
-      .groupedWithin(
-        100,
-        100.milliseconds
-      )
-      .mapAsync(10) { msg =>
-        Future {
-          context.log.info(s"Processing $msg")
-          CommittableOffsetBatch(msg.map(_.committableOffset))
-        }(context.executionContext)
-      }
-      .toMat(Committer.sink(CommitterSettings(context.system)))(DrainingControl.apply)
-
-    val drainingControl: DrainingControl[Done] = control.run()
-    controlContainer.set(drainingControl)
-  }
-
-  def stop(): Unit =
-    Option(controlContainer.getOpaque) match {
-      case Some(noOp @ Consumer.NoopControl)            => context.log.info("Stream is not started yet")
-      case Some(drainingControl: DrainingControl[Done]) => drainingControl.drainAndShutdown()(context.executionContext)
-    }
-
-  private def getConsumerSettings(as: ClassicActorSystemProvider): ConsumerSettings[String, String] =
-    ConsumerSettings(
-      as,
-      new StringDeserializer,
-      new StringDeserializer
-    )
-      .withGroupId("group2")
-      .withProperty(
-        ConsumerConfig.AUTO_OFFSET_RESET_CONFIG,
-        "earliest"
-      )
-
-}
-
-object ConsumerStreamActor {
+/** Typed actor owning a committable Kafka consumer stream.
+  *
+  * The running stream's [[DrainingControl]] is carried in the behaviour rather than in an `AtomicReference`. The actor
+  * is the only writer, so behaviour state makes "running or idle" total, replacing a partial match on a mutable cell
+  * that had no case for an already-drained stream.
+  */
+object ConsumerStreamActor:
 
   sealed trait ConsumerCommand
-  case class StartConsumer(topic: String) extends ConsumerCommand
-  case class StopConsumer(topic: String)  extends ConsumerCommand
+  final case class StartConsumer(topic: String) extends ConsumerCommand
+  final case class StopConsumer(topic: String)  extends ConsumerCommand
 
-  def apply(): Behavior[ConsumerCommand] =
-    Behaviors.setup { context =>
-      Behaviors.receive[ConsumerCommand] { (_, msg) =>
+  def apply(groupId: String): Behavior[ConsumerCommand] =
+    Behaviors.setup(context => idle(context, groupId))
 
-         implicit val classicActorSystemProvider: ActorSystem[Nothing] = context.system
-         msg match {
-           case StartConsumer(topic) =>
-             new ConsumerStreamActor(context).start()
-             Behaviors.same
+  private def idle(context: ActorContext[ConsumerCommand], groupId: String): Behavior[ConsumerCommand] =
+    Behaviors.receiveMessage:
+      case StartConsumer(topic) =>
+        context.log.info(s"Starting consumer for topic '$topic' in group '$groupId'")
+        running(context, groupId, startStream(context, groupId, topic))
+      case StopConsumer(topic) =>
+        context.log.info(s"Consumer for topic '$topic' is not running")
+        Behaviors.same
 
-           case StopConsumer(topic) => Behaviors.same
-         }
-      }
+  private def running(
+      context: ActorContext[ConsumerCommand],
+      groupId: String,
+      control: DrainingControl[Done]
+  ): Behavior[ConsumerCommand] =
+    Behaviors
+      .receiveMessage[ConsumerCommand]:
+        case StartConsumer(topic) =>
+          context.log.info(s"Consumer for topic '$topic' is already running")
+          Behaviors.same
+        case StopConsumer(topic) =>
+          context.log.info(s"Draining consumer for topic '$topic'")
+          drain(context, control)
+          idle(context, groupId)
+      .receiveSignal:
+        // Without this the stream outlives the actor and keeps consuming.
+        case (_, PostStop) =>
+          drain(context, control)
+          Behaviors.same
 
-    }
+  private def drain(context: ActorContext[ConsumerCommand], control: DrainingControl[Done]): Unit =
+    given ExecutionContext = context.executionContext
+    control
+      .drainAndShutdown()
+      .foreach(_ => context.log.info("Consumer stream drained"))
 
-}
+  private def startStream(
+      context: ActorContext[ConsumerCommand],
+      groupId: String,
+      topic: String
+  ): DrainingControl[Done] =
+    Consumer
+      .committableSource(consumerSettings(context, groupId), Subscriptions.topics(topic))
+      .groupedWithin(100, 100.milliseconds)
+      .map(batch => CommittableOffsetBatch(batch.map(_.committableOffset)))
+      .toMat(Committer.sink(CommitterSettings(context.system)))(DrainingControl.apply)
+      .run()(using Materializer(context.system))
+
+  private def consumerSettings(
+      context: ActorContext[ConsumerCommand],
+      groupId: String
+  ): ConsumerSettings[String, String] =
+    ConsumerSettings(context.system, new StringDeserializer, new StringDeserializer)
+      .withGroupId(groupId)
+      .withProperty(ConsumerConfig.AUTO_OFFSET_RESET_CONFIG, "earliest")

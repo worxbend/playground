@@ -4,6 +4,11 @@ import ProjectUtils.*
 
 Global / onChangedBuildSource := ReloadOnSourceChanges
 
+// native-packager defines Debian/Rpm keys we never use; without this every build
+// prints ~110 "unused key" warnings that bury real ones.
+Global / excludeLintKeys += Docker / daemonUser
+Global / excludeLintKeys += Docker / daemonUserUid
+
 /* --------------------------------------------------------------------------------------------------------------- */
 /* Shared settings                                                                                                   */
 /* --------------------------------------------------------------------------------------------------------------- */
@@ -133,7 +138,7 @@ lazy val `pekko-cluster-bootstrap-service` = packagedApp(
 )
   .settings(
     name := ProjectNames.service("pekko-cluster-bootstrap"),
-    libraryDependencies ++= pekko ++ pekkoTest
+    libraryDependencies ++= pekko ++ pekkoCluster ++ pekkoTest
   )
 
 /* --------------------------------------------------------------------------------------------------------------- */
