@@ -1,0 +1,38 @@
+# Traces only. Metrics deliberately do not flow through here: the services
+# expose them via Micrometer for Prometheus to scrape, and routing them through
+# OTLP as well would double-count every meter.
+
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+
+processors:
+  # Bounded queue: drop spans rather than let the collector grow without limit
+  # if a backend is unreachable.
+  memory_limiter:
+    check_interval: 1s
+    limit_percentage: 75
+    spike_limit_percentage: 15
+  batch:
+    timeout: 5s
+    send_batch_size: 512
+
+exporters:
+  # Default: log a summary so traces are visible without another backend.
+  # Point this at Tempo/Jaeger when you have one.
+  debug:
+    verbosity: basic
+
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [debug]
+  telemetry:
+    logs:
+      level: info

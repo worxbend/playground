@@ -1,0 +1,23 @@
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    cluster: homelab
+
+scrape_configs:
+  # All three services expose Micrometer's Prometheus exposition at /metrics,
+  # with identical JVM meter names — that is the point of the shared
+  # observability module, and it is why one dashboard works against all three.
+  - job_name: observatory
+    metrics_path: /metrics
+    static_configs:
+      - targets: ["wolfram:8080"]
+        labels: { service: wolfram }
+      - targets: ["cobalt:8080"]
+        labels: { service: cobalt }
+      - targets: ["ferrite:9000"]
+        labels: { service: ferrite }
+
+  - job_name: prometheus
+    static_configs:
+      - targets: ["localhost:9090"]

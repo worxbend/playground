@@ -1,0 +1,227 @@
+# Event observatory — full stack for a homelab host.
+#
+#   cp .env.example .env && edit, then:  docker compose up -d
+#
+# Images are built by sbt, not by compose:
+#   sbt ferrite/Docker/publishLocal cobalt/Docker/publishLocal wolfram/Docker/publishLocal
+#
+# Every dependency is gated on a healthcheck rather than plain `depends_on`, because
+# Kafka and Postgres both accept TCP connections well before they can serve requests,
+# and a service that starts too early crash-loops instead of waiting.
+
+name: observatory
+
+x-service-defaults: &service-defaults
+  restart: unless-stopped
+  logging:
+    driver: json-file
+    options: { max-size: "10m", max-file: "3" }
+  environment: &otel-env
+    OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}
+    OTEL_EXPORTER_OTLP_PROTOCOL: grpc
+    OTEL_TRACES_SAMPLER: ${OTEL_TRACES_SAMPLER:-parentbased_traceidratio}
+    OTEL_TRACES_SAMPLER_ARG: ${OTEL_TRACES_SAMPLER_ARG:-0.1}
+    LOG_LEVEL: ${LOG_LEVEL:-INFO}
+
+services:
+  postgres:
+    image: postgres:18.4-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-observatory}
+      POSTGRES_USER: ${POSTGRES_USER:-observatory}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      # Postgres 18 images place PGDATA under a version-specific path.
+      PGDATA: /var/lib/postgresql/18/docker
+    command:
+      # Modest tuning for an event store on a homelab box: most queries are
+      # index scans over recent partitions, so shared_buffers matters more than
+      # work_mem, and a high effective_cache_size keeps the planner honest.
+      - postgres
+      - -c=shared_buffers=512MB
+      - -c=effective_cache_size=1536MB
+      - -c=work_mem=16MB
+      - -c=maintenance_work_mem=256MB
+      - -c=random_page_cost=1.1
+      - -c=max_connections=100
+    volumes:
+      - postgres-data:/var/lib/postgresql/18/docker
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-observatory} -d ${POSTGRES_DB:-observatory}"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+    deploy:
+      resources:
+        limits: { memory: 2G }
+
+  kafka:
+    image: apache/kafka:4.3.1
+    restart: unless-stopped
+    environment:
+      # KRaft single-node: no ZooKeeper. Fine for a homelab; not for production HA.
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://kafka:9092
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
+      KAFKA_LOG_RETENTION_HOURS: 168
+    volumes:
+      - kafka-data:/var/lib/kafka/data
+    healthcheck:
+      test: ["CMD-SHELL", "/opt/kafka/bin/kafka-broker-api-versions.sh --bootstrap-server localhost:9092 >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 10s
+      retries: 12
+      start_period: 40s
+    deploy:
+      resources:
+        limits: { memory: 1500M }
+
+  # One-shot: creates the topics, since auto-creation is disabled above.
+  kafka-init:
+    image: apache/kafka:4.3.1
+    restart: "no"
+    depends_on:
+      kafka: { condition: service_healthy }
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        set -e
+        K=/opt/kafka/bin/kafka-topics.sh
+        $$K --bootstrap-server kafka:9092 --create --if-not-exists \
+            --topic events.cloudevents.v1 --partitions 12 --replication-factor 1
+        $$K --bootstrap-server kafka:9092 --create --if-not-exists \
+            --topic events.cloudevents.v1.dlq --partitions 3 --replication-factor 1
+        echo "topics ready"
+
+  wolfram:
+    <<: *service-defaults
+    image: wolfram:latest
+    depends_on:
+      kafka: { condition: service_healthy }
+      kafka-init: { condition: service_completed_successfully }
+    environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: wolfram
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      HTTP_HOST: 0.0.0.0
+      HTTP_PORT: 8080
+    ports: ["8081:8080"]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health/live >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    deploy:
+      resources:
+        limits: { memory: 768M }
+
+  cobalt:
+    <<: *service-defaults
+    image: cobalt:latest
+    depends_on:
+      kafka: { condition: service_healthy }
+      postgres: { condition: service_healthy }
+      kafka-init: { condition: service_completed_successfully }
+    environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: cobalt
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      DB_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-observatory}
+      DB_USER: ${POSTGRES_USER:-observatory}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      HTTP_HOST: 0.0.0.0
+      HTTP_PORT: 8080
+    ports: ["8082:8080"]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health/live >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 40s
+    deploy:
+      resources:
+        limits: { memory: 1G }
+
+  ferrite:
+    <<: *service-defaults
+    image: ferrite:latest
+    depends_on:
+      postgres: { condition: service_healthy }
+      # cobalt owns the migrations, so the schema exists before the reader starts.
+      cobalt: { condition: service_healthy }
+    environment:
+      <<: *otel-env
+      OTEL_SERVICE_NAME: ferrite
+      APPLICATION_SECRET: ${APPLICATION_SECRET:?APPLICATION_SECRET is required}
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1}
+      DB_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-observatory}
+      DB_USER: ${POSTGRES_USER:-observatory}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      PLAY_HTTP_PORT: 9000
+    ports: ["9000:9000"]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:9000/health/live >/dev/null || exit 1"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 45s
+    deploy:
+      resources:
+        limits: { memory: 1G }
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.157.0
+    restart: unless-stopped
+    command: ["--config=/etc/otel/config.yaml"]
+    volumes:
+      - ./observability/otel-collector.yaml:/etc/otel/config.yaml:ro
+    deploy:
+      resources:
+        limits: { memory: 512M }
+
+  prometheus:
+    image: prom/prometheus:v3.13.1
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=30d
+    volumes:
+      - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports: ["9090:9090"]
+    deploy:
+      resources:
+        limits: { memory: 1G }
+
+  grafana:
+    image: grafana/grafana:13.1.1
+    restart: unless-stopped
+    depends_on: [prometheus]
+    environment:
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD is required}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./observability/grafana-datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+    ports: ["3000:3000"]
+    deploy:
+      resources:
+        limits: { memory: 512M }
+
+volumes:
+  postgres-data:
+  kafka-data:
+  prometheus-data:
+  grafana-data:

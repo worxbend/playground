@@ -474,3 +474,5 @@ project/plugins/project/
 ### dot Env
 **/.env
 docker/lenses/.env
+# Homelab secrets
+deploy/.env
