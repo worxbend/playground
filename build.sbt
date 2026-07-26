@@ -18,7 +18,7 @@ def playService(project: Project): Project =
   project
     .enablePlugins(PlayService, PlayPekkoHttpServer, AutomateHeaderPlugin)
     .settings(commonSettings*)
-    .settings(libraryDependencies += scalaGuice)
+    .settings(libraryDependencies ++= Seq(guice, scalaGuice))
 
 /** Packaged, runnable non-Play application. */
 def packagedApp(project: Project): Project =
@@ -107,7 +107,7 @@ lazy val `index-service` = playService(
 )
   .settings(
     name := ProjectNames.service("index"),
-    libraryDependencies ++= Seq(guice, caffeine, filters, azureStorageBlob)
+    libraryDependencies ++= Seq(caffeine, filters, azureStorageBlob)
   )
   .dependsOn(`sird-provider`, `play-utile`, `play-underpressure`)
 
@@ -116,7 +116,7 @@ lazy val `redprime-service` = playService(
 )
   .settings(
     name := ProjectNames.service("redprime"),
-    libraryDependencies ++= Seq(guice, caffeine, filters, ws)
+    libraryDependencies ++= Seq(caffeine, filters, ws)
   )
   .dependsOn(`sird-provider`, `play-utile`, `play-underpressure`)
 

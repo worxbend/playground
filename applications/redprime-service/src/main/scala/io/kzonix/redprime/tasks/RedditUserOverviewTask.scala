@@ -21,25 +21,31 @@
 
 package io.kzonix.redprime.tasks
 
-import akka.actor.ActorRef
-import akka.actor.ActorSystem
-import com.google.inject.Inject
-import com.google.inject.name.Named
 import io.kzonix.redprime.actors.RedditUserOverviewActor
-
+import jakarta.inject.Inject
+import jakarta.inject.Named
+import jakarta.inject.Singleton
+import org.apache.pekko.actor.ActorRef
+import org.apache.pekko.actor.ActorSystem
+import org.apache.pekko.actor.Cancellable
 import scala.concurrent.ExecutionContext
 import scala.concurrent.duration.DurationInt
 
-class RedditUserOverviewTask @Inject() (
+/** Drives [[RedditUserOverviewActor]] on a fixed schedule. Bound eagerly by `TasksModule`. */
+@Singleton
+final class RedditUserOverviewTask @Inject() (
     actorSystem: ActorSystem,
     @Named("RedditUserOverviewActor") actorRef: ActorRef
-)(implicit
-    executionContext: ExecutionContext
-) {
-  actorSystem.scheduler.scheduleAtFixedRate(
-    initialDelay = 0.microseconds,
-    interval = 15.seconds,
-    receiver = actorRef,
-    message = RedditUserOverviewActor.Tick
-  )
-}
+)(using ec: ExecutionContext):
+
+  private val schedule: Cancellable =
+    actorSystem.scheduler.scheduleAtFixedRate(
+      initialDelay = 0.seconds,
+      interval = 15.seconds,
+      receiver = actorRef,
+      message = RedditUserOverviewActor.Tick
+    )
+
+  // Stop the timer with the actor system, so a reload in dev mode does not leave
+  // an orphaned schedule ticking against a dead actor.
+  actorSystem.registerOnTermination(() => schedule.cancel(): Unit)

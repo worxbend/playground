@@ -26,13 +26,12 @@ import io.kzonix.sird.ProvidedRouter
 import net.codingwell.scalaguice.ScalaModule
 import net.codingwell.scalaguice.ScalaMultibinder
 
-class RouteModule extends AbstractModule with ScalaModule {
+/** Contributes this service's routers to the application-wide routing table.
+  *
+  * `addBinding.to[…]` returns a binding builder, so the result must be discarded explicitly — `-Wvalue-discard` is
+  * fatal under `-Werror`.
+  */
+final class RouteModule extends AbstractModule with ScalaModule:
 
-  override def configure(): Unit = {
-    val routeMultiBinder: ScalaMultibinder[ProvidedRouter] =
-      ScalaMultibinder.newSetBinder[ProvidedRouter](binder)
-    routeMultiBinder.addBinding.to[IndexRoute]
-    ()
-  }
-
-}
+  override def configure(): Unit =
+    val _ = ScalaMultibinder.newSetBinder[ProvidedRouter](binder).addBinding.to[IndexRoute]

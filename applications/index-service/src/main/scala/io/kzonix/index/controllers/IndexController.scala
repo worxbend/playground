@@ -21,61 +21,36 @@
 
 package io.kzonix.index.controllers
 
+import com.typesafe.scalalogging.StrictLogging
+import jakarta.inject.Inject
+import jakarta.inject.Singleton
 import play.api.cache.AsyncCacheApi
-import play.api.cache.SyncCacheApi
 import play.api.libs.json.Json
-import play.api.mvc._
-
-import javax.inject.Inject
-import javax.inject.Singleton
-import scala.concurrent.Await
+import play.api.mvc.AbstractController
+import play.api.mvc.Action
+import play.api.mvc.AnyContent
+import play.api.mvc.ControllerComponents
 import scala.concurrent.ExecutionContext
 import scala.concurrent.Future
 import scala.concurrent.duration.DurationInt
 
 @Singleton
-class IndexController @Inject() (
+final class IndexController @Inject() (
     cc: ControllerComponents,
-    cache: AsyncCacheApi,
-    syncCache: SyncCacheApi
-)(implicit
-    ec: ExecutionContext
-) extends AbstractController(cc) {
+    cache: AsyncCacheApi
+)(using ec: ExecutionContext)
+    extends AbstractController(cc)
+    with StrictLogging:
 
-  def index: Action[AnyContent] =
-    Action.async { implicit request: Request[AnyContent] =>
-      Future {
-        println(request)
-        Ok(Json.toJson("Hello world"))
-      }
-    }
+  def index: Action[AnyContent] = Action.async:
+    Future.successful(Ok(Json.obj("message" -> "Hello world")))
 
-  // Test the NPE issue #9476 with caffeine async api
-  def asyncCacheTest: Action[AnyContent] =
-    Action.async { implicit request: Request[AnyContent] =>
-      Future {
-        println(request)
-        val futureValue: Future[String] = cache.getOrElseUpdate[String]("item.key") {
-          Future.successful(null)
-        }
-        val value: String               = Await.result(
-          futureValue,
-          2.seconds
-        )
-        Ok(Json.toJson(s"Hello $value"))
-      }
-    }
-
-  // Test the NPE issue #9476 with caffeine sync api
-  def cacheTest: Action[AnyContent] =
-    Action.async { implicit request: Request[AnyContent] =>
-      Future {
-        println(request)
-        val value: String = syncCache.getOrElseUpdate[String]("item.key") {
-          null
-        }
-        Ok(Json.toJson(s"Hello $value"))
-      }
-    }
-
-}
+  /** Cache-backed read.
+    *
+    * The previous implementation stored `null` here to reproduce a Play caffeine NPE; caching a null is not something a
+    * service should do, so the probe was dropped and this reads through the cache normally.
+    */
+  def cached: Action[AnyContent] = Action.async:
+    cache
+      .getOrElseUpdate[String]("index.greeting", 5.minutes)(Future.successful("Hello from cache"))
+      .map(greeting => Ok(Json.obj("message" -> greeting)))

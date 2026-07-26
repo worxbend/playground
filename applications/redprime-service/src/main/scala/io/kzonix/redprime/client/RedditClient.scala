@@ -21,61 +21,52 @@
 
 package io.kzonix.redprime.client
 
-import akka.http.scaladsl.model.HttpMethods.POST
-import com.google.inject.Inject
-import io.kzonix.redprime.client.RedditClient.LoginQueryParams._
-import io.kzonix.redprime.client.model.OAuthResponse.responseReads
+import com.typesafe.scalalogging.StrictLogging
+import io.kzonix.redprime.client.RedditClient.LoginQueryParams
 import io.kzonix.redprime.client.model.OAuthResponse
 import io.kzonix.redprime.client.model.PasswordGrantTypePayload
+import jakarta.inject.Inject
+import jakarta.inject.Singleton
 import play.api.Configuration
-import play.api.Logger
+import play.api.libs.json.JsError
+import play.api.libs.json.JsSuccess
 import play.api.libs.ws.WSAuthScheme
 import play.api.libs.ws.WSClient
-import play.api.libs.ws.WSResponse
-
 import scala.concurrent.ExecutionContext
 import scala.concurrent.Future
 
-class RedditClient @Inject() (
+@Singleton
+final class RedditClient @Inject() (
     ws: WSClient,
     config: Configuration
-)(implicit
-    val ec: ExecutionContext
-) {
+)(using ec: ExecutionContext)
+    extends StrictLogging:
 
-  private val logger: Logger = Logger(this.getClass)
+  // Read once at construction: credentials do not change for the process lifetime.
+  private val credentials: PasswordGrantTypePayload =
+    config.get[PasswordGrantTypePayload]("reddit.client")
 
-  def login(): Future[Option[OAuthResponse]] = {
-
-    val cfg                                  = config.get[PasswordGrantTypePayload](path = "reddit.client")
-    val eventualResponse: Future[WSResponse] = ws
-      .url(cfg.authUri)
-      .withAuth(
-        cfg.clientId,
-        cfg.clientSecret,
-        WSAuthScheme.BASIC
-      )
+  def login(): Future[Option[OAuthResponse]] =
+    ws.url(credentials.authUri)
+      .withAuth(credentials.clientId, credentials.clientSecret, WSAuthScheme.BASIC)
       .withQueryStringParameters(
-        GrantType -> cfg.grantType,
-        UserName  -> cfg.userName,
-        Password  -> cfg.password
+        LoginQueryParams.GrantType -> credentials.grantType,
+        LoginQueryParams.UserName  -> credentials.userName,
+        LoginQueryParams.Password  -> credentials.password
       )
-      .execute(POST.value)
+      .execute("POST")
+      .map: response =>
+        // The body carries a bearer token, so only the parse outcome is logged.
+        response.json.validate[OAuthResponse] match
+          case JsSuccess(oauth, _) =>
+            Some(oauth)
+          case JsError(errors) =>
+            logger.warn(s"Reddit token response did not parse (HTTP ${response.status}): $errors")
+            None
 
-    eventualResponse.map { response =>
-       logger.info(response.json.toString())
-       response.json.validate[OAuthResponse].asOpt
-    }
-  }
+object RedditClient:
 
-}
-
-object RedditClient {
-
-  object LoginQueryParams {
+  object LoginQueryParams:
     val GrantType = "grant_type"
     val UserName  = "username"
     val Password  = "password"
-  }
-
-}

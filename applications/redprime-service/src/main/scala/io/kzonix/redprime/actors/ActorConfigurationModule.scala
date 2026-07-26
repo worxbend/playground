@@ -22,11 +22,13 @@
 package io.kzonix.redprime.actors
 
 import com.google.inject.AbstractModule
-import play.api.libs.concurrent.AkkaGuiceSupport
+import play.api.libs.concurrent.PekkoGuiceSupport
 
-class ActorConfigurationModule extends AbstractModule with AkkaGuiceSupport {
+/** Binds the service's actors.
+  *
+  * `PekkoGuiceSupport` is the Play 3 replacement for `AkkaGuiceSupport`; it binds classic actors by name.
+  */
+final class ActorConfigurationModule extends AbstractModule with PekkoGuiceSupport:
 
   override def configure(): Unit =
     bindActor[RedditUserOverviewActor]("RedditUserOverviewActor")
-
-}

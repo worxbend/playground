@@ -22,18 +22,20 @@
 package io.kzonix.index.filters
 
 import com.typesafe.config.Config
+import java.util.UUID
 import play.api.ConfigLoader
 
-import scala.util.Random
+/** Identifier of the deployment environment this instance runs in. */
+final case class EnvId(id: String)
 
-case class EnvId(id: String)
+object EnvId:
 
-object EnvId {
-
-  implicit val configLoader: ConfigLoader[EnvId] = (config: Config, path: String) => {
-    var id: String = config.getString(path)
-    id = if (id == null) new Random().nextString(24) else id
-    EnvId(id)
-  }
-
-}
+  /** Falls back to a random UUID when the key is absent or blank.
+    *
+    * The previous fallback used `Random.nextString`, which emits arbitrary UTF-16 code units — including unpaired
+    * surrogates and control characters — and the value ends up in an HTTP response header.
+    */
+  given ConfigLoader[EnvId] =
+    (config: Config, path: String) =>
+      val configured = if config.hasPath(path) then Option(config.getString(path)) else None
+      EnvId(configured.filter(_.trim.nonEmpty).getOrElse(UUID.randomUUID().toString))

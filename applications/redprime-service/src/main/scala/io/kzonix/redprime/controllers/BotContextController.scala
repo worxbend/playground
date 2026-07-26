@@ -22,28 +22,21 @@
 package io.kzonix.redprime.controllers
 
 import com.typesafe.scalalogging.StrictLogging
+import jakarta.inject.Inject
+import jakarta.inject.Singleton
 import play.api.libs.json.Json
-import play.api.mvc._
-
-import javax.inject.Inject
-import javax.inject.Singleton
-import scala.concurrent.ExecutionContext
+import play.api.mvc.AbstractController
+import play.api.mvc.Action
+import play.api.mvc.AnyContent
+import play.api.mvc.ControllerComponents
 import scala.concurrent.Future
 
 @Singleton
-class BotContextController @Inject() (
+final class BotContextController @Inject() (
     cc: ControllerComponents
-)(implicit
-    ec: ExecutionContext
 ) extends AbstractController(cc)
-    with StrictLogging {
+    with StrictLogging:
 
-  def index(num: String): Action[AnyContent] =
-    Action.async { implicit request: Request[AnyContent] =>
-      Future {
-        logger.info(s"Request from ${ request.remoteAddress }: $request")
-        Ok(Json.toJson("Hello world and " + num))
-      }
-    }
-
-}
+  def index(number: String): Action[AnyContent] = Action.async: request =>
+    logger.debug(s"Bot context requested from ${request.remoteAddress}")
+    Future.successful(Ok(Json.obj("context" -> number)))

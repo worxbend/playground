@@ -19,13 +19,20 @@
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-package io.kzonix.sird
+package io.kzonix.play.underpressure
 
-import play.api.inject.Binding
-import play.api.Configuration
-import play.api.Environment
+import com.google.inject.AbstractModule
+import io.kzonix.sird.ProvidedRouter
+import net.codingwell.scalaguice.ScalaModule
+import net.codingwell.scalaguice.ScalaMultibinder
 
-class RouteModule extends play.api.inject.Module {
-  def bindings(environment: Environment, configuration: Configuration): Seq[Binding[_]] =
-    Seq(bind[RouterProvider].to[SirdProvider])
-}
+/** Exposes the health probes and opens the `Set[HealthProvider]` multibinder.
+  *
+  * Creating the provider set here means a service with no dependency checks still answers `/health/ready` (with an
+  * empty check list) rather than failing injector creation.
+  */
+final class HealthModule extends AbstractModule with ScalaModule:
+
+  override def configure(): Unit =
+    val _ = ScalaMultibinder.newSetBinder[HealthProvider](binder)
+    val _ = ScalaMultibinder.newSetBinder[ProvidedRouter](binder).addBinding.to[HealthRoute]

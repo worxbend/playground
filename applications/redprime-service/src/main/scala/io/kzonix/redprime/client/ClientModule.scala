@@ -19,6 +19,17 @@
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-package io.kzonix.index.services
+package io.kzonix.redprime.client
 
-trait IndexService
+import com.google.inject.AbstractModule
+import net.codingwell.scalaguice.ScalaModule
+
+/** Binds the outbound HTTP clients.
+  *
+  * Eager on purpose: [[RedditClient]] reads its credentials at construction, so a misconfigured deployment fails at
+  * startup rather than on the first request that needs a token.
+  */
+final class ClientModule extends AbstractModule with ScalaModule:
+
+  override def configure(): Unit =
+    bind[RedditClient].asEagerSingleton()

@@ -21,30 +21,23 @@
 
 package io.kzonix.index.filters
 
+import jakarta.inject.Inject
+import jakarta.inject.Singleton
 import play.api.Configuration
 import play.api.mvc.EssentialAction
 import play.api.mvc.EssentialFilter
-import play.api.mvc.RequestHeader
-import play.api.mvc.Result
-
-import javax.inject._
 import scala.concurrent.ExecutionContext
 
-/** This is a simple filter that adds a header to all requests. It's added to the application's list of filters by the
-  * [[Filters]] class.
-  *
-  * @param ec
-  *   This class is needed to execute code asynchronously. It is used below by the `map` method.
+/** Stamps every response with the deployment environment id, so a response can be traced back to the instance that
+  * produced it.
   */
 @Singleton
-class DeploymentEnvIdFilter @Inject() (config: Configuration)(implicit ec: ExecutionContext) extends EssentialFilter {
+final class DeploymentEnvIdFilter @Inject() (config: Configuration)(using ec: ExecutionContext) extends EssentialFilter:
+
+  // Resolved once: the value is static for the lifetime of the process, and the
+  // previous per-request lookup re-parsed configuration on every call.
+  private val envId: String = config.getOptional[EnvId]("docker.env").fold("")(_.id)
 
   override def apply(next: EssentialAction): EssentialAction =
-    EssentialAction { request: RequestHeader =>
-       val value: Option[EnvId] = config.getOptional[EnvId]("docker.env")
-       next(request).map { result: Result =>
-         result.withHeaders("X-Container-Id" -> value.map((_: EnvId).id).getOrElse(""))
-       }
-    }
-
-}
+    EssentialAction: request =>
+      next(request).map(_.withHeaders("X-Container-Id" -> envId))

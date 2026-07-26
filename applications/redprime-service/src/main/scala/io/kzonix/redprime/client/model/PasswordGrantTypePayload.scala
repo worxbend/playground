@@ -23,32 +23,33 @@ package io.kzonix.redprime.client.model
 
 import com.typesafe.config.Config
 import play.api.ConfigLoader
-import play.api.Logger
 
-case class PasswordGrantTypePayload(
+/** Resource-owner password credentials for the Reddit OAuth exchange.
+  *
+  * `toString` is overridden so the secret and password cannot reach a log line, a stack trace, or an error report by
+  * accident — the previous loader logged the fully populated payload on every startup.
+  */
+final case class PasswordGrantTypePayload(
     authUri: String,
     clientId: String,
     clientSecret: String,
     userName: String,
     password: String,
     grantType: String = "password"
-)
+):
+  override def toString: String =
+    s"PasswordGrantTypePayload(authUri=$authUri, clientId=$clientId, userName=$userName, " +
+      s"clientSecret=<redacted>, password=<redacted>, grantType=$grantType)"
 
-object PasswordGrantTypePayload {
+object PasswordGrantTypePayload:
 
-  private val logger: Logger = Logger(this.getClass)
-
-  implicit val configLoader: ConfigLoader[PasswordGrantTypePayload] = (config: Config, path: String) => {
-    val rootConfig: Config = config.getConfig(path)
-    val payload            = PasswordGrantTypePayload(
-      authUri = rootConfig.getString("authorizeUri"),
-      clientId = rootConfig.getString("clientId"),
-      clientSecret = rootConfig.getString("clientSecret"),
-      userName = rootConfig.getString("username"),
-      password = rootConfig.getString("password")
-    )
-    logger.info(payload.toString)
-    payload
-  }
-
-}
+  given ConfigLoader[PasswordGrantTypePayload] =
+    (config: Config, path: String) =>
+      val root = config.getConfig(path)
+      PasswordGrantTypePayload(
+        authUri = root.getString("authorizeUri"),
+        clientId = root.getString("clientId"),
+        clientSecret = root.getString("clientSecret"),
+        userName = root.getString("username"),
+        password = root.getString("password")
+      )

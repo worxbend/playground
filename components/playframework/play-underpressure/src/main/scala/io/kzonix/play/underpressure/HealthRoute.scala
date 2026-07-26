@@ -19,6 +19,25 @@
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-package io.kzonix.index.services
+package io.kzonix.play.underpressure
 
-object CommonUtils
+import io.kzonix.sird.ProvidedRouter
+import io.kzonix.sird.RoutePrefix
+import io.kzonix.sird.RouteVersioningHelper.unversioned
+import jakarta.inject.Inject
+import play.api.routing.Router.Routes
+import play.api.routing.SimpleRouter
+import play.api.routing.sird.GET
+import play.api.routing.sird.UrlContext
+
+/** Mounts the probes at `/health/live` and `/health/ready`.
+  *
+  * Unversioned on purpose: orchestrator probe URLs should not move when the API version does.
+  */
+final class HealthRoute @Inject() (controller: HealthController) extends SimpleRouter with ProvidedRouter:
+
+  override val routePrefix: RoutePrefix = "/health".unversioned
+
+  override def routes: Routes =
+    case GET(p"/live")  => controller.live
+    case GET(p"/ready") => controller.ready

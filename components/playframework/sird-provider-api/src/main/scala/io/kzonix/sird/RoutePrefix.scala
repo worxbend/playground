@@ -1,26 +1,14 @@
-/*
- * Copyright (c) 2020 Kzonix Projects
- *
- * Permission is hereby granted, free of charge, to any person obtaining a copy of
- * this software and associated documentation files (the "Software"), to deal in
- * the Software without restriction, including without limitation the rights to
- * use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
- * the Software, and to permit persons to whom the Software is furnished to do so,
- * subject to the following conditions:
- *
- * The above copyright notice and this permission notice shall be included in all
- * copies or substantial portions of the Software.
- *
- * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
- * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
- * FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
- * COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
- * IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
- * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
- */
-
 package io.kzonix.sird
 
-case class RoutePrefix(version: Int, prefix: String) {
+/** Mount point of a [[ProvidedRouter]].
+  *
+  * @param version
+  *   API version. `0` mounts the router unversioned; any value above `0` prepends a `vN` segment. Negative versions are
+  *   rejected rather than silently falling through to the unversioned branch.
+  * @param prefix
+  *   path the router is mounted under, with or without a leading slash.
+  */
+final case class RoutePrefix(version: Int, prefix: String):
+  require(version >= 0, s"Route version must be non-negative, but was $version")
+
   def isVersional: Boolean = version > 0
-}

@@ -21,40 +21,33 @@
 
 package io.kzonix.redprime.actors
 
-import akka.actor.Actor
-import akka.actor.Props
+import com.typesafe.scalalogging.StrictLogging
 import io.kzonix.redprime.actors.RedditUserOverviewActor.Tick
 import io.kzonix.redprime.client.RedditClient
-import io.kzonix.redprime.client.model.OAuthResponse
-import play.api.Logger
-
-import javax.inject.Inject
+import jakarta.inject.Inject
+import org.apache.pekko.actor.Actor
 import scala.concurrent.ExecutionContext
+import scala.util.Failure
+import scala.util.Success
 
-object RedditUserOverviewActor {
-
-  def props: Props = Props[RedditUserOverviewActor]()
-
+object RedditUserOverviewActor:
   case object Tick
-}
 
-class RedditUserOverviewActor @Inject() (
-    val rc: RedditClient
-)(implicit ec: ExecutionContext)
-    extends Actor {
+/** Refreshes the Reddit session on a schedule.
+  *
+  * A classic (untyped) Pekko actor, because Play's `PekkoGuiceSupport.bindActor` binds `pekko.actor.Actor` subclasses.
+  */
+final class RedditUserOverviewActor @Inject() (redditClient: RedditClient)(using ec: ExecutionContext)
+    extends Actor
+    with StrictLogging:
 
-  private val logger: Logger = Logger(this.getClass)
-
-  override def receive: Receive = {
+  override def receive: Receive =
     case Tick =>
-      rc.login().map { (maybeRes: Option[OAuthResponse]) =>
-         maybeRes match {
-           case Some(res) => logger.info(res.expiresIn.toString)
-           case None      => logger.info("Could not obtain access to the account.")
-         }
-         ()
-      }
-      ()
-  }
-
-}
+      // The failure branch matters: an unhandled failed Future here would be
+      // silently dropped, leaving a broken login indistinguishable from success.
+      redditClient
+        .login()
+        .onComplete:
+          case Success(Some(oauth)) => logger.info(s"Reddit session refreshed, expires in ${oauth.expiresIn}s")
+          case Success(None)        => logger.warn("Could not obtain access to the Reddit account")
+          case Failure(error)       => logger.error("Reddit login failed", error)

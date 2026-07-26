@@ -24,7 +24,8 @@ package io.kzonix.redprime.tasks
 import play.api.inject.SimpleModule
 import play.api.inject.bind
 
-class TasksModule
+/** Starts the scheduled tasks with the application. */
+final class TasksModule
     extends SimpleModule(
       bind[RedditUserOverviewTask].toSelf.eagerly()
     )
