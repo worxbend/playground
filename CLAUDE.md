@@ -4,61 +4,95 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Overview
 
-`kzonix` (WIP) is a multi-module Scala 2.13 sbt monorepo of reusable `components/` and runnable `applications/`. It is a personal playground: several declared modules are stubs, and three have no source directory at all — treat incompleteness as the status quo, not as bugs to file.
+Three small HTTP services on one sbt 2 build, each on a different Scala 3 web stack — Play 3, Cask, and Tapir on
+Vert.x. All three expose the same `GET /health` and `GET /greet/:name`, so the point of the repo is comparing the
+stacks side by side. Keep that parity when adding an endpoint to one of them.
 
 ## Commands
 
 ```bash
-sbt compile
-sbt test                     # what CI runs — see the caveat below
-sbt fmt / sbt fmtCheck       # scalafmt aliases over compile, test, and build sources
+sbt test      # every module; the root aggregates all three
+sbt verify    # fmtCheck + headerCheck + test — exactly what CI runs
+sbt fmt       # scalafmt, build sources included
 
-sbt index-service/compile    # project id == the backticked `lazy val` in build.sbt
-sbt index-service/run        # Play service, dev mode on :9000
-sbt cogwheel/test
-sbt "cogwheel/testOnly io.kzonix.cogwheel.RemoteConfigFactorySuite"
+sbt play-service/run     # :9000
+sbt cask-service/run     # :8080
+sbt tapir-service/run    # :8080
+
+sbt "cask-service/testOnly io.kzonix.cask.GreetingsSuite"
+sbt play-service/Docker/publishLocal
 ```
 
-**`sbt test` runs zero tests.** `components/common/cogwheel` holds the repo's only `src/test` tree, and it is not aggregated by the root — so CI's `sbt test` compiles the three services and executes nothing. Run `cogwheel/test` explicitly.
+Run `sbt verify` before handing work back — `headerCheck` fails on any file `sbt-header` has not stamped, and
+new files only get stamped once they have been compiled or `sbt headerCreate` has run.
 
-`.sdkmanrc` pins JDK 11 locally while CI builds on 17; if something reproduces only in CI, check that first. Local Kafka infra for the Akka sandboxes is in `docker/` — standalone compose stacks, not wired into the sbt build.
+## Toolchain constraints
 
-## Build structure
+- **sbt 2.0.3, Scala 3.8.4, JDK 25.** Build definitions under `project/` are themselves Scala 3.
+- **Play is pinned to `3.1.0-M9`, a milestone.** This is deliberate and load-bearing: `3.1.0-M9` is the first Play
+  line cross-published for sbt 2 (`sbt-plugin_sbt2_3`). The stable 3.0.x line ships only an sbt 1 plugin
+  (`sbt-plugin_2.12_1.0`). Going back to a stable Play means giving up sbt 2, so do not "fix" the milestone
+  version without raising that trade-off.
+- sbt 2 plugin artifacts use the `_sbt2_3` suffix, not `_3_2.0`. When checking whether a plugin supports sbt 2,
+  search Maven Central for `<plugin>_sbt2_3` — the wrong pattern makes supported plugins look unavailable.
+- **Play 3 uses `jakarta.inject`,** not `javax.inject`.
 
-`build.sbt` never writes a directory path or artifact name literally. Both are computed in `project/ProjectUtils.scala`:
+## Compiler flags that will bite
 
-- `ProjectPaths.<Applications|Components>.<Group>.{lib,api,impl,service,app}(Seq(...))` → the **directory**. Each `Seq` element is a path segment, so `Components.Play.lib(Seq("play", "play-underpressure"))` → `./components/playframework/play/play-underpressure`. `Applications.Root` has `projectMainPath = "./"`, which lands mid-path — `Root.service(Seq("index"))` literally yields `./applications/.//index-service`.
-- `ProjectNames.{service,app,lib,api}(name)` → the **artifact name**, suffixing `-service` / `-app` / `-impl` / `-api`.
+`project/BaseSettings.scala` sets, and `-Werror` promotes all of these to errors:
 
-So the sbt project id, the on-disk path, and `name :=` are three different strings (`sird-provider` / `components/playframework/sird-provider` / `sird-provider-impl`). Add modules through these helpers.
+- `-new-syntax -indent` — **indentation syntax is mandatory.** Braces are a compile error, not a style nit.
+- `-Wunused:all` — an unused import or parameter fails the build. This catches unused `using ec: ExecutionContext`
+  parameters, which are easy to leave behind when a method stops returning a `Future`.
+- `-Wvalue-discard` / `-Wnonunit-statement` — a discarded non-`Unit` value fails the build. Guice builder chains
+  (`bind[X].asEagerSingleton()`, `addBinding.to[Y]`) return values, so bind them to `val _ =`.
 
-Settings live in `project/BaseSettings.scala` (`defaultSettings`, `scala3`) and `project/Dependencies.scala` (`commonDependencies`, `testDependencies`, and a `Versions` object — put new dependency versions there rather than inlining them, though `build.sbt` does inline the AWS SSM and Azure Blob coordinates).
+`-Wnonunit-statement` is **removed in `Test` scope only** (`Test / scalacOptions`), because ScalaTest's `assert`
+returns an `Assertion` and every multi-assertion test would otherwise fail. Do not re-add it there.
 
-Things that bite:
+## Module layout
 
-- **`-Werror`, plus the full `-Wunused:*` / `-Wvalue-discard` / `-Xlint:*` sets.** An unused import or a discarded non-`Unit` value fails the build — hence the bare `()` closing each service's `routes/RouteModule.configure`. Applies to everything on `defaultSettings`; `akka-quickstart-service` applies only `commonDependencies`, so it silently gets none of these flags.
-- **`version` is a fresh timestamp per build** (`BaseSettings.Utils.Versions.version()`), so artifact versions are never stable across builds.
-- **Three declared projects have no directory**: `twitee-service`, `hresvelgr`, `scala3-sandbox`. `twitee-service` is aggregated by the root regardless. Don't reach for them as examples, and note `twitee-service` also copy-pastes `name := ProjectNames.service("redprime")`.
-- The root aggregates only the three `*-service` modules (transitively pulling `sird-provider`, `sird-provider-api`, `play-utile`). Anything else — `cogwheel`, the akka sandboxes, `play-underpressure*` — must be built by project id.
+Three flat modules under `applications/`, each `<name>-service`, all aggregated by the root so `sbt test` covers
+everything. There is no path/name DSL and no shared component library — earlier revisions had both, and both were
+removed. Add a module with a plain `project in file("applications/…")`.
 
-## Architecture: routing without `conf/routes`
+Dependencies live in `project/Dependencies.scala`. `Versions` is public, so `build.sbt` can reference it directly.
+Every module automatically gets pureconfig, quicklens, scala-logging and logback (main) plus scalatest, scalacheck,
+munit and munit-scalacheck (test) via `commonDependencies` / `testDependencies` — do not re-declare those per module.
 
-There is no `routes` file anywhere in the repo, and the Play modules enable `PlayService` rather than `PlayScala`, so there is no `app/` layout either — sources sit in plain `src/main/scala`.
+Two coordinate traps, both already resolved in `Dependencies.scala`:
 
-**To add an endpoint:** write the controller, add a `case` to the service's `ProvidedRouter`, and register it with `addBinding.to[...]` in that service's `routes/RouteModule`. Nothing else needs editing.
+- pureconfig publishes **no `pureconfig_3` aggregate**; Scala 3 derivation lives in `pureconfig-core`.
+- The `scala-garden/scala-logging` fork on Scaladex publishes nothing to Maven Central. The build uses
+  `com.typesafe.scala-logging`. Switching to the fork would require a non-Central resolver.
 
-The mechanism, assembled at runtime by the `sird-provider` component:
+## Per-service notes
 
-1. `play-utile`'s `reference.conf` sets `play.application.loader` to `io.kzonix.play.SimpleApplicationLoader`, a `GuiceApplicationLoader` that overrides the `Router` binding to `SirdProvider`. This is the binding that serves requests. (`sird-provider`'s own `reference.conf` also enables a `RouteModule` binding `RouterProvider` → `SirdProvider`, but nothing injects `RouterProvider`.)
-2. `SirdProvider` injects `Set[ProvidedRouter]` — everything contributed to the Guice multibinder — prefixes each via `Router.concatPrefix(httpConfig.context, router.prefix)`, and combines them with `reduce(_ orElse _)`. **`reduce` on an empty set throws**, so a service that pulls in `play-utile` but registers no routers dies at startup rather than serving 404s.
-3. Routers are `SimpleRouter with ProvidedRouter` using SIRD interpolation (`case GET(p"/index") => controller.index`) and declare `routePrefix` via `"/main".withVersion(1)` (`RouteVersioningHelper`); a non-zero version prepends a `v1` segment.
-4. Each service enables its `routes.RouteModule` under `play.modules.enabled` in `application.conf`.
+**play-service** — built on `PlayService` (minimal Play: no Twirl, no assets, no routes compiler) plus
+`PlayPekkoHttpServer` for the backend it deliberately omits. **There is no `conf/routes` file.** Routing is
+`AppRouter`, a plain `SimpleRouter` using SIRD interpolation, selected by `play.http.router` in `application.conf`.
+Adding an endpoint means: controller method → `case` in `AppRouter.routes`. Do not introduce a routes file; it would
+require the routes compiler that `PlayService` does not provide.
 
-The api/impl pairs (`sird-provider` + `-api`, `play-underpressure` + `-api`) follow one convention: contracts in `-api`, impl `dependsOn` **and** `aggregate`s it. `play-underpressure` is a placeholder — one empty `HealthProvider` trait, no implementation.
+Play's test helpers stream the result, so a suite calling `Helpers.call` needs both a `Materializer` in scope and
+`Helpers.writeableOf_AnyContentAsEmpty`. `AppRouterSuite` shows the working setup.
 
-`redprime-service` is the fullest worked example: WS client, typed actors, and scheduled tasks, each wired by its own Guice module listed in `application.conf`. `cogwheel` is the odd one out — a non-Play library that builds a Typesafe `Config` from AWS SSM Parameter Store, aggregating parse failures into a circe `DecodingFailure`. Its `Compile / run / mainClass` points at `io.kzonix.cogwheel.Main`, which does not exist.
+**cask-service** — routes are annotations on `cask.MainRoutes`. Handler bodies delegate to pure functions in
+`Greetings` so behaviour is testable without binding a socket; keep new logic there rather than inline in the
+annotated method.
 
-## Conventions
+**tapir-service** — endpoints are **values** in `Endpoints`, with the logic in separate pure functions and
+`Endpoints.all` binding them for the server. The server interpreter is Vert.x. Tests exercise the logic functions
+directly. Keep descriptions and logic separate so the same endpoints could drive a client or OpenAPI document.
 
-- Run `sbt fmt`; never hand-format. The aligned columns and dangling parens are scalafmt output, not preference.
-- `sbt-header` applies the MIT header to the Play components/apps and `akka-cluster-bootstrap-service`. `cogwheel` and `akka-quickstart-service` have no headers, the latter because it skips `defaultSettings` and so has no license metadata to derive one from. Match whatever the surrounding module already does.
+## Configuration
+
+`application.conf` files hold **overrides only**. Earlier revisions inlined verbatim copies of upstream reference
+configuration, which meant every upstream change had to be merged by hand — don't reintroduce that.
+
+Secrets and bindings come from the environment with development-only defaults: `APPLICATION_SECRET`,
+`ALLOWED_HOSTS` (play), `HTTP_HOST` / `HTTP_PORT` (cask, tapir), `BUILD_VERSION` (all). CSRF is disabled on
+play-service on purpose: it is API-only, with no cookie session and no browser-submitted forms.
+
+`version` comes from `BUILD_VERSION` and defaults to `0.1.0-SNAPSHOT`. It used to be a per-build timestamp, so no
+two builds were comparable; keep it deterministic.
