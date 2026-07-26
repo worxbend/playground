@@ -1,153 +1,50 @@
-import scala.language.postfixOps
+/** Derives module directories and artifact names so `build.sbt` never hardcodes either.
+  *
+  * The three identifiers for a module stay distinct on purpose:
+  *   - the sbt project id — the `lazy val` in `build.sbt`
+  *   - the on-disk directory — [[ProjectPaths]]
+  *   - the published artifact name — [[ProjectNames]]
+  */
+object ProjectUtils:
 
-object ProjectUtils {
+  object ProjectNames:
+    def service(name: String): String = s"$name-service"
+    def app(name: String): String     = s"$name-app"
+    def lib(name: String): String     = s"$name-impl"
+    def api(name: String): String     = s"$name-api"
 
-  object ProjectNames {
+  object ProjectPaths:
 
-    def service(serviceName: String): String = normalizedName(
-      "service",
-      serviceName
-    )
+    /** Joins non-empty segments only, so a group with no sub-directory cannot inject an empty `//` segment. */
+    private def join(segments: Seq[String]): String =
+      segments.filter(_.nonEmpty).mkString("/")
 
-    def app(serviceName: String): String =
-      normalizedName(
-        "app",
-        serviceName
-      )
+    sealed trait Group:
+      protected def basePath: String
+      protected def groupPath: String
 
-    def lib(libraryName: String): String =
-      normalizedName(
-        "impl",
-        libraryName
-      )
+      private def path(segments: Seq[String], suffix: String): String =
+        join(basePath +: groupPath +: segments) + suffix
 
-    def api(libraryName: String): String =
-      normalizedName(
-        "api",
-        libraryName
-      )
+      def api(segments: String*): String     = path(segments, "-api")
+      def impl(segments: String*): String    = path(segments, "-impl")
+      def lib(segments: String*): String     = path(segments, "")
+      def service(segments: String*): String = path(segments, "-service")
+      def app(segments: String*): String     = path(segments, "-app")
 
-    private def normalizedName(typeName: String = "app", name: String): String =
-      s"$name-$typeName"
-  }
+    object Components:
 
-  object ProjectPaths {
-    // build.sbt relative root directory
-    val root = "./"
+      final case class ComponentGroup(groupPath: String) extends Group:
+        protected val basePath: String = "components"
 
-    def normalizedPath(args: Seq[String]): String = s"${ args.mkString("/") }"
+      val Common: ComponentGroup = ComponentGroup("common")
+      val Play: ComponentGroup   = ComponentGroup("playframework")
 
-    trait ProjectType {
-      protected val basePath: String
+    object Applications:
 
-    }
+      final case class ApplicationGroup(groupPath: String) extends Group:
+        protected val basePath: String = "applications"
 
-    trait GeneralComponent extends Project {
-      override val basePath: String = "components"
-    }
-
-    trait Application extends Project {
-      override val basePath: String = "applications"
-    }
-
-    trait Project extends ProjectType {
-
-      protected val projectMainPath: String
-
-      def api(args: Seq[String]): String =
-        root + normalizedPath(
-          List(
-            basePath,
-            projectMainPath
-          ) ::: (args toList)
-        ) + "-api"
-
-      def impl(args: Seq[String]): String =
-        root + normalizedPath(
-          List(
-            basePath,
-            projectMainPath
-          ) ::: (args toList)
-        ) + "-impl"
-
-      def lib(args: Seq[String]): String =
-        root + normalizedPath(
-          List(
-            basePath,
-            projectMainPath
-          ) ::: (args toList)
-        )
-
-      def service(args: Seq[String]): String =
-        root + normalizedPath(
-          List(
-            basePath,
-            projectMainPath
-          ) ::: (args toList)
-        ) + "-service"
-
-      def app(args: Seq[String]): String =
-        root + normalizedPath(
-          List(
-            basePath,
-            projectMainPath
-          ) ::: (args toList)
-        ) + "-app"
-
-    }
-
-    object Components {
-
-      object Common extends GeneralComponent {
-        override val projectMainPath: String = "common"
-      }
-
-      object Play extends GeneralComponent {
-        override val projectMainPath: String = "playframework"
-      }
-
-      object Akka extends GeneralComponent {
-        override val projectMainPath: String = "akka"
-      }
-
-      object Udash extends GeneralComponent {
-        override val projectMainPath: String = "udash"
-      }
-
-      object ScalaFX extends GeneralComponent {
-        override val projectMainPath: String = "scala-fx"
-      }
-
-      object VertX extends GeneralComponent {
-        override val projectMainPath: String = "vert-x"
-      }
-
-      object Http4s extends GeneralComponent {
-        override val projectMainPath: String = "http4s"
-      }
-
-      object PicoliCLI extends GeneralComponent {
-        override val projectMainPath: String = "picoli-cli"
-      }
-
-    }
-
-    object Applications {
-
-      object Common extends Application {
-        override val projectMainPath: String = "common"
-      }
-
-      object Sandbox extends Application {
-        override val projectMainPath: String = "sandbox"
-      }
-
-      object Root extends Application {
-        override val projectMainPath: String = "./"
-      }
-
-    }
-
-  }
-
-}
+      /** Applications that live directly under `applications/`, with no group sub-directory. */
+      val Root: ApplicationGroup    = ApplicationGroup("")
+      val Sandbox: ApplicationGroup = ApplicationGroup("sandbox")

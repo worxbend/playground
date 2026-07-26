@@ -1,153 +1,71 @@
-import sbt.Keys._
-import sbt.ModuleID
-import sbt.Setting
-import sbt._
+import sbt.*
+import sbt.Keys.*
 
-object Dependencies {
-  import Test._
-  import Versions._
+/** Central dependency catalogue.
+  *
+  * `Versions` is deliberately public: `build.sbt` references it directly for the coordinates that are not part of a
+  * named group.
+  */
+object Dependencies:
 
-  def commonDependencies: Seq[Setting[_]] =
+  object Versions:
+    val Play             = "3.1.0-M9"
+    val Pekko            = "1.6.0"
+    val PekkoKafka       = "1.1.0"
+    val KafkaClients     = "4.3.1"
+    val ScalaGuice       = "7.0.0"
+    val ScalaLogging     = "3.9.6"
+    val Logback          = "1.5.38"
+    val Circe            = "0.14.16"
+    val AwsSdk           = "2.49.3"
+    val AzureStorageBlob = "12.35.0"
+    // Test
+    val ScalaTest        = "3.2.20"
+    val ScalaMock        = "7.5.5"
+
+  /** Applied to every module: structured logging only. Everything else is opted into per module. */
+  def commonDependencies: Seq[Setting[?]] =
     Seq(
       libraryDependencies ++= Seq(
-        playJson,
-        scalaGuice,
-        scalaLogging
+        "com.typesafe.scala-logging" %% "scala-logging"   % Versions.ScalaLogging,
+        "ch.qos.logback"              % "logback-classic" % Versions.Logback
       )
-        ++ monix
-        ++ circe
-        ++ pureConfig
     )
 
-  def testDependencies: Seq[Setting[_]] =
+  def testDependencies: Seq[Setting[?]] =
     Seq(
-      libraryDependencies ++=
-        (Seq(
-          scalaTest,
-          scalatic,
-          scalaCheck,
-          scalaMock
-        ) ++
-          specs2)
-          .map(testDependency)
+      libraryDependencies ++= Seq(
+        "org.scalatest" %% "scalatest" % Versions.ScalaTest,
+        "org.scalamock" %% "scalamock" % Versions.ScalaMock
+      ).map(_ % Test)
     )
 
-  val playJson = "com.typesafe.play" %% "play-json" % PlayJson
+  val scalaGuice: ModuleID = "net.codingwell" %% "scala-guice" % Versions.ScalaGuice
 
-  val scalaGuice     = "net.codingwell"             %% "scala-guice"       % ScalaGuice
-  val scalaLogging   = "com.typesafe.scala-logging" %% "scala-logging"     % ScalaLogging
-  val enumeratum     = "com.beachape"               %% "enumeratum"        % Enumeratum
-  val alpakkaKafka   = "com.typesafe.akka"          %% "akka-stream-kafka" % AlpakkaKafka
-  val kafkaClients   = "org.apache.kafka"            % "kafka-clients"     % KafkaClients
-  val logbackLogging = "ch.qos.logback"              % "logback-classic"   % Logback
+  /** Pekko replaces Akka throughout; Play 3 is itself built on Pekko. */
+  val pekko: Seq[ModuleID] = Seq(
+    "pekko-actor-typed",
+    "pekko-stream",
+    "pekko-slf4j",
+    "pekko-serialization-jackson"
+  ).map("org.apache.pekko" %% _ % Versions.Pekko)
 
-  val akka: Seq[ModuleID] = Seq(
-    "com.typesafe.akka" %% "akka-stream"                % Akka,
-    "com.typesafe.akka" %% "akka-actor-typed"           % Akka,
-    "com.typesafe.akka" %% "akka-slf4j"                 % Akka,
-    "com.typesafe.akka" %% "akka-serialization-jackson" % Akka
+  val pekkoTest: Seq[ModuleID] = Seq(
+    "org.apache.pekko" %% "pekko-actor-testkit-typed" % Versions.Pekko,
+    "org.apache.pekko" %% "pekko-stream-testkit"      % Versions.Pekko
+  ).map(_ % Test)
+
+  val pekkoKafka: Seq[ModuleID] = Seq(
+    "org.apache.pekko" %% "pekko-connectors-kafka" % Versions.PekkoKafka,
+    "org.apache.kafka"  % "kafka-clients"          % Versions.KafkaClients
   )
-
-  val config = Seq(
-    "com.typesafe" % "config" % TypesafeConfig
-  )
-
-  val akkaTest: Seq[ModuleID] = Seq(
-    "com.typesafe.akka" %% "akka-actor-testkit-typed" % Akka,
-    "com.typesafe.akka" %% "akka-stream-testkit"      % Akka
-  ).map(testDependency)
 
   val circe: Seq[ModuleID] = Seq(
     "circe-core",
     "circe-parser",
-    "circe-generic",
-    "circe-generic-extras",
-    "circe-literal",
-    "circe-jawn",
-    "circe-testing",
-    "circe-shapes",
-    "circe-refined" // ?
-  ).map(artifact => "io.circe" %% artifact % Circe)
+    "circe-generic"
+  ).map("io.circe" %% _ % Versions.Circe)
 
-  val monix: Seq[ModuleID] = Seq(
-    "monix-eval",
-    "monix-reactive",
-    "monix-execution",
-    "monix-tail"
-  ).map(artifact => "io.monix" %% artifact % Monix)
+  val awsSsm: ModuleID = "software.amazon.awssdk" % "ssm" % Versions.AwsSdk
 
-  val pureConfig: Seq[ModuleID] = Seq(
-    "pureconfig",
-    "pureconfig-cats",
-    "pureconfig-circe"
-  ).map(artifact => "com.github.pureconfig" %% artifact % PureConfig)
-
-  val micrometerPrometheus: Seq[ModuleID] = Seq(
-    "io.micrometer" % "micrometer-registry-prometheus" % MicrometerPrometheus,
-    "io.micrometer" % "micrometer-core"                % MicrometerPrometheus
-  )
-
-  val atomix: Seq[ModuleID] = Seq(
-    "io.atomix" % "atomix"                % Atomix,
-    "io.atomix" % "atomix-raft"           % Atomix,
-    "io.atomix" % "atomix-primary-backup" % Atomix,
-    "io.atomix" % "atomix-gossip"         % Atomix
-  )
-
-  val cats: Seq[ModuleID] = Seq(
-    "org.typelevel" %% "cats-core"   % Cats,
-    "org.typelevel" %% "cats-effect" % CatsEffect,
-    "org.typelevel" %% "cats-mtl"    % CatsMtl
-  )
-
-  object Test {
-
-    val scalaMock  = "org.scalamock"  %% "scalamock"  % ScalaMock
-    val scalaTest  = "org.scalatest"  %% "scalatest"  % ScalaTest
-    val scalatic   = "org.scalactic"  %% "scalactic"  % ScalaTest
-    val scalaCheck = "org.scalacheck" %% "scalacheck" % ScalaCheck
-
-    val specs2                               = Seq(
-      "specs2-mock",
-      "specs2-shapeless",
-      "specs2-fp",
-      "specs2-scalacheck",
-      "specs2-tests",
-      "specs2-matcher-extra",
-      "specs2-matcher",
-      "specs2-core",
-      "specs2-common",
-      "specs2-cats"
-    ).map(artifact => "org.specs2" %% artifact % Specs2)
-
-    def testDependency: ModuleID => ModuleID = (module: ModuleID) => module % "test"
-
-  }
-
-  private[Dependencies] object Versions {
-    val TypesafeConfig       = "1.4.1"
-    val ScalaGuice           = "5.0.1"
-    val PlayJson             = "2.9.2"
-    val Circe                = "0.14.0"
-    val Monix                = "3.4.0"
-    val Cats                 = "2.6.1"
-    val CatsEffect           = "3.2.1"
-    val CatsMtl              = "1.2.1"
-    val PureConfig           = "0.15.0"
-    val ScalaLogging         = "3.9.4"
-    val Enumeratum           = "1.7.0"
-    // Test dependencies
-    val ScalaMock            = "5.1.0"
-    val ScalaCheck           = "1.15.4"
-    val ScalaTest            = "3.2.9"
-    val Specs2               = "4.12.0"
-    val Akka                 = "2.6.15"
-    val Jackson              = "2.12.4"
-    val AlpakkaKafka         = "2.1.1"
-    val KafkaClients         = "2.7.0"
-    val Logback              = "1.2.5"
-    val MicrometerPrometheus = "1.7.4"
-    val Atomix               = "3.1.10"
-  }
-
-}
+  val azureStorageBlob: ModuleID = "com.azure" % "azure-storage-blob" % Versions.AzureStorageBlob
