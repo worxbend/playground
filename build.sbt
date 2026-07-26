@@ -68,4 +68,6 @@ lazy val `tapir-service` = (project in file("applications/tapir-service"))
 
 addCommandAlias("fmt", "; scalafmtSbt; scalafmtAll")
 addCommandAlias("fmtCheck", "; scalafmtSbtCheck; scalafmtCheckAll")
-addCommandAlias("verify", "; fmtCheck; headerCheck; test")
+// `Test/test` is spelled out: inside an alias, bare `test` resolves to `testQuick`,
+// which runs nothing at all after a clean — so `verify` passed without testing.
+addCommandAlias("verify", "; fmtCheck; headerCheck; Test/test")
