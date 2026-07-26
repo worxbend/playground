@@ -1,0 +1,46 @@
+site_name: kzonix event observatory
+site_description: A CloudEvents observatory for smart-home and IoT telemetry
+repo_url: https://github.com/worxbend/playground
+edit_uri: edit/main/docs/
+
+# MkDocs Material rather than an sbt doc-site plugin: neither laika-sbt,
+# sbt-site nor sbt-ghpages publishes an sbt 2 artifact (see ADR §3.1), so the
+# Scala-native options are simply unavailable on this toolchain. Scaladoc is
+# built separately by sbt and copied under /api.
+theme:
+  name: material
+  features:
+    - navigation.sections
+    - navigation.top
+    - content.code.copy
+    - search.suggest
+  palette:
+    - media: "(prefers-color-scheme: light)"
+      scheme: default
+      toggle:
+        icon: material/weather-night
+        name: Switch to dark mode
+    - media: "(prefers-color-scheme: dark)"
+      scheme: slate
+      toggle:
+        icon: material/weather-sunny
+        name: Switch to light mode
+
+markdown_extensions:
+  - admonition
+  - attr_list
+  - toc:
+      permalink: true
+  - pymdownx.highlight
+  - pymdownx.superfences:
+      custom_fences:
+        - name: mermaid
+          class: mermaid
+          format: !!python/name:pymdownx.superfences.fence_code_format
+
+nav:
+  - Overview: index.md
+  - Architecture:
+      - Decision record: adr/0000-architecture.md
+  - API docs:
+      - Scaladoc: api/index.html

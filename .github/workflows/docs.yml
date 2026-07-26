@@ -1,0 +1,81 @@
+name: Docs
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Pages deployment needs these; the token is otherwise read-only.
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Never run two deployments at once, but let a queued one finish rather than
+# cancelling it — a cancelled deploy can leave Pages on a stale build.
+concurrency:
+  group: pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 25
+          cache: sbt
+
+      - uses: sbt/setup-sbt@v1
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install MkDocs
+        run: pip install "mkdocs==1.6.1" "mkdocs-material==9.7.7"
+
+      # Scaladoc per module, published under stable /api/<module> URLs.
+      - name: Build Scaladoc
+        run: sbt -batch doc
+
+      - name: Assemble site
+        run: |
+          mkdocs build --strict --site-dir _site
+          mkdir -p _site/api
+          for m in kernel eventing persistence observability; do
+            src="modules/$m/target/scala-3.8.4/api"
+            [ -d "$src" ] && cp -r "$src" "_site/api/$m"
+          done
+          for a in ferrite cobalt wolfram; do
+            src="applications/$a/target/scala-3.8.4/api"
+            [ -d "$src" ] && cp -r "$src" "_site/api/$a"
+          done
+          # Landing page for /api, since MkDocs does not generate one.
+          {
+            echo '<!doctype html><meta charset="utf-8"><title>Scaladoc</title>'
+            echo '<h1>Scaladoc</h1><ul>'
+            for d in _site/api/*/; do
+              n=$(basename "$d"); echo "<li><a href=\"$n/index.html\">$n</a></li>"
+            done
+            echo '</ul>'
+          } > _site/api/index.html
+
+      - uses: actions/configure-pages@v5
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    runs-on: ubuntu-latest
+    needs: build
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
