@@ -51,8 +51,8 @@ object Meters:
     /** Replica. See [[Telemetry.commonTags]] for why this is not applied by default. */
     val Instance: String = "instance"
 
-    /** CloudEvents `type`. Bounded by the event taxonomy, so safe; still capped in [[Telemetry]] against a
-      * misbehaving producer inventing types.
+    /** CloudEvents `type`. Bounded by the event taxonomy, so safe; still capped in [[Telemetry]] against a misbehaving
+      * producer inventing types.
       */
     val EventType: String = "type"
 
@@ -130,9 +130,8 @@ object Meters:
 
   // --- wolfram: ingestion ------------------------------------------------------------------------------------------
 
-  /** Counter. Accepted CloudEvents, tagged [[TagKeys.EventType]] and [[TagKeys.Mode]]. Incremented *after*
-    * validation, so `received - rejected` is not the arrival rate; that is intentional — arrival rate is
-    * `http.server.requests`.
+  /** Counter. Accepted CloudEvents, tagged [[TagKeys.EventType]] and [[TagKeys.Mode]]. Incremented *after* validation,
+    * so `received - rejected` is not the arrival rate; that is intentional — arrival rate is `http.server.requests`.
     */
   val IngestReceived: String = "ingest.events.received"
 
@@ -148,8 +147,8 @@ object Meters:
 
   // --- cobalt: consumption -----------------------------------------------------------------------------------------
 
-  /** Distribution summary. Records per poll. Small batches under load mean the consumer is starved, not saturated —
-    * a distinction `consume.records.persisted` alone cannot make.
+  /** Distribution summary. Records per poll. Small batches under load mean the consumer is starved, not saturated — a
+    * distinction `consume.records.persisted` alone cannot make.
     */
   val ConsumeBatchSize: String = "consume.batch.size"
 
@@ -176,9 +175,9 @@ object Meters:
 
   // --- shared: the event taxonomy ---------------------------------------------------------------------------------
 
-  /** Counter. A CloudEvents `type` that decoded structurally but has no domain refinement, tagged
-    * [[TagKeys.EventType]] and [[TagKeys.Reason]]. Emitted by whichever service met it first, which is why it lives
-    * here rather than under an `ingest.` or `consume.` prefix.
+  /** Counter. A CloudEvents `type` that decoded structurally but has no domain refinement, tagged [[TagKeys.EventType]]
+    * and [[TagKeys.Reason]]. Emitted by whichever service met it first, which is why it lives here rather than under an
+    * `ingest.` or `consume.` prefix.
     */
   val EventUnrecognised: String = "event.unrecognised"
 

@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Integration-test logging (ADR-0000 section 7.3).
+
+  Testcontainers and docker-java log every wire frame at DEBUG. Without these three
+  loggers pinned to WARN, the actual test output is buried under container chatter
+  and a failing assertion is impossible to find.
+
+  HikariCP is pinned too: a pool that opens and closes once per suite otherwise
+  narrates every connection at DEBUG.
+-->
+<configuration>
+  <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder>
+      <pattern>%d{HH:mm:ss.SSS} %-5level %logger{24} - %msg%n</pattern>
+    </encoder>
+  </appender>
+
+  <logger name="org.testcontainers" level="WARN"/>
+  <logger name="com.github.dockerjava" level="WARN"/>
+  <logger name="tc" level="WARN"/>
+  <logger name="com.zaxxer.hikari" level="WARN"/>
+  <logger name="org.flywaydb" level="INFO"/>
+
+  <root level="INFO">
+    <appender-ref ref="STDOUT"/>
+  </root>
+</configuration>

@@ -21,11 +21,10 @@
 
 package io.kzonix.kernel.event
 
+import io.circe.Json
 import java.time.Instant
 import java.time.OffsetDateTime
 import java.time.ZoneOffset
-
-import io.circe.Json
 import org.scalacheck.Arbitrary
 import org.scalacheck.Gen
 
@@ -50,7 +49,11 @@ object Generators:
   val genText: Gen[String] =
     Gen
       .listOf(Gen.oneOf(
-        Gen.alphaNumChar, Gen.const(' '), Gen.const('-'), Gen.const('/'), Gen.const('ä'),
+        Gen.alphaNumChar,
+        Gen.const(' '),
+        Gen.const('-'),
+        Gen.const('/'),
+        Gen.const('ä'),
         Gen.const('中')
       ))
       .map(_.mkString)
@@ -74,10 +77,11 @@ object Generators:
       Gen.frequency(
         6 -> scalar,
         2 -> Gen.choose(0, 3).flatMap(n => Gen.listOfN(n, genJson(depth - 1))).map(Json.fromValues),
-        2 -> Gen
-          .choose(0, 3)
-          .flatMap(n => Gen.listOfN(n, Gen.zip(genKey, genJson(depth - 1))))
-          .map(Json.fromFields)
+        2 ->
+          Gen
+            .choose(0, 3)
+            .flatMap(n => Gen.listOfN(n, Gen.zip(genKey, genJson(depth - 1))))
+            .map(Json.fromFields)
       )
 
   val genEventId: Gen[EventId] =
@@ -112,8 +116,8 @@ object Generators:
   val genTime: Gen[OffsetDateTime] =
     for
       epochSecond <- Gen.choose(0L, 4102444800L)
-      nano        <- Gen.choose(0, 999999999)
-      quarters    <- Gen.choose(-56, 56)
+      nano <- Gen.choose(0, 999999999)
+      quarters <- Gen.choose(-56, 56)
     yield OffsetDateTime.ofInstant(
       Instant.ofEpochSecond(epochSecond, nano.toLong),
       ZoneOffset.ofTotalSeconds(quarters * 900)
@@ -130,7 +134,7 @@ object Generators:
   val genSchemaRef: Gen[SchemaRef] =
     Gen.oneOf(
       for
-        name  <- Gen.oneOf("telemetry", "state-changed", "alarm", "unknown")
+        name <- Gen.oneOf("telemetry", "state-changed", "alarm", "unknown")
         major <- Gen.choose(1, 3)
         minor <- Gen.choose(0, 9)
         patch <- Gen.choose(0, 9)
@@ -156,23 +160,24 @@ object Generators:
   val genPayload: Gen[Payload] =
     Gen.frequency(
       6 -> genJson(3).map(Payload.Structured.apply),
-      2 -> Gen
-        .listOf(Arbitrary.arbitrary[Byte])
-        .map(bytes => Payload.Opaque(Binary.copyOf(bytes.toArray), ContentType.OctetStream)),
+      2 ->
+        Gen
+          .listOf(Arbitrary.arbitrary[Byte])
+          .map(bytes => Payload.Opaque(Binary.copyOf(bytes.toArray), ContentType.OctetStream)),
       1 -> Gen.const(Payload.Empty)
     )
 
   val genEnvelope: Gen[Envelope] =
     for
-      id          <- genEventId
-      source      <- genSource
-      eventType   <- genEventType
-      time        <- Gen.option(genTime)
-      subject     <- Gen.option(genSubject)
+      id <- genEventId
+      source <- genSource
+      eventType <- genEventType
+      time <- Gen.option(genTime)
+      subject <- Gen.option(genSubject)
       contentType <- Gen.option(genContentType)
-      schema      <- Gen.option(genSchemaRef)
-      extensions  <- genExtensions
-      payload     <- genPayload
+      schema <- Gen.option(genSchemaRef)
+      extensions <- genExtensions
+      payload <- genPayload
     yield Envelope(id, source, eventType, time, subject, contentType, schema, extensions, payload).canonical
 
   /** Envelopes the observation registry is expected to recognise, so the totality property is not the only thing
@@ -180,9 +185,9 @@ object Generators:
     */
   val genKnownEnvelope: Gen[Envelope] =
     for
-      base    <- genEnvelope
+      base <- genEnvelope
       subject <- genSubject
-      known   <- Gen.oneOf(knownPayloads)
+      known <- Gen.oneOf(knownPayloads)
     yield base.copy(
       eventType = force(EventType(known._1)),
       subject = Some(subject),
@@ -194,15 +199,15 @@ object Generators:
   private val knownPayloads: Vector[(String, Json)] = Vector(
     EventTypes.Telemetry -> Json.obj(
       "metric" -> Json.fromString("temperature"),
-      "value"  -> Json.fromDoubleOrNull(21.5),
-      "unit"   -> Json.fromString("celsius")
+      "value" -> Json.fromDoubleOrNull(21.5),
+      "unit" -> Json.fromString("celsius")
     ),
     EventTypes.StateChanged -> Json.obj(
       "from" -> Json.fromString("closed"),
-      "to"   -> Json.fromString("open")
+      "to" -> Json.fromString("open")
     ),
     EventTypes.Alarm -> Json.obj(
       "severity" -> Json.fromString("critical"),
-      "message"  -> Json.fromString("smoke detected")
+      "message" -> Json.fromString("smoke detected")
     )
   )

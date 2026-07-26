@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Integration-test logging (ADR-0000 section 7.3).
+
+  The Kafka clients narrate every configuration key, every metadata refresh and every
+  coordinator discovery at INFO. A suite that opens a producer, a consumer and an
+  AdminClient per test therefore prints several hundred lines of client chatter around
+  each assertion, and a failure becomes impossible to find. They are pinned to WARN,
+  which still surfaces retries, disconnects and authentication problems — the client
+  messages that actually explain a failing broker test.
+
+  The Testcontainers loggers are listed in advance of the switch documented in
+  KafkaWireIT: docker-java logs every wire frame at DEBUG, and adding those lines after
+  the fact is invariably done in the middle of debugging something else.
+-->
+<configuration>
+  <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder>
+      <pattern>%d{HH:mm:ss.SSS} %-5level %logger{24} - %msg%n</pattern>
+    </encoder>
+  </appender>
+
+  <logger name="org.apache.kafka" level="WARN"/>
+  <logger name="org.apache.kafka.clients.consumer.ConsumerConfig" level="ERROR"/>
+  <logger name="org.apache.kafka.clients.producer.ProducerConfig" level="ERROR"/>
+  <logger name="org.apache.kafka.clients.admin.AdminClientConfig" level="ERROR"/>
+  <logger name="org.testcontainers" level="WARN"/>
+  <logger name="com.github.dockerjava" level="WARN"/>
+  <logger name="tc" level="WARN"/>
+
+  <root level="INFO">
+    <appender-ref ref="STDOUT"/>
+  </root>
+</configuration>

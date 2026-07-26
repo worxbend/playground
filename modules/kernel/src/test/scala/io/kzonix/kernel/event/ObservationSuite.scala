@@ -21,10 +21,9 @@
 
 package io.kzonix.kernel.event
 
-import scala.util.Try
-
 import io.circe.Json
 import org.scalacheck.Prop.forAll
+import scala.util.Try
 
 /** Refinement into the known-type ADT.
   *
@@ -79,8 +78,8 @@ final class ObservationSuite extends munit.ScalaCheckSuite:
       Some("thermo-1"),
       Json.obj(
         "metric" -> Json.fromString("temperature"),
-        "value"  -> Json.fromDoubleOrNull(21.5),
-        "unit"   -> Json.fromString("celsius")
+        "value" -> Json.fromDoubleOrNull(21.5),
+        "unit" -> Json.fromString("celsius")
       )
     )
     assertEquals(
@@ -122,8 +121,8 @@ final class ObservationSuite extends munit.ScalaCheckSuite:
       None,
       Json.obj(
         "deviceId" -> Json.fromString("door-9"),
-        "from"     -> Json.fromString("locked"),
-        "to"       -> Json.fromString("unlocked")
+        "from" -> Json.fromString("locked"),
+        "to" -> Json.fromString("unlocked")
       )
     )
     assertEquals(
@@ -158,8 +157,8 @@ final class ObservationSuite extends munit.ScalaCheckSuite:
 
   private val telemetryData = Json.obj(
     "metric" -> Json.fromString("temperature"),
-    "value"  -> Json.fromDoubleOrNull(21.5),
-    "unit"   -> Json.fromString("celsius")
+    "value" -> Json.fromDoubleOrNull(21.5),
+    "unit" -> Json.fromString("celsius")
   )
 
   test("a registered major still decodes when the minor and patch move"):

@@ -22,7 +22,6 @@
 package io.kzonix.observability
 
 import java.net.InetAddress
-
 import scala.util.Try
 
 /** Identity of the running process, as every signal sees it.

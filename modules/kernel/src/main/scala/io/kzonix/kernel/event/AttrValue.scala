@@ -21,10 +21,9 @@
 
 package io.kzonix.kernel.event
 
+import io.circe.Json
 import java.net.URI
 import java.time.OffsetDateTime
-
-import io.circe.Json
 
 /** The CloudEvents attribute type system, as an ADT rather than `Map[String, String]`.
   *

@@ -21,11 +21,10 @@
 
 package io.kzonix.kernel.event
 
-import scala.util.control.NonFatal
-
 import io.circe.Decoder
 import io.circe.DecodingFailure
 import io.kzonix.kernel.search.Severity
+import scala.util.control.NonFatal
 
 /** The reverse-DNS `type` strings this build recognises.
   *
@@ -34,9 +33,9 @@ import io.kzonix.kernel.search.Severity
   */
 object EventTypes:
 
-  val Telemetry: String     = "io.kzonix.iot.telemetry"
-  val StateChanged: String  = "io.kzonix.iot.state-changed"
-  val Alarm: String         = "io.kzonix.iot.alarm"
+  val Telemetry: String = "io.kzonix.iot.telemetry"
+  val StateChanged: String = "io.kzonix.iot.state-changed"
+  val Alarm: String = "io.kzonix.iot.alarm"
 
 /** The strongly typed reading refined out of an [[Envelope]].
   *
@@ -79,9 +78,9 @@ object Observation:
     * comes from the envelope's `subject`, not from `data`, so it cannot be recovered from the payload cursor alone.
     */
   private val registry: Map[(String, Int), Subject => Decoder[Observation]] = Map(
-    (EventTypes.Telemetry, DefaultMajor)    -> telemetryDecoder,
+    (EventTypes.Telemetry, DefaultMajor) -> telemetryDecoder,
     (EventTypes.StateChanged, DefaultMajor) -> stateChangedDecoder,
-    (EventTypes.Alarm, DefaultMajor)        -> alarmDecoder
+    (EventTypes.Alarm, DefaultMajor) -> alarmDecoder
   )
 
   /** Total. Never throws, never returns `Either`.
@@ -130,22 +129,22 @@ object Observation:
     Decoder.instance: cursor =>
       for
         metric <- cursor.get[String]("metric")
-        value  <- cursor.get[Double]("value")
-        unit   <- cursor.get[String]("unit")
+        value <- cursor.get[Double]("value")
+        unit <- cursor.get[String]("unit")
       yield Telemetry(device, metric, value, unit)
 
   private def stateChangedDecoder(device: Subject): Decoder[Observation] =
     Decoder.instance: cursor =>
       for
         from <- cursor.get[String]("from")
-        to   <- cursor.get[String]("to")
+        to <- cursor.get[String]("to")
       yield StateChanged(device, from, to)
 
   private def alarmDecoder(device: Subject): Decoder[Observation] =
     Decoder.instance: cursor =>
       for
         severity <- severityRank.tryDecode(cursor.downField("severity"))
-        message  <- cursor.get[String]("message")
+        message <- cursor.get[String]("message")
       yield Alarm(device, severity, message)
 
   /** Producers spell severity either way, and the DDL of ADR §5 stores the text while indexing the rank; accepting both

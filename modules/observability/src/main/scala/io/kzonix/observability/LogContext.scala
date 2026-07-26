@@ -21,13 +21,12 @@
 
 package io.kzonix.observability
 
-import scala.jdk.CollectionConverters.*
-
 import io.opentelemetry.api.trace.Span
 import io.opentelemetry.api.trace.SpanContext
 import net.logstash.logback.argument.StructuredArgument
 import net.logstash.logback.argument.StructuredArguments
 import org.slf4j.MDC
+import scala.jdk.CollectionConverters.*
 
 /** Correlation between the log stream and the trace stream (ADR §7.3).
   *
@@ -42,8 +41,8 @@ import org.slf4j.MDC
   */
 object LogContext:
 
-  /** MDC key for the trace id. Snake case because it lands in JSON as a field name and the log backends this feeds
-    * (and the OTel log data model) spell it this way.
+  /** MDC key for the trace id. Snake case because it lands in JSON as a field name and the log backends this feeds (and
+    * the OTel log data model) spell it this way.
     */
   val TraceIdKey: String = "trace_id"
 
@@ -86,8 +85,8 @@ object LogContext:
         case (key, Some(value)) => MDC.put(key, value)
         case (key, None)        => MDC.remove(key)
 
-  /** The current trace id, if a valid one is in scope. Useful for echoing a correlation id back to a caller in an
-    * error response so a user-reported failure can be found in the trace store.
+  /** The current trace id, if a valid one is in scope. Useful for echoing a correlation id back to a caller in an error
+    * response so a user-reported failure can be found in the trace store.
     */
   def currentTraceId: Option[String] =
     Some(Span.current().getSpanContext).filter(_.isValid).map(_.getTraceId)

@@ -21,11 +21,9 @@
 
 package io.kzonix.observability
 
-import java.util.concurrent.TimeUnit
-
-import scala.jdk.CollectionConverters.*
-
 import io.micrometer.core.instrument.Tags
+import java.util.concurrent.TimeUnit
+import scala.jdk.CollectionConverters.*
 
 /** The registry, the binders and the exposition.
   *
@@ -40,8 +38,8 @@ final class TelemetrySuite extends munit.FunSuite:
 
   private val config = TelemetryConfig(serviceName = "ferrite", serviceVersion = "1.2.3", instanceId = "pod-7")
 
-  /** Each test gets its own registry: meter filters are applied at registration time, so a registry shared across
-    * tests would make the assertions depend on the order the tests happened to run in.
+  /** Each test gets its own registry: meter filters are applied at registration time, so a registry shared across tests
+    * would make the assertions depend on the order the tests happened to run in.
     */
   private def withTelemetry[A](tags: Tags = Telemetry.commonTags(config))(body: Telemetry => A): A =
     val telemetry = Telemetry.start(config, Tracing.noop, tags)
@@ -64,12 +62,12 @@ final class TelemetrySuite extends munit.FunSuite:
       val exposition = telemetry.scrape()
       // One representative meter per binder family, in the Prometheus spelling — that is what a dashboard queries.
       val expected = List(
-        "jvm_memory_used_bytes",      // JvmMemoryMetrics
-        "jvm_threads_live_threads",   // JvmThreadMetrics
+        "jvm_memory_used_bytes", // JvmMemoryMetrics
+        "jvm_threads_live_threads", // JvmThreadMetrics
         "jvm_classes_loaded_classes", // ClassLoaderMetrics
-        "jvm_info",                   // JvmInfoMetrics
-        "process_uptime_seconds",     // UptimeMetrics
-        "system_cpu_count"            // ProcessorMetrics
+        "jvm_info", // JvmInfoMetrics
+        "process_uptime_seconds", // UptimeMetrics
+        "system_cpu_count" // ProcessorMetrics
       )
       expected.foreach(meter => assert(exposition.contains(meter), s"missing $meter in the exposition"))
     }

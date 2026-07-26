@@ -83,13 +83,22 @@ lazy val eventing = library("eventing")
   .dependsOn(kernel)
   .settings(
     libraryDependencies ++= cloudEvents ++ Seq(kafkaClients),
-    libraryDependencies += "io.opentelemetry" % "opentelemetry-api" % Versions.OpenTelemetry
+    libraryDependencies += "io.opentelemetry" % "opentelemetry-api" % Versions.OpenTelemetry,
+    // Lets the trace-propagation test assert on a recorded span rather than on
+    // the propagated header text alone.
+    libraryDependencies += otelTesting,
+    libraryDependencies ++= testContainers.map(_ % IT)
   )
 
 /** Postgres access: connection pooling, jsonb codecs, the filter-to-SQL compiler, and the Flyway migrations. */
 lazy val persistence = library("persistence")
   .dependsOn(kernel)
-  .settings(libraryDependencies ++= persistenceDeps)
+  .settings(
+    libraryDependencies ++= persistenceDeps,
+    // IT-scoped: a real Postgres via Testcontainers. Absent from Test so the
+    // fast tier never needs a Docker daemon.
+    libraryDependencies ++= testContainers.map(_ % IT)
+  )
 
 /** Metrics, traces and structured logging, shared by all three services so meter names cannot drift. */
 lazy val observability = library("observability")

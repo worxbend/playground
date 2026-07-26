@@ -22,14 +22,12 @@
 package io.kzonix.kernel.event
 
 import java.net.URI
-
 import scala.util.Try
 
 /** CloudEvents `id` — unique per producer within the scope of a [[Source]].
   *
   * Modelled as `opaque type … <: String` rather than a wrapper class: the upper bound gives one-way assignability, so
-  * an
-  * `EventId` flows into a JDBC setter, a circe encoder or a log statement with zero allocation and zero unwrapping,
+  * an `EventId` flows into a JDBC setter, a circe encoder or a log statement with zero allocation and zero unwrapping,
   * while a [[Source]] can still never be passed where an `EventId` is expected. That asymmetry is the whole point —
   * `(source, id)` is the deduplication key of the entire pipeline, and silently swapping the two would produce a system
   * that looks correct and deduplicates nothing.
@@ -60,8 +58,8 @@ object Source:
 
 /** CloudEvents `type` — reverse-DNS, versioned by `dataschema` rather than by a suffix on this string.
   *
-  * See ADR §4.2: putting the version in the type string forks the registry on every additive change and makes
-  * "give me all telemetry" a prefix match instead of an equality match.
+  * See ADR §4.2: putting the version in the type string forks the registry on every additive change and makes "give me
+  * all telemetry" a prefix match instead of an equality match.
   */
 opaque type EventType <: String = String
 

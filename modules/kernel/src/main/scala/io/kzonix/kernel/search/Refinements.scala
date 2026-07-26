@@ -183,12 +183,12 @@ object Tags:
   * end up. The permalink codec reuses the same spelling so a hand-edited URL and the compiled predicate agree.
   */
 enum NumOp(val symbol: String):
-  case Lt  extends NumOp("<")
+  case Lt extends NumOp("<")
   case Lte extends NumOp("<=")
-  case Gt  extends NumOp(">")
+  case Gt extends NumOp(">")
   case Gte extends NumOp(">=")
-  case Eq  extends NumOp("==")
-  case Ne  extends NumOp("!=")
+  case Eq extends NumOp("==")
+  case Ne extends NumOp("!=")
 
 object NumOp:
 

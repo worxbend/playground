@@ -30,9 +30,9 @@ package io.kzonix.observability
   * Kafka on its classpath and must not acquire one).
   *
   * **Why `put` returns `C` rather than being `Unit`.** The two carriers that matter have opposite mutability: a Scala
-  * `Map` is persistent and an update produces a new value, while Kafka's `Headers` is mutable and `add` returns
-  * `this`. A returning signature is the only one both can implement honestly — a `Unit` signature would force the Map
-  * instance to be secretly mutable, and a persistent-only signature would force needless copying of Kafka headers.
+  * `Map` is persistent and an update produces a new value, while Kafka's `Headers` is mutable and `add` returns `this`.
+  * A returning signature is the only one both can implement honestly — a `Unit` signature would force the Map instance
+  * to be secretly mutable, and a persistent-only signature would force needless copying of Kafka headers.
   * Implementations are free to return the same instance.
   *
   * Only the three operations OpenTelemetry's `TextMapPropagator` actually needs are here. Resist growing it: every

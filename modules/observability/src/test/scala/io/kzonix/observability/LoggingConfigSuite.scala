@@ -21,11 +21,6 @@
 
 package io.kzonix.observability
 
-import java.io.ByteArrayInputStream
-import java.nio.charset.StandardCharsets.UTF_8
-
-import scala.jdk.CollectionConverters.*
-
 import ch.qos.logback.classic.Level
 import ch.qos.logback.classic.LoggerContext
 import ch.qos.logback.classic.joran.JoranConfigurator
@@ -33,7 +28,10 @@ import ch.qos.logback.classic.spi.ILoggingEvent
 import ch.qos.logback.classic.spi.LoggingEvent
 import ch.qos.logback.core.ConsoleAppender
 import ch.qos.logback.core.status.Status
+import java.io.ByteArrayInputStream
+import java.nio.charset.StandardCharsets.UTF_8
 import net.logstash.logback.encoder.LogstashEncoder
+import scala.jdk.CollectionConverters.*
 
 /** The shared logback fragment (ADR §7.3).
   *

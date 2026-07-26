@@ -22,7 +22,6 @@
 package io.kzonix.kernel.event
 
 import java.util.Base64
-
 import scala.util.Try
 
 /** An immutable byte string with *structural* equality.

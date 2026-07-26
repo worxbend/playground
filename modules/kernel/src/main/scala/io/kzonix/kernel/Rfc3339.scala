@@ -25,7 +25,6 @@ import java.time.OffsetDateTime
 import java.time.format.DateTimeFormatter
 import java.time.format.DateTimeFormatterBuilder
 import java.time.temporal.ChronoField
-
 import scala.util.Try
 
 /** RFC 3339 rendering, shared by the CloudEvents `time` attribute and the search permalink's time bounds.

@@ -29,14 +29,14 @@ package io.kzonix.kernel.search
   * ten leave room to insert a level without renumbering stored data.
   */
 enum Severity(val label: String, val rank: Int) extends Ordered[Severity]:
-  case Debug    extends Severity("debug", 10)
-  case Info     extends Severity("info", 20)
-  case Notice   extends Severity("notice", 30)
-  case Warn     extends Severity("warn", 40)
-  case Error    extends Severity("error", 50)
+  case Debug extends Severity("debug", 10)
+  case Info extends Severity("info", 20)
+  case Notice extends Severity("notice", 30)
+  case Warn extends Severity("warn", 40)
+  case Error extends Severity("error", 50)
   case Critical extends Severity("critical", 60)
-  case Alert    extends Severity("alert", 70)
-  case Fatal    extends Severity("fatal", 80)
+  case Alert extends Severity("alert", 70)
+  case Fatal extends Severity("fatal", 80)
 
   override def compare(that: Severity): Int = rank.compare(that.rank)
 
@@ -46,12 +46,12 @@ object Severity:
     * gateways emit `emerg`/`crit`; accepting them here is what keeps ranking identical on both sides of the wire.
     */
   private val Aliases: Map[String, Severity] = Map(
-    "warning"   -> Warn,
-    "err"       -> Error,
-    "crit"      -> Critical,
-    "emerg"     -> Fatal,
+    "warning" -> Warn,
+    "err" -> Error,
+    "crit" -> Critical,
+    "emerg" -> Fatal,
     "emergency" -> Fatal,
-    "panic"     -> Fatal
+    "panic" -> Fatal
   )
 
   private val ByLabel: Map[String, Severity] = values.iterator.map(s => s.label -> s).toMap ++ Aliases

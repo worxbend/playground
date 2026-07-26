@@ -23,9 +23,9 @@ package io.kzonix.observability
 
 /** Invariants of the shared vocabulary.
   *
-  * The point of `Meters` is that three services and one dashboard agree on strings. These tests guard the two ways
-  * that agreement silently breaks: a name that Micrometer's Prometheus convention mangles into a different timeseries
-  * than the author expected, and two constants that collide so an edit to one appears to have no effect.
+  * The point of `Meters` is that three services and one dashboard agree on strings. These tests guard the two ways that
+  * agreement silently breaks: a name that Micrometer's Prometheus convention mangles into a different timeseries than
+  * the author expected, and two constants that collide so an edit to one appears to have no effect.
   */
 final class MetersSuite extends munit.FunSuite:
 

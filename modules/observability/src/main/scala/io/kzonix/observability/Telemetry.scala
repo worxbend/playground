@@ -63,23 +63,23 @@ import io.prometheus.metrics.model.registry.PrometheusRegistry
   * **`-Werror` trap (ADR §7.4).** `MeterRegistry.Config#commonTags` and `#meterFilter` both return `Config`, so calling
   * them as statements fails under `-Wnonunit-statement`. They are bound with `val _ =` below.
   *
-  * Not a singleton and not global: one instance is constructed by each service's `main` and passed down. Micrometer
-  * has a static `Metrics.globalRegistry`, and this deliberately does not use it — a global makes the registry
-  * impossible to replace per test and turns meter registration order into a hidden coupling between suites.
+  * Not a singleton and not global: one instance is constructed by each service's `main` and passed down. Micrometer has
+  * a static `Metrics.globalRegistry`, and this deliberately does not use it — a global makes the registry impossible to
+  * replace per test and turns meter registration order into a hidden coupling between suites.
   */
 final class Telemetry private (
-    val config: TelemetryConfig,
-    val prometheusRegistry: PrometheusRegistry,
-    val registry: PrometheusMeterRegistry,
-    val tracing: Tracing,
-    private val binders: List[AutoCloseable]
+  val config: TelemetryConfig,
+  val prometheusRegistry: PrometheusRegistry,
+  val registry: PrometheusMeterRegistry,
+  val tracing: Tracing,
+  private val binders: List[AutoCloseable]
 ) extends AutoCloseable:
 
   /** The Prometheus text exposition. Serve it verbatim with [[Telemetry.ContentType]].
     *
-    * No content negotiation: `micrometer-registry-prometheus` 1.17 renders exactly one format, so accepting an
-    * `Accept` header here would offer a choice the registry cannot honour. If OpenMetrics is ever needed it is a
-    * change in one place — which is the point of the services not touching the registry.
+    * No content negotiation: `micrometer-registry-prometheus` 1.17 renders exactly one format, so accepting an `Accept`
+    * header here would offer a choice the registry cannot honour. If OpenMetrics is ever needed it is a change in one
+    * place — which is the point of the services not touching the registry.
     */
   def scrape(): String = registry.scrape()
 
@@ -112,9 +112,9 @@ object Telemetry:
     *
     * ADR §7.1 calls unbounded `uri` cardinality the single most likely way to take down Prometheus in this system, and
     * it is right: ferrite serves server-rendered search over millions of events, so one unfiltered permalink path per
-    * query would mint a timeseries per query. Route templates keep the normal case bounded; this filter is the
-    * backstop for the day someone tags a raw path by accident. Dropping the overflow is preferable to dropping the
-    * meter — the first N routes keep working.
+    * query would mint a timeseries per query. Route templates keep the normal case bounded; this filter is the backstop
+    * for the day someone tags a raw path by accident. Dropping the overflow is preferable to dropping the meter — the
+    * first N routes keep working.
     */
   val MaxUriTagValues: Int = 100
 
@@ -179,7 +179,12 @@ object Telemetry:
     // a meter created earlier keeps the tags it was born with and no later filter can retrofit them.
     val _ = registry.config.commonTags(tags)
     val _ = registry.config.meterFilter(
-      MeterFilter.maximumAllowableTags(Meters.HttpServerRequests, Meters.TagKeys.Uri, MaxUriTagValues, MeterFilter.deny())
+      MeterFilter.maximumAllowableTags(
+        Meters.HttpServerRequests,
+        Meters.TagKeys.Uri,
+        MaxUriTagValues,
+        MeterFilter.deny()
+      )
     )
 
     val binders = newBinders()

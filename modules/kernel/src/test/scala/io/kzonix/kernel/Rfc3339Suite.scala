@@ -24,7 +24,6 @@ package io.kzonix.kernel
 import java.time.Instant
 import java.time.OffsetDateTime
 import java.time.ZoneOffset
-
 import org.scalacheck.Gen
 import org.scalacheck.Prop.forAll
 
@@ -38,8 +37,8 @@ final class Rfc3339Suite extends munit.ScalaCheckSuite:
   private val genTimestamp: Gen[OffsetDateTime] =
     for
       epochSecond <- Gen.choose(0L, 4102444800L)
-      nano        <- Gen.choose(0, 999999999)
-      quarters    <- Gen.choose(-56, 56)
+      nano <- Gen.choose(0, 999999999)
+      quarters <- Gen.choose(-56, 56)
     yield OffsetDateTime.ofInstant(
       Instant.ofEpochSecond(epochSecond, nano.toLong),
       ZoneOffset.ofTotalSeconds(quarters * 900)

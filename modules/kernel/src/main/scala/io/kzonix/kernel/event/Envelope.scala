@@ -21,8 +21,6 @@
 
 package io.kzonix.kernel.event
 
-import java.time.OffsetDateTime
-
 import io.circe.Decoder
 import io.circe.DecodingFailure
 import io.circe.Encoder
@@ -31,6 +29,7 @@ import io.circe.Json
 import io.circe.JsonObject
 import io.circe.parser
 import io.kzonix.kernel.Rfc3339
+import java.time.OffsetDateTime
 
 /** A CloudEvents 1.0 event, as this system's domain type.
   *
@@ -51,15 +50,15 @@ import io.kzonix.kernel.Rfc3339
   * build has never seen still parses, still persists, and still comes back out unchanged.
   */
 final case class Envelope(
-    id: EventId,
-    source: Source,
-    eventType: EventType,
-    time: Option[OffsetDateTime],
-    subject: Option[Subject],
-    dataContentType: Option[ContentType],
-    schema: Option[SchemaRef],
-    extensions: Map[String, AttrValue],
-    payload: Payload
+  id: EventId,
+  source: Source,
+  eventType: EventType,
+  time: Option[OffsetDateTime],
+  subject: Option[Subject],
+  dataContentType: Option[ContentType],
+  schema: Option[SchemaRef],
+  extensions: Map[String, AttrValue],
+  payload: Payload
 ):
 
   /** The single definition of the Kafka partition key (ADR §4.1).
@@ -108,8 +107,18 @@ object Envelope:
     * must stay identical or the `extensions` column and this model disagree about what an extension is.
     */
   val ReservedAttributes: Set[String] =
-    Set("specversion", "id", "source", "type", "subject", "time", "dataschema", "datacontenttype", "data",
-      "data_base64")
+    Set(
+      "specversion",
+      "id",
+      "source",
+      "type",
+      "subject",
+      "time",
+      "dataschema",
+      "datacontenttype",
+      "data",
+      "data_base64"
+    )
 
   /** Hand-written, not derived (ADR §4.2).
     *
@@ -122,9 +131,9 @@ object Envelope:
     val e = raw.canonical
     val required = Vector(
       "specversion" -> Json.fromString(SpecVersion),
-      "id"          -> Json.fromString(e.id),
-      "source"      -> Json.fromString(e.source),
-      "type"        -> Json.fromString(e.eventType)
+      "id" -> Json.fromString(e.id),
+      "source" -> Json.fromString(e.source),
+      "type" -> Json.fromString(e.eventType)
     )
     val optional = Vector(
       e.subject.map(v => "subject" -> Json.fromString(v)),
@@ -148,16 +157,16 @@ object Envelope:
     */
   given decoder: Decoder[Envelope] = Decoder.instance: cursor =>
     for
-      obj             <- cursor.value.asObject.toRight(fail(cursor, "a CloudEvent must be a JSON object"))
-      _               <- checkSpecVersion(cursor, obj)
-      id              <- required(cursor, obj, "id").flatMap(refine(cursor, EventId.apply))
-      source          <- required(cursor, obj, "source").flatMap(refine(cursor, Source.apply))
-      eventType       <- required(cursor, obj, "type").flatMap(refine(cursor, EventType.apply))
-      subject         <- optional(cursor, obj, "subject").flatMap(traverse(refine(cursor, Subject.apply)))
-      time            <- optional(cursor, obj, "time").flatMap(traverse(refine(cursor, Rfc3339.parse)))
+      obj <- cursor.value.asObject.toRight(fail(cursor, "a CloudEvent must be a JSON object"))
+      _ <- checkSpecVersion(cursor, obj)
+      id <- required(cursor, obj, "id").flatMap(refine(cursor, EventId.apply))
+      source <- required(cursor, obj, "source").flatMap(refine(cursor, Source.apply))
+      eventType <- required(cursor, obj, "type").flatMap(refine(cursor, EventType.apply))
+      subject <- optional(cursor, obj, "subject").flatMap(traverse(refine(cursor, Subject.apply)))
+      time <- optional(cursor, obj, "time").flatMap(traverse(refine(cursor, Rfc3339.parse)))
       dataContentType <- optional(cursor, obj, "datacontenttype").flatMap(traverse(refine(cursor, ContentType.apply)))
-      schema          <- optional(cursor, obj, "dataschema").flatMap(traverse(refine(cursor, SchemaRef.parse)))
-      payload         <- decodePayload(cursor, obj, dataContentType)
+      schema <- optional(cursor, obj, "dataschema").flatMap(traverse(refine(cursor, SchemaRef.parse)))
+      payload <- decodePayload(cursor, obj, dataContentType)
     yield Envelope(
       id = id,
       source = source,
@@ -201,13 +210,13 @@ object Envelope:
     obj(key) match
       case None                      => Right(None)
       case Some(json) if json.isNull => Right(None)
-      case Some(json) =>
+      case Some(json)                =>
         json.asString.map(Some.apply).toRight(fail(cursor, s"attribute '$key' must be a JSON string"))
 
   private def decodePayload(
-      cursor: HCursor,
-      obj: JsonObject,
-      contentType: Option[ContentType]
+    cursor: HCursor,
+    obj: JsonObject,
+    contentType: Option[ContentType]
   ): Decoder.Result[Payload] =
     (obj("data"), obj("data_base64")) match
       case (Some(_), Some(_)) =>

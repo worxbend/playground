@@ -29,8 +29,8 @@ package io.kzonix.kernel.search
   */
 enum FilterError:
 
-  /** A parameter this version of the codec does not know. Reported rather than dropped, so a truncated or
-    * hand-mangled link cannot masquerade as a narrower search than it is.
+  /** A parameter this version of the codec does not know. Reported rather than dropped, so a truncated or hand-mangled
+    * link cannot masquerade as a narrower search than it is.
     */
   case UnknownParameter(name: String)
 
@@ -53,10 +53,10 @@ enum FilterError:
 
   /** Rendered next to the offending input in the filter bar. */
   def message: String = this match
-    case UnknownParameter(name)     => s"unknown parameter '$name'"
-    case MissingVersion             => "missing 'v' parameter"
-    case UnsupportedVersion(found)  => s"unsupported permalink version '$found'"
-    case Repeated(name)             => s"parameter '$name' may appear only once"
-    case Invalid(name, reason)      => s"parameter '$name': $reason"
-    case Malformed(fragment, why)   => s"malformed query fragment '$fragment': $why"
-    case NotPermalinkable(reason)   => s"filter cannot be written as a permalink: $reason"
+    case UnknownParameter(name)    => s"unknown parameter '$name'"
+    case MissingVersion            => "missing 'v' parameter"
+    case UnsupportedVersion(found) => s"unsupported permalink version '$found'"
+    case Repeated(name)            => s"parameter '$name' may appear only once"
+    case Invalid(name, reason)     => s"parameter '$name': $reason"
+    case Malformed(fragment, why)  => s"malformed query fragment '$fragment': $why"
+    case NotPermalinkable(reason)  => s"filter cannot be written as a permalink: $reason"

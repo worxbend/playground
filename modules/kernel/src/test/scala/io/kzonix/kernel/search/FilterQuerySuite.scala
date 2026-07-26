@@ -21,17 +21,16 @@
 
 package io.kzonix.kernel.search
 
-import java.time.OffsetDateTime
-
 import io.circe.Json
+import java.time.OffsetDateTime
 import org.scalacheck.Prop.forAll
 
 /** The permalink codec.
   *
-  * A permalink is a durable artefact: it goes into bookmarks, incident tickets and chat messages, and it is expected
-  * to reproduce the same result set months later. The round-trip property is therefore the whole test — everything
-  * else here pins down the readable spelling ADR §6.3 promises, and the failure modes that must stay visible instead
-  * of turning into an unfiltered result set.
+  * A permalink is a durable artefact: it goes into bookmarks, incident tickets and chat messages, and it is expected to
+  * reproduce the same result set months later. The round-trip property is therefore the whole test — everything else
+  * here pins down the readable spelling ADR §6.3 promises, and the failure modes that must stay visible instead of
+  * turning into an unfiltered result set.
   */
 final class FilterQuerySuite extends munit.ScalaCheckSuite:
 

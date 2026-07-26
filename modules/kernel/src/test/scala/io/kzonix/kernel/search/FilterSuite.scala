@@ -21,17 +21,16 @@
 
 package io.kzonix.kernel.search
 
-import java.time.OffsetDateTime
-
 import io.circe.Json
 import io.circe.parser
+import java.time.OffsetDateTime
 import org.scalacheck.Prop.forAll
 
 /** The smart constructors.
   *
-  * Each rejection below corresponds to a filter that would compile to valid SQL and return a wrong answer silently —
-  * an empty `= ANY('{}')`, an inverted `BETWEEN`, an unbounded `WHERE` that prunes no partitions. Those are the ones
-  * worth making unrepresentable; a syntax error would have announced itself.
+  * Each rejection below corresponds to a filter that would compile to valid SQL and return a wrong answer silently — an
+  * empty `= ANY('{}')`, an inverted `BETWEEN`, an unbounded `WHERE` that prunes no partitions. Those are the ones worth
+  * making unrepresentable; a syntax error would have announced itself.
   */
 final class FilterSuite extends munit.ScalaCheckSuite:
 
@@ -115,15 +114,15 @@ final class FilterSuite extends munit.ScalaCheckSuite:
 
   test("severity ranks match the SQL function in ADR §5"):
     val ddl = Map(
-      "debug"    -> 10,
-      "info"     -> 20,
-      "notice"   -> 30,
-      "warn"     -> 40,
-      "warning"  -> 40,
-      "error"    -> 50,
+      "debug" -> 10,
+      "info" -> 20,
+      "notice" -> 30,
+      "warn" -> 40,
+      "warning" -> 40,
+      "error" -> 50,
       "critical" -> 60,
-      "alert"    -> 70,
-      "fatal"    -> 80,
+      "alert" -> 70,
+      "fatal" -> 80,
       "emergency" -> 80
     )
     ddl.foreach((label, rank) => assertEquals(Severity.rank(label), Some(rank), s"rank of '$label'"))

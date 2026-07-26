@@ -21,9 +21,8 @@
 
 package io.kzonix.kernel.search
 
-import java.time.OffsetDateTime
-
 import io.circe.Json
+import java.time.OffsetDateTime
 
 /** Branches of a boolean node: at least two, because [[Filter.and]] and [[Filter.or]] collapse the degenerate cases.
   *
@@ -72,8 +71,8 @@ object Filter:
     * returned unwrapped.
     *
     * Normalising in the constructor rather than in a later pass means there is exactly one representation of a given
-    * filter, so equality, the permalink and the content hash all agree. Reordering is safe because `AND` is
-    * commutative — the SQL compiler emits one fragment per branch and the planner reorders anyway.
+    * filter, so equality, the permalink and the content hash all agree. Reordering is safe because `AND` is commutative
+    * — the SQL compiler emits one fragment per branch and the planner reorders anyway.
     */
   def and(branches: Iterable[Filter]): Either[String, Filter] =
     normalise(branches, { case And(fs) => fs }) match
@@ -98,15 +97,15 @@ object Filter:
     */
   def occurred(from: Option[OffsetDateTime], until: Option[OffsetDateTime]): Either[String, Filter] =
     (from, until) match
-      case (None, None) => Left("a time range needs at least one bound")
+      case (None, None)                         => Left("a time range needs at least one bound")
       case (Some(f), Some(u)) if !f.isBefore(u) =>
         Left(s"time range is empty: from '$f' is not before until '$u'")
       case _ => Right(Occurred(from, until))
 
-  def typeIn(values: Iterable[String]): Either[String, Filter]   = Values.of(values).map(TypeIn.apply)
+  def typeIn(values: Iterable[String]): Either[String, Filter] = Values.of(values).map(TypeIn.apply)
   def sourceIn(values: Iterable[String]): Either[String, Filter] = Values.of(values).map(SourceIn.apply)
   def deviceIn(values: Iterable[String]): Either[String, Filter] = Values.of(values).map(DeviceIn.apply)
-  def roomIn(values: Iterable[String]): Either[String, Filter]   = Values.of(values).map(RoomIn.apply)
+  def roomIn(values: Iterable[String]): Either[String, Filter] = Values.of(values).map(RoomIn.apply)
   def personIn(values: Iterable[String]): Either[String, Filter] = Values.of(values).map(PersonIn.apply)
 
   def severityAtLeast(level: Severity): Filter = SeverityAtLeast(level)

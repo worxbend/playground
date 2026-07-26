@@ -21,8 +21,6 @@
 
 package io.kzonix.observability
 
-import scala.jdk.CollectionConverters.*
-
 import io.opentelemetry.api.common.AttributeKey
 import io.opentelemetry.api.common.Attributes
 import io.opentelemetry.api.trace.Span
@@ -32,16 +30,17 @@ import io.opentelemetry.api.trace.propagation.W3CTraceContextPropagator
 import io.opentelemetry.context.propagation.ContextPropagators
 import io.opentelemetry.sdk.OpenTelemetrySdk
 import io.opentelemetry.sdk.testing.exporter.InMemorySpanExporter
-import io.opentelemetry.sdk.trace.SdkTracerProvider
 import io.opentelemetry.sdk.trace.`export`.SimpleSpanProcessor
+import io.opentelemetry.sdk.trace.SdkTracerProvider
 import org.slf4j.MDC
+import scala.jdk.CollectionConverters.*
 
 /** Span recording and cross-process context propagation.
   *
   * Uses `InMemorySpanExporter` with a `SimpleSpanProcessor` rather than the autoconfigured SDK: the assertions are
   * about span *shape*, and a batching exporter aimed at a collector would turn every one of them into a timing
-  * question. `Tracing.autoConfigured` is exercised where it belongs — against a real collector in the integration
-  * tier — not here.
+  * question. `Tracing.autoConfigured` is exercised where it belongs — against a real collector in the integration tier
+  * — not here.
   */
 final class TracingSuite extends munit.FunSuite:
 

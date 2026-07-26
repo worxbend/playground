@@ -21,11 +21,6 @@
 
 package io.kzonix.observability
 
-import java.util.concurrent.TimeUnit
-
-import scala.jdk.CollectionConverters.*
-import scala.util.control.NonFatal
-
 import io.opentelemetry.api.OpenTelemetry
 import io.opentelemetry.api.common.Attributes
 import io.opentelemetry.api.trace.Span
@@ -40,6 +35,9 @@ import io.opentelemetry.context.propagation.TextMapPropagator
 import io.opentelemetry.context.propagation.TextMapSetter
 import io.opentelemetry.sdk.OpenTelemetrySdk
 import io.opentelemetry.sdk.autoconfigure.AutoConfiguredOpenTelemetrySdk
+import java.util.concurrent.TimeUnit
+import scala.jdk.CollectionConverters.*
+import scala.util.control.NonFatal
 
 /** Distributed tracing: a traces-only OpenTelemetry SDK plus the two operations the services actually perform.
   *
@@ -58,9 +56,9 @@ import io.opentelemetry.sdk.autoconfigure.AutoConfiguredOpenTelemetrySdk
   * failure anything reports, it is simply a trace that is missing its middle.
   */
 final class Tracing private (
-    val openTelemetry: OpenTelemetry,
-    val tracer: Tracer,
-    private val onClose: () => Unit
+  val openTelemetry: OpenTelemetry,
+  val tracer: Tracer,
+  private val onClose: () => Unit
 ) extends AutoCloseable:
 
   /** The configured propagator. W3C `traceparent`/`tracestate` in every deployment — see [[Tracing.autoConfigured]]. */
@@ -72,18 +70,18 @@ final class Tracing private (
     * thread correlates with the trace without the caller doing anything (ADR §7.3).
     *
     * A thrown exception is recorded on the span and the status set to `ERROR` before it is rethrown: the span must
-    * describe what happened, but swallowing the exception would make tracing change program behaviour, which is the
-    * one thing instrumentation may never do. `NonFatal` only — an `OutOfMemoryError` is not a span attribute.
+    * describe what happened, but swallowing the exception would make tracing change program behaviour, which is the one
+    * thing instrumentation may never do. `NonFatal` only — an `OutOfMemoryError` is not a span attribute.
     *
     * @param parent
     *   defaults to the ambient context, which is correct on a synchronous call chain and wrong across every async
     *   boundary. Pass it explicitly whenever a thread hop is involved.
     */
   def span[A](
-      name: String,
-      kind: SpanKind = SpanKind.INTERNAL,
-      attributes: Attributes = Attributes.empty(),
-      parent: Context = Context.current()
+    name: String,
+    kind: SpanKind = SpanKind.INTERNAL,
+    attributes: Attributes = Attributes.empty(),
+    parent: Context = Context.current()
   )(body: Span => A): A =
     val span = tracer
       .spanBuilder(name)
@@ -112,15 +110,15 @@ final class Tracing private (
     * context, and inheriting it would chain every record in a batch into one ever-growing trace.
     */
   def spanFrom[A, C](
-      carrier: C,
-      name: String,
-      kind: SpanKind = SpanKind.CONSUMER,
-      attributes: Attributes = Attributes.empty()
+    carrier: C,
+    name: String,
+    kind: SpanKind = SpanKind.CONSUMER,
+    attributes: Attributes = Attributes.empty()
   )(body: Span => A)(using TextCarrier[C]): A =
     span(name, kind, attributes, extract(carrier))(body)
 
-  /** Writes the ambient trace context into `carrier`, returning the result (which may be `carrier` itself for a
-    * mutable transport).
+  /** Writes the ambient trace context into `carrier`, returning the result (which may be `carrier` itself for a mutable
+    * transport).
     */
   def inject[C](carrier: C)(using TextCarrier[C]): C = inject(Context.current(), carrier)
 
@@ -172,7 +170,7 @@ object Tracing:
   val ShutdownTimeoutSeconds: Long = 10L
 
   /** Mutable accumulator for [[Tracing.inject]]. Package-private and never escapes the call that creates it. */
-  private final class Cell[C](var value: C)
+  final private class Cell[C](var value: C)
 
   /** Wraps an existing `OpenTelemetry` instance.
     *
@@ -208,9 +206,9 @@ object Tracing:
     *
     * Applied through `addPropertiesCustomizer`, which the autoconfigure extension evaluates *after* system properties
     * and `OTEL_*` env vars, so these win. `addPropertiesSupplier` would not: its values are defaults, and a stray
-    * `OTEL_METRICS_EXPORTER=otlp` in a deployment manifest would quietly re-enable the second metrics pipeline that
-    * ADR §7 exists to prevent. Propagators are forced for the same reason — a service that negotiated B3 instead of
-    * W3C would produce traces that break in half at its boundary.
+    * `OTEL_METRICS_EXPORTER=otlp` in a deployment manifest would quietly re-enable the second metrics pipeline that ADR
+    * §7 exists to prevent. Propagators are forced for the same reason — a service that negotiated B3 instead of W3C
+    * would produce traces that break in half at its boundary.
     */
   private val forcedProperties: Map[String, String] =
     Map(

@@ -21,11 +21,10 @@
 
 package io.kzonix.kernel.search
 
+import io.circe.Json
 import java.time.Instant
 import java.time.OffsetDateTime
 import java.time.ZoneOffset
-
-import io.circe.Json
 import org.scalacheck.Gen
 
 /** Generators for the filter grammar.
@@ -60,7 +59,7 @@ object FilterGenerators:
   private val genTime: Gen[OffsetDateTime] =
     for
       epochSecond <- Gen.choose(0L, 4102444800L)
-      quarters    <- Gen.choose(-56, 56)
+      quarters <- Gen.choose(-56, 56)
     yield OffsetDateTime.ofInstant(Instant.ofEpochSecond(epochSecond), ZoneOffset.ofTotalSeconds(quarters * 900))
 
   private val genOccurred: Gen[Filter] =
@@ -75,21 +74,21 @@ object FilterGenerators:
 
   private val genContains: Gen[Filter] =
     for
-      key   <- Gen.identifier.map(_.take(8))
+      key <- Gen.identifier.map(_.take(8))
       value <- Gen.oneOf(Json.fromString("open"), Json.fromInt(3), Json.True)
     yield force(Filter.payloadContains(Json.obj(key -> value)))
 
   private val genCmp: Gen[Filter] =
     for
       segments <- Gen.choose(1, 3).flatMap(n => Gen.listOfN(n, Gen.oneOf("temperature", "value", "level", "power")))
-      op       <- Gen.oneOf(NumOp.values.toIndexedSeq)
+      op <- Gen.oneOf(NumOp.values.toIndexedSeq)
       unscaled <- Gen.choose(-100000L, 100000L)
-      scale    <- Gen.choose(0, 3)
+      scale <- Gen.choose(0, 3)
     yield force(Filter.payloadCmp(segments.mkString("."), op, BigDecimal(unscaled, scale)))
 
   private val genExtension: Gen[Filter] =
     for
-      name  <- Gen.oneOf("tenantid", "sequence", "traceparent", "partitionkey")
+      name <- Gen.oneOf("tenantid", "sequence", "traceparent", "partitionkey")
       value <- genValue
     yield force(Filter.extensionEq(name, value))
 
@@ -101,18 +100,18 @@ object FilterGenerators:
   /** At least one leaf, at most one per single-valued dimension. */
   val genFlatFilter: Gen[Filter] =
     for
-      occurred   <- Gen.option(genOccurred)
-      types      <- Gen.option(genValues.map(vs => force(Filter.typeIn(vs))))
-      sources    <- Gen.option(genValues.map(vs => force(Filter.sourceIn(vs))))
-      devices    <- Gen.option(genValues.map(vs => force(Filter.deviceIn(vs))))
-      rooms      <- Gen.option(genValues.map(vs => force(Filter.roomIn(vs))))
-      persons    <- Gen.option(genValues.map(vs => force(Filter.personIn(vs))))
-      severity   <- Gen.option(Gen.oneOf(Severity.values.toIndexedSeq).map(Filter.severityAtLeast))
-      tags       <- Gen.option(genTags)
-      contains   <- Gen.option(genContains)
+      occurred <- Gen.option(genOccurred)
+      types <- Gen.option(genValues.map(vs => force(Filter.typeIn(vs))))
+      sources <- Gen.option(genValues.map(vs => force(Filter.sourceIn(vs))))
+      devices <- Gen.option(genValues.map(vs => force(Filter.deviceIn(vs))))
+      rooms <- Gen.option(genValues.map(vs => force(Filter.roomIn(vs))))
+      persons <- Gen.option(genValues.map(vs => force(Filter.personIn(vs))))
+      severity <- Gen.option(Gen.oneOf(Severity.values.toIndexedSeq).map(Filter.severityAtLeast))
+      tags <- Gen.option(genTags)
+      contains <- Gen.option(genContains)
       comparisons <- Gen.choose(0, 3).flatMap(n => Gen.listOfN(n, genCmp))
-      extensions  <- Gen.choose(0, 3).flatMap(n => Gen.listOfN(n, genExtension))
-      text        <- Gen.option(genText)
+      extensions <- Gen.choose(0, 3).flatMap(n => Gen.listOfN(n, genExtension))
+      text <- Gen.option(genText)
     yield
       val leaves =
         Vector(occurred, types, sources, devices, rooms, persons, severity, tags, contains, text).flatten ++
