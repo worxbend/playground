@@ -40,7 +40,7 @@ import scala.concurrent.duration.DurationInt
 final class AppRouterSuite extends AnyFunSuite with BeforeAndAfterAll:
 
   // Play's action helpers run the result through a stream, so they need a Materializer.
-  private given system: ActorSystem  = ActorSystem("app-router-suite")
+  private given system: ActorSystem = ActorSystem("app-router-suite")
   private given materializer: Materializer = Materializer(system)
 
   override protected def afterAll(): Unit =
@@ -48,7 +48,7 @@ final class AppRouterSuite extends AnyFunSuite with BeforeAndAfterAll:
     ()
 
   private def controller = AppController(stubControllerComponents())
-  private def router     = AppRouter(controller)
+  private def router = AppRouter(controller)
 
   test("router matches the health path"):
     assert(router.routes.isDefinedAt(FakeRequest("GET", "/health")))

@@ -31,7 +31,7 @@ object CaskService extends cask.MainRoutes with StrictLogging:
   private val config = ServerConfig.load()
 
   override def host: String = config.host
-  override def port: Int    = config.port
+  override def port: Int = config.port
 
   @cask.get("/health")
   def health(): String =

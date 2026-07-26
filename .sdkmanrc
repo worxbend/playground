@@ -1,3 +1,4 @@
-# Enable auto-env through the sdkman_auto_env config
-# Add key=value pairs of SDKs to use below
-java=11.0.9-zulu
+# Enable auto-env through the sdkman_auto_env config.
+# Matches the JDK used by CI and by the Docker base images.
+java=25.0.1-tem
+sbt=2.0.3

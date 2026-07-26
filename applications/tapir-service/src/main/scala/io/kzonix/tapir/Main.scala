@@ -34,7 +34,7 @@ object Main extends StrictLogging:
 
   def main(args: Array[String]): Unit =
     val config = ConfigSource.default.at("server").loadOrThrow[ServerConfig]
-    val vertx  = Vertx.vertx()
+    val vertx = Vertx.vertx()
     val router = Router.router(vertx)
 
     val interpreter = VertxFutureServerInterpreter()
