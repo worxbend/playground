@@ -23,8 +23,8 @@ package io.kzonix.wolfram
 
 import io.circe.Json
 import sttp.tapir.AnyEndpoint
-import sttp.tapir.EndpointIO
 import sttp.tapir.EndpointInput
+import sttp.tapir.EndpointIO
 import sttp.tapir.EndpointOutput
 import sttp.tapir.EndpointTransput
 
@@ -179,7 +179,9 @@ object OpenApi:
   private def responses(endpoint: AnyEndpoint): Json =
     val successes = responsesOf(endpoint.output, defaultStatus = 200, defaultDescription = "Success")
     val failures = responsesOf(endpoint.errorOutput, defaultStatus = 400, defaultDescription = "Error")
-    Json.fromFields((successes ++ failures).toVector.sortBy((status, _) => status).map((status, json) => status -> json))
+    Json.fromFields((successes ++ failures).toVector.sortBy((status, _) => status).map((status, json) =>
+      status -> json
+    ))
 
   /** Walks one output tree into `status -> response` pairs.
     *
@@ -245,11 +247,11 @@ object OpenApi:
     * is what `mapTo`/`mapIn` produce; everything else is a leaf this generator either documents or ignores.
     */
   private def flattenInput(input: EndpointInput[?]): Vector[EndpointInput[?]] = input match
-    case pair: EndpointInput.Pair[?, ?, ?]           => flattenInput(pair.left) ++ flattenInput(pair.right)
-    case pair: EndpointInput.MappedPair[?, ?, ?, ?]  => flattenInput(pair.input)
-    case io: EndpointIO.Pair[?, ?, ?]                => flattenInput(io.left) ++ flattenInput(io.right)
-    case io: EndpointIO.MappedPair[?, ?, ?, ?]       => flattenInput(io.io)
-    case leaf                                        => Vector(leaf)
+    case pair: EndpointInput.Pair[?, ?, ?]          => flattenInput(pair.left) ++ flattenInput(pair.right)
+    case pair: EndpointInput.MappedPair[?, ?, ?, ?] => flattenInput(pair.input)
+    case io: EndpointIO.Pair[?, ?, ?]               => flattenInput(io.left) ++ flattenInput(io.right)
+    case io: EndpointIO.MappedPair[?, ?, ?, ?]      => flattenInput(io.io)
+    case leaf                                       => Vector(leaf)
 
   private def flattenOutput(output: EndpointOutput[?]): Vector[EndpointOutput[?]] = output match
     case pair: EndpointOutput.Pair[?, ?, ?]          => flattenOutput(pair.left) ++ flattenOutput(pair.right)

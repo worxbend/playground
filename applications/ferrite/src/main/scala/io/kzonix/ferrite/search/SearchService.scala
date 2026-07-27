@@ -86,7 +86,7 @@ final class SearchService @Inject() (repository: EventRepository, clock: Clock)(
   /** One page plus its facets, histogram and bounded total. */
   def search(query: SearchQuery): Future[Either[String, SearchOutcome]] =
     query.toRequest match
-      case Left(reason)  => Future.successful(Left(reason))
+      case Left(reason)   => Future.successful(Left(reason))
       case Right(request) =>
         val window = windowOf(query.filter)
         val facetRequest = FacetRequest.of(query.filter)

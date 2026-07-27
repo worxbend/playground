@@ -21,13 +21,6 @@
 
 package io.kzonix.wolfram
 
-import java.nio.charset.StandardCharsets.UTF_8
-import java.util.concurrent.Executor
-import java.util.concurrent.RejectedExecutionException
-import scala.concurrent.Await
-import scala.concurrent.duration.DurationInt
-import scala.jdk.CollectionConverters.*
-
 import io.kzonix.eventing.CloudEventHeaders
 import io.kzonix.eventing.ContentMode
 import io.kzonix.eventing.KafkaTrace
@@ -44,6 +37,9 @@ import io.opentelemetry.context.Context
 import io.opentelemetry.context.propagation.ContextPropagators
 import io.opentelemetry.sdk.OpenTelemetrySdk
 import io.opentelemetry.sdk.trace.SdkTracerProvider
+import java.nio.charset.StandardCharsets.UTF_8
+import java.util.concurrent.Executor
+import java.util.concurrent.RejectedExecutionException
 import munit.FunSuite
 import org.apache.kafka.clients.producer.MockProducer
 import org.apache.kafka.clients.producer.RoundRobinPartitioner
@@ -53,6 +49,9 @@ import org.apache.kafka.common.PartitionInfo
 import org.apache.kafka.common.errors.TimeoutException
 import org.apache.kafka.common.serialization.ByteArraySerializer
 import org.apache.kafka.common.serialization.StringSerializer
+import scala.concurrent.Await
+import scala.concurrent.duration.DurationInt
+import scala.jdk.CollectionConverters.*
 
 /** The Kafka publisher: the record it builds, the trace context it carries, and how it fails.
   *
@@ -101,7 +100,7 @@ final class KafkaEventPublisherSuite extends FunSuite:
       .build()
     Tracing(sdk, Tracing.ScopeName, () => provider.close())
 
-  private final case class Harness(
+  final private case class Harness(
     publisher: KafkaEventPublisher,
     producer: MockProducer[String, Array[Byte]],
     health: BrokerHealth,

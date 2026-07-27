@@ -21,11 +21,10 @@
 
 package io.kzonix.wolfram
 
-import java.nio.charset.StandardCharsets.UTF_8
-
 import io.circe.Json
 import io.kzonix.eventing.ContentMode
 import io.kzonix.kernel.event.Payload
+import java.nio.charset.StandardCharsets.UTF_8
 import munit.FunSuite
 
 /** The CloudEvents HTTP binding.

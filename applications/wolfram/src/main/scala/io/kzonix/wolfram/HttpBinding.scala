@@ -21,14 +21,13 @@
 
 package io.kzonix.wolfram
 
-import java.nio.charset.StandardCharsets.UTF_8
-import java.util.Base64
-import java.util.Locale
-
 import io.circe.Json
 import io.circe.parser
 import io.kzonix.eventing.ContentMode
 import io.kzonix.kernel.event.Envelope
+import java.nio.charset.StandardCharsets.UTF_8
+import java.util.Base64
+import java.util.Locale
 
 /** The CloudEvents **HTTP** protocol binding: HTTP headers plus a body, in, an [[Envelope]] out.
   *
@@ -72,8 +71,8 @@ object HttpBinding:
     * The decision order mirrors `modules/eventing`'s `ContentMode.of` and is load-bearing for the same reason: in
     * binary mode `Content-Type` describes the *payload*, and a payload may perfectly well be a CloudEvents document (a
     * forwarder, a replay tool, an event that quotes another event). Deciding on the media type first misreads exactly
-    * those requests as structured and throws away every attribute in the headers. `ce-specversion` is unambiguous —
-    * a structured request never carries it, because its specversion is inside the JSON — so it is checked first.
+    * those requests as structured and throws away every attribute in the headers. `ce-specversion` is unambiguous — a
+    * structured request never carries it, because its specversion is inside the JSON — so it is checked first.
     */
   def modeOf(headers: Map[String, String]): Option[ContentMode] =
     if headers.contains(AttributePrefix + "specversion") then Some(ContentMode.Binary)

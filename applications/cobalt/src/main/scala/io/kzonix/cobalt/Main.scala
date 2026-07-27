@@ -21,14 +21,6 @@
 
 package io.kzonix.cobalt
 
-import java.util.concurrent.Executors
-import java.util.concurrent.ThreadFactory
-
-import scala.concurrent.ExecutionContext
-import scala.concurrent.Future
-import scala.jdk.CollectionConverters.*
-import scala.util.control.NonFatal
-
 import com.typesafe.scalalogging.StrictLogging
 import io.kzonix.kernel.event.Source
 import io.kzonix.observability.Telemetry
@@ -36,6 +28,8 @@ import io.kzonix.persistence.Database
 import io.kzonix.persistence.DatabaseConfig
 import io.kzonix.persistence.Migrations
 import io.kzonix.persistence.repository.PostgresEventRepository
+import java.util.concurrent.Executors
+import java.util.concurrent.ThreadFactory
 import org.apache.kafka.clients.admin.Admin
 import org.apache.pekko.Done
 import org.apache.pekko.actor.ActorSystem
@@ -43,13 +37,17 @@ import org.apache.pekko.actor.CoordinatedShutdown
 import org.apache.pekko.pattern.after
 import pureconfig.ConfigSource
 import pureconfig.error.ConfigReaderFailures
+import scala.concurrent.ExecutionContext
+import scala.concurrent.Future
+import scala.jdk.CollectionConverters.*
+import scala.util.control.NonFatal
 
 /** Everything cobalt owns, constructed once and torn down in the reverse order.
   *
   * **A composition root and not a container.** The graph is a dozen objects with a construction order that is itself
-  * load-bearing — telemetry before anything that meters, migrations before the repository that assumes the schema,
-  * the consumer last because it starts doing work the moment it exists. Guice would hide exactly that ordering, and
-  * cobalt has no other use for it.
+  * load-bearing — telemetry before anything that meters, migrations before the repository that assumes the schema, the
+  * consumer last because it starts doing work the moment it exists. Guice would hide exactly that ordering, and cobalt
+  * has no other use for it.
   *
   * **Teardown order is the interesting half, and it is expressed as `CoordinatedShutdown` phases rather than as a
   * `close()` sequence.** A SIGTERM must:
@@ -160,9 +158,9 @@ object CobaltApp extends StrictLogging:
     */
   def adminProperties(config: CobaltConfig): Map[String, AnyRef] =
     Map[String, AnyRef](
-      "bootstrap.servers"    -> config.consumer.bootstrapServers,
-      "client.id"            -> s"${config.consumer.groupId}-lag",
-      "request.timeout.ms"   -> config.lag.requestTimeout.toMillis.toString,
+      "bootstrap.servers" -> config.consumer.bootstrapServers,
+      "client.id" -> s"${config.consumer.groupId}-lag",
+      "request.timeout.ms" -> config.lag.requestTimeout.toMillis.toString,
       "default.api.timeout.ms" -> config.lag.requestTimeout.toMillis.toString
     )
 
@@ -195,8 +193,8 @@ object Main extends StrictLogging:
   /** Refuses the boot rather than starting with a configuration nobody can read.
     *
     * A consumer that boots with the wrong topic name is the least debuggable failure in this system — it starts
-    * cleanly, reports itself live, and receives nothing — so an unreadable configuration must stop the process here
-    * and not be papered over with a default.
+    * cleanly, reports itself live, and receives nothing — so an unreadable configuration must stop the process here and
+    * not be papered over with a default.
     */
   private def unusable(what: String): ConfigReaderFailures => Nothing =
     failures => throw IllegalStateException(s"$what configuration is unusable: ${failures.prettyPrint()}")

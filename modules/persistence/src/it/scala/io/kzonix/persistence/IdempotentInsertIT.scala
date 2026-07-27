@@ -55,13 +55,22 @@ final class IdempotentInsertIT extends PostgresSuite:
 
   private def force[A](result: Either[String, A]): A = result.fold(message => fail(message), identity)
 
+  /** The time an event carries is a function of the event, never of where it sits in a batch.
+    *
+    * It has to be, because `time` becomes `occurred_at` and `occurred_at` is a third of the dedup key: a redelivered
+    * record carries the time it carried the first time. Deriving it from `zipWithIndex` made `b` at position 1 of one
+    * batch and position 0 of the next into two genuinely different rows — so the overlapping-replay test measured a
+    * fixture artefact and would have gone on passing had `ON CONFLICT` been dropped from the insert entirely.
+    */
+  private def timeOf(id: String): OffsetDateTime = at.plusSeconds((id.hashCode & 0xffff).toLong)
+
   private def batch(ids: Vector[String], source: String = "/gateways/1"): Vector[NewEvent] =
-    ids.zipWithIndex.map: (id, index) =>
+    ids.map: id =>
       val envelope = Envelope(
         id = force(EventId(id)),
         source = force(Source(source)),
         eventType = force(EventType("io.kzonix.iot.telemetry")),
-        time = Some(at.plusSeconds(index.toLong)),
+        time = Some(timeOf(id)),
         subject = None,
         dataContentType = None,
         schema = None,
@@ -88,6 +97,32 @@ final class IdempotentInsertIT extends PostgresSuite:
     // gateways' events whenever their sequence numbers happened to line up.
     assertEquals(await(repository.insertAll(batch(Vector("a")))), 1L)
     assertEquals(await(repository.insertAll(batch(Vector("a"), source = "/gateways/2"))), 1L)
+    assertEquals(await(repository.countAtMost(None, 100)), 2L)
+
+  test("the same id and source at a different time is a second row, because the key carries the partition column"):
+    // Not a wart to be fixed later — a consequence to be known. A unique index on a partitioned table must contain
+    // the partition key, so the dedup key is (occurred_at, ce_source, ce_id) and not (ce_source, ce_id). Redelivery
+    // is therefore free only for a producer that resends the *same* event; one that re-emits an old id with a new
+    // `time` gets two rows, and `payload_sha256` is what a cross-partition duplicate hunt would key on instead.
+    val first = force(EventId("shifted"))
+    def sample(time: OffsetDateTime): NewEvent =
+      force(
+        NewEvent.from(
+          Envelope(
+            id = first,
+            source = force(Source("/gateways/1")),
+            eventType = force(EventType("io.kzonix.iot.telemetry")),
+            time = Some(time),
+            subject = None,
+            dataContentType = None,
+            schema = None,
+            extensions = Map.empty,
+            payload = Payload.Structured(Json.obj("deviceId" -> Json.fromString("kitchen-0")))
+          )
+        )
+      )
+    assertEquals(await(repository.insertAll(Vector(sample(at)))), 1L)
+    assertEquals(await(repository.insertAll(Vector(sample(at.plusSeconds(1))))), 1L)
     assertEquals(await(repository.countAtMost(None, 100)), 2L)
 
   test("an empty batch is not a database round trip"):

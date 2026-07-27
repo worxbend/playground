@@ -122,8 +122,14 @@ final class TemplateSuite extends FunSuite:
   test("a request without a CSRF filter renders an empty token rather than throwing"):
     val bare: RequestHeader = FakeRequest("GET", "/events")
     val query = SearchQuery.lenient("v=1")
-    val outcome = SearchOutcome(SearchPage(Vector.empty, None), SearchService.EmptyFacets, Vector.empty, 0L,
-      TimeWindow(now.minusHours(24), now), 1.hour)
+    val outcome = SearchOutcome(
+      SearchPage(Vector.empty, None),
+      SearchService.EmptyFacets,
+      Vector.empty,
+      0L,
+      TimeWindow(now.minusHours(24), now),
+      1.hour
+    )
     val model = EventsPage(Presenter.filterBar(query, Vector.empty), Presenter.results(outcome, query, now))
     val document = Jsoup.parse(views.html.pages.events(model)(bare).body)
     assert(document.select("body").attr("hx-headers").contains(Csrf.HeaderName))
@@ -232,8 +238,14 @@ final class TemplateSuite extends FunSuite:
 
   test("a fragment emits no document shell and no duplicate results region"):
     val query = SearchQuery.lenient("v=1")
-    val outcome = SearchOutcome(SearchPage(Vector(Fixtures.summary()), None), Fixtures.facets, Fixtures.buckets, 3L,
-      TimeWindow(now.minusHours(24), now), 1.hour)
+    val outcome = SearchOutcome(
+      SearchPage(Vector(Fixtures.summary()), None),
+      Fixtures.facets,
+      Fixtures.buckets,
+      3L,
+      TimeWindow(now.minusHours(24), now),
+      1.hour
+    )
     val fragment = views.html.fragments.results(Presenter.results(outcome, query, now)).body
     assert(!fragment.contains("<html"), "a fragment must never emit a document shell")
     assert(!fragment.contains("id=\"results\""), "the live region belongs to the page and must survive the swap")

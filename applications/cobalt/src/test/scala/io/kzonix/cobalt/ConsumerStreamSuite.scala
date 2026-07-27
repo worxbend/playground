@@ -21,18 +21,11 @@
 
 package io.kzonix.cobalt
 
+import io.kzonix.observability.Tracing
+import io.kzonix.persistence.repository.NewEvent
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicReference
-
-import scala.concurrent.Await
-import scala.concurrent.ExecutionContext
-import scala.concurrent.Future
-import scala.concurrent.duration.DurationInt
-import scala.jdk.CollectionConverters.*
-
-import io.kzonix.observability.Tracing
-import io.kzonix.persistence.repository.NewEvent
 import org.apache.kafka.common.Metric
 import org.apache.kafka.common.MetricName
 import org.apache.pekko.Done
@@ -48,6 +41,11 @@ import org.apache.pekko.stream.scaladsl.Sink
 import org.apache.pekko.stream.scaladsl.Source
 import org.apache.pekko.stream.testkit.scaladsl.TestSink
 import org.apache.pekko.stream.testkit.scaladsl.TestSource
+import scala.concurrent.Await
+import scala.concurrent.ExecutionContext
+import scala.concurrent.Future
+import scala.concurrent.duration.DurationInt
+import scala.jdk.CollectionConverters.*
 
 /** The graph, driven from memory: no broker, no database, no Docker.
   *

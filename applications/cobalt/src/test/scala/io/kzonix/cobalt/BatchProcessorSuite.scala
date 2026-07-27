@@ -21,15 +21,14 @@
 
 package io.kzonix.cobalt
 
-import java.sql.SQLException
-import scala.concurrent.ExecutionContext
-import scala.concurrent.Future
-
 import io.kzonix.observability.Meters
 import io.kzonix.observability.Telemetry
 import io.kzonix.observability.Tracing
 import io.kzonix.persistence.repository.NewEvent
+import java.sql.SQLException
 import org.apache.kafka.clients.consumer.ConsumerRecord
+import scala.concurrent.ExecutionContext
+import scala.concurrent.Future
 
 /** The batch path: what is written, what is dead-lettered, and — the interesting one — what is *not* dead-lettered.
   *

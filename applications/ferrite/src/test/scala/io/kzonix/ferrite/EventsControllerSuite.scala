@@ -42,9 +42,9 @@ import scala.concurrent.Future
 
 /** Fragment or page — the one decision that makes htmx work without duplicating markup.
   *
-  * Every case here is a *behavioural* consequence of [[Hx.isFragment]], driven through the real controller and the
-  * real templates. Asserting on the predicate alone would not catch the mistake that actually happens: a route that
-  * forgets to consult it, or forgets `Vary`.
+  * Every case here is a *behavioural* consequence of [[Hx.isFragment]], driven through the real controller and the real
+  * templates. Asserting on the predicate alone would not catch the mistake that actually happens: a route that forgets
+  * to consult it, or forgets `Vary`.
   */
 final class EventsControllerSuite extends FunSuite:
 
@@ -54,7 +54,7 @@ final class EventsControllerSuite extends FunSuite:
     * `Writeable` for the request body, and only the singleton type has one.
     */
   private def get(url: String, headers: (String, String)*): FakeRequest[AnyContentAsEmpty.type] =
-    FakeRequest("GET", url).withHeaders(headers *)
+    FakeRequest("GET", url).withHeaders(headers*)
 
   private def body(result: Future[Result]): String = contentAsString(result)
 

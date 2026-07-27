@@ -22,6 +22,7 @@
 package io.kzonix.persistence
 
 import io.circe.Json
+import io.kzonix.kernel.event.AttrValue
 import io.kzonix.kernel.event.ContentType
 import io.kzonix.kernel.event.Envelope
 import io.kzonix.kernel.event.EventId
@@ -30,6 +31,8 @@ import io.kzonix.kernel.event.Payload
 import io.kzonix.kernel.event.Source
 import io.kzonix.kernel.event.Subject
 import io.kzonix.kernel.search.Filter
+import io.kzonix.kernel.search.NumOp
+import io.kzonix.kernel.search.Severity
 import io.kzonix.persistence.repository.EventRepository
 import io.kzonix.persistence.repository.FacetDimension
 import io.kzonix.persistence.repository.FacetRequest
@@ -88,6 +91,21 @@ final class EventRepositoryIT extends PostgresSuite:
           "message" -> Json.fromString("temperature reading taken")
         )
       )
+    )
+    force(NewEvent.from(envelope))
+
+  /** An event carrying CloudEvents extension attributes, which the seed events deliberately do not. */
+  private def tenanted: NewEvent =
+    val envelope = Envelope(
+      id = force(EventId("evt-tenanted")),
+      source = force(Source("/gateways/1")),
+      eventType = force(EventType("io.kzonix.iot.telemetry")),
+      time = Some(base.plusHours(1)),
+      subject = None,
+      dataContentType = None,
+      schema = None,
+      extensions = Map("tenantid" -> AttrValue.Text("acme"), "sequence" -> AttrValue.Num(7)),
+      payload = Payload.Structured(Json.obj("deviceId" -> Json.fromString("kitchen-9")))
     )
     force(NewEvent.from(envelope))
 
@@ -153,6 +171,67 @@ final class EventRepositoryIT extends PostgresSuite:
     val page = await(repository.search(force(SearchRequest.first(Some(filter), SortDirection.Newest, 50))))
     assertEquals(page.rows.size, 0)
     assertEquals(await(repository.countAtMost(None, 100)), 3L)
+
+  /** Every leaf of the filter compiler, executed.
+    *
+    * These are the branches whose *shape* the fast tier can assert and whose *legality* it cannot: `@??`, `@>` against
+    * `text[]` and `jsonb`, `websearch_to_tsquery` against the `search_doc` weights, and `extensions ->>` against the
+    * generated `raw - '{…}'` column. A parse error or an unresolvable operator in any of them is a 500 on a filter a
+    * user typed, and until this suite ran there was nothing anywhere that had sent one to a server.
+    */
+  private def matching(filter: Filter): Vector[String] =
+    await(repository.search(force(SearchRequest.first(Some(filter), SortDirection.Newest, 50)))).rows.map(_.ceId)
+
+  test("a numeric payload comparison compiles to a jsonpath the server accepts"):
+    // `data @?? ?::jsonpath`: `??` is pgjdbc's escape for a literal `?`, because the jsonb `@?` operator is otherwise
+    // indistinguishable from a bind placeholder. If the escape were wrong the driver would either report a parameter
+    // count mismatch or send `@??` to the server as an unknown operator — neither is visible without a server.
+    val _ = seed(5) // values 20.0 .. 24.0
+    assertEquals(
+      matching(force(Filter.payloadCmp("value", NumOp.Gte, BigDecimal(23)))).sorted,
+      Vector("evt-3", "evt-4")
+    )
+    assertEquals(matching(force(Filter.payloadCmp("value", NumOp.Lt, BigDecimal(21)))), Vector("evt-0"))
+    assertEquals(matching(force(Filter.payloadCmp("value", NumOp.Eq, BigDecimal(22)))), Vector("evt-2"))
+    // A path no event carries is an empty result, never an error.
+    assertEquals(matching(force(Filter.payloadCmp("nosuch", NumOp.Gt, BigDecimal(0)))), Vector.empty)
+
+  test("tag containment, payload containment and extension equality all resolve against their indexes"):
+    val _ = seed(3)
+    val _ = await(repository.insertAll(Vector(tenanted)))
+    assertEquals(matching(force(Filter.tagsAll(Vector("indoor", "hvac")))).size, 3)
+    assertEquals(matching(force(Filter.tagsAll(Vector("outdoor")))), Vector.empty)
+    val containment = Json.obj("roomId" -> Json.fromString("kitchen"))
+    assertEquals(matching(force(Filter.payloadContains(containment))).size, 3)
+    // `extensions` is the generated `raw - '{specversion,id,…}'` column: this asserts that the reserved-attribute
+    // list in the DDL and `Envelope.ReservedAttributes` agree about which keys are extensions and which are not.
+    assertEquals(matching(force(Filter.extensionEq("tenantid", "acme"))), Vector("evt-tenanted"))
+    assertEquals(matching(force(Filter.extensionEq("tenantid", "other"))), Vector.empty)
+    // A reserved attribute is NOT an extension, however it is spelled in the filter.
+    assertEquals(matching(force(Filter.extensionEq("type", "io.kzonix.iot.telemetry"))), Vector.empty)
+
+  test("free text runs through websearch_to_tsquery against the generated search_doc"):
+    val _ = seed(2)
+    // Weight C is the 'english' prose field, so the stemmed form of a word in `message` must match.
+    assert(matching(force(Filter.fullText("temperature"))).nonEmpty, "the prose weight is not searchable")
+    // Weight A is the 'simple' type field: a reverse-DNS type must match verbatim and must not be stemmed away.
+    assert(matching(force(Filter.fullText("io.kzonix.iot.telemetry"))).nonEmpty, "the type weight is not searchable")
+    // websearch_to_tsquery never raises on junk, which is why it and not to_tsquery: this is a 0-row page, not a 500.
+    assertEquals(matching(force(Filter.fullText("&&& |"))), Vector.empty)
+
+  test("severity, time bounds and boolean composition survive a real planner"):
+    val _ = seed(10) // index % 5 == 0 is "error" (rank 50), everything else "info" (rank 20)
+    assertEquals(matching(Filter.severityAtLeast(Severity.Warn)).sorted, Vector("evt-0", "evt-5"))
+    val window = force(Filter.occurred(Some(base), Some(base.plusMinutes(3))))
+    assertEquals(matching(window).sorted, Vector("evt-0", "evt-1", "evt-2"))
+    val both = force(Filter.and(Vector(window, Filter.severityAtLeast(Severity.Warn))))
+    assertEquals(matching(both), Vector("evt-0"))
+    // kitchen-1 is index % 3 == 1 (1, 4, 7); the alerts are 0 and 5. The union is what `Sql.parens` exists for:
+    // without the parentheses around each branch, `NOT a OR b` and `a OR b AND c` would bind the wrong way.
+    val device = force(Filter.deviceIn(Vector("kitchen-1")))
+    val either = force(Filter.or(Vector(device, Filter.severityAtLeast(Severity.Warn))))
+    assertEquals(matching(either).sorted, Vector("evt-0", "evt-1", "evt-4", "evt-5", "evt-7"))
+    assertEquals(matching(Filter.not(window)).size, 7)
 
   test("facets count within the current selection and report whether the cap was reached"):
     val _ = seed(9)

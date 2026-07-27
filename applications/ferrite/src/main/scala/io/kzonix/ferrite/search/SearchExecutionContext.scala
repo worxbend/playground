@@ -30,8 +30,8 @@ import play.api.libs.concurrent.CustomExecutionContext
   *
   * **Why not the default dispatcher.** Play's default dispatcher is a fork-join pool sized to the number of cores and
   * shared with request parsing, the Pekko HTTP server's own work and every non-blocking `map` in the application. A
-  * blocking `getConnection`/`executeQuery` parked on it does not just occupy a thread, it removes a thread from the pool
-  * that is supposed to be *accepting* requests — so a slow database stops the server answering `/health`, and the
+  * blocking `getConnection`/`executeQuery` parked on it does not just occupy a thread, it removes a thread from the
+  * pool that is supposed to be *accepting* requests — so a slow database stops the server answering `/health`, and the
   * symptom is a failing liveness probe rather than a slow search. Isolating the blocking work means a database stall
   * degrades exactly one feature.
   *

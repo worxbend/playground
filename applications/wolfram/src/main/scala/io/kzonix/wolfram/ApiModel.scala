@@ -112,12 +112,12 @@ object ApiModel:
     * error here rather than a 500 in production.
     */
   def failure(rejection: Rejection): IngestFailure = rejection match
-    case Rejection.Malformed(cause)          => InvalidEvent(rejection.reason, cause)
-    case Rejection.InvalidAttributes(cause)  => InvalidEvent(rejection.reason, cause)
-    case Rejection.ImplausibleTime(cause)    => InvalidEvent(rejection.reason, cause)
+    case Rejection.Malformed(cause)              => InvalidEvent(rejection.reason, cause)
+    case Rejection.InvalidAttributes(cause)      => InvalidEvent(rejection.reason, cause)
+    case Rejection.ImplausibleTime(cause)        => InvalidEvent(rejection.reason, cause)
     case Rejection.TooLarge(limit, actual, unit) =>
       OversizeEvent(rejection.reason, rejection.detail, limit, actual, unit)
-    case Rejection.BrokerUnavailable(cause)  => ServiceUnavailable(rejection.reason, cause)
+    case Rejection.BrokerUnavailable(cause) => ServiceUnavailable(rejection.reason, cause)
 
   /** The status a failure is served with. Stated here as well as on the endpoint's `oneOf` so the two can be asserted
     * equal in a test — the endpoint description is the authority the server obeys, this is the authority a reader can
@@ -157,8 +157,8 @@ object ApiModel:
     *
     * **207 for a partial failure, 202 for a clean one.** A batch in which some elements were refused is not a failed
     * request — the accepted events are durable and must not be resent — so a 4xx would be actively harmful: a client
-    * retrying the whole document on 400 would duplicate every event that succeeded. 207 Multi-Status says exactly
-    * "look inside", which is the only truthful answer.
+    * retrying the whole document on 400 would duplicate every event that succeeded. 207 Multi-Status says exactly "look
+    * inside", which is the only truthful answer.
     */
   def report(outcome: BatchOutcome): (StatusCode, BatchReport) =
     val entries = outcome.results.zipWithIndex.map((result, index) => entry(index, result)).toList

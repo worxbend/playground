@@ -21,16 +21,14 @@
 
 package io.kzonix.cobalt
 
+import com.typesafe.scalalogging.StrictLogging
 import java.util.concurrent.Executors
 import java.util.concurrent.ScheduledExecutorService
 import java.util.concurrent.ThreadFactory
 import java.util.concurrent.TimeUnit
-
+import javax.sql.DataSource
 import scala.concurrent.duration.FiniteDuration
 import scala.util.control.NonFatal
-
-import com.typesafe.scalalogging.StrictLogging
-import javax.sql.DataSource
 
 /** The background poller behind both the lag gauge and the readiness probe.
   *

@@ -1,0 +1,34 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Scaladoc — kzonix event observatory</title>
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+  body { font: 16px/1.6 system-ui, sans-serif; max-width: 40rem; margin: 3rem auto; padding: 0 1rem; }
+  h2 { margin-top: 2rem; font-size: 1rem; text-transform: uppercase; letter-spacing: .05em; color: #666; }
+  ul { padding-left: 1.2rem; }
+</style>
+
+<h1>Scaladoc</h1>
+
+<p>
+  Generated API documentation, one tree per sbt module. These pages are produced by
+  <code>sbt doc</code> and staged here by the Docs workflow; they are absent from a local
+  <code>mkdocs serve</code> unless you have run <code>sbt doc</code> and copied them in yourself.
+</p>
+
+<h2>Applications</h2>
+<ul>
+  <li><a href="wolfram/index.html">wolfram</a> — CloudEvents ingestion API</li>
+  <li><a href="cobalt/index.html">cobalt</a> — Kafka consumer and Postgres writer</li>
+  <li><a href="ferrite/index.html">ferrite</a> — Play 3 web application</li>
+</ul>
+
+<h2>Shared libraries</h2>
+<ul>
+  <li><a href="kernel/index.html">kernel</a> — domain envelope, observation ADT, search filter grammar</li>
+  <li><a href="eventing/index.html">eventing</a> — Kafka wire format, producer and consumer codecs</li>
+  <li><a href="persistence/index.html">persistence</a> — schema, connection pool, filter-to-SQL compiler</li>
+  <li><a href="observability/index.html">observability</a> — metric vocabulary and tracing setup</li>
+</ul>
+
+<p><a href="../">← Back to the documentation</a></p>

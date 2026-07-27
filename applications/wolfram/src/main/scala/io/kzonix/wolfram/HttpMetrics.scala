@@ -21,12 +21,11 @@
 
 package io.kzonix.wolfram
 
-import java.util.concurrent.TimeUnit
-import scala.concurrent.Future
-
 import io.kzonix.observability.Meters
 import io.micrometer.core.instrument.MeterRegistry
 import io.micrometer.core.instrument.Tags
+import java.util.concurrent.TimeUnit
+import scala.concurrent.Future
 import sttp.model.StatusCode
 import sttp.tapir.AnyEndpoint
 import sttp.tapir.server.interceptor.metrics.MetricsRequestInterceptor

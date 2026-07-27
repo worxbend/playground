@@ -21,17 +21,16 @@
 
 package io.kzonix.cobalt
 
-import scala.concurrent.duration.FiniteDuration
-
 import pureconfig.ConfigReader
 import pureconfig.ConfigSource
 import pureconfig.error.ConfigReaderFailures
+import scala.concurrent.duration.FiniteDuration
 
 /** Where the operational HTTP surface binds.
   *
   * cobalt serves no business endpoints (ADR §1): this listener exists only for `/metrics` and the two health probes, so
-  * it is configured separately from everything that touches Kafka — a platform team owns the port, the service team owns
-  * the stream.
+  * it is configured separately from everything that touches Kafka — a platform team owns the port, the service team
+  * owns the stream.
   */
 final case class ServerConfig(host: String, port: Int)
 
@@ -107,8 +106,8 @@ object ConsumerConfig:
   *
   * **Bounded on purpose.** An unbounded restart loop against a broker that is never coming back looks identical, from
   * the outside, to a healthy consumer with no traffic: the process stays up, the pod stays Ready, and the only symptom
-  * is lag. `maxRestarts` within `maxRestartsWithin` makes the stream *fail*, which fails readiness, which is a signal an
-  * operator actually receives.
+  * is lag. `maxRestarts` within `maxRestartsWithin` makes the stream *fail*, which fails readiness, which is a signal
+  * an operator actually receives.
   *
   * @param randomFactor
   *   jitter. Without it every replica of a service retries in lockstep and the recovering broker is hit by a

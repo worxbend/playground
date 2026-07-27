@@ -21,15 +21,14 @@
 
 package io.kzonix.wolfram
 
+import io.kzonix.kernel.Rfc3339
+import io.kzonix.kernel.event.Envelope
 import java.time.Instant
 import java.time.OffsetDateTime
 import java.time.ZoneOffset
 import java.util.concurrent.atomic.AtomicReference
 import scala.concurrent.Future
 import scala.concurrent.duration.DurationInt
-
-import io.kzonix.kernel.Rfc3339
-import io.kzonix.kernel.event.Envelope
 
 /** Shared test data and doubles.
   *

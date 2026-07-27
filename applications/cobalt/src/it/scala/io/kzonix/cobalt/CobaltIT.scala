@@ -21,9 +21,19 @@
 
 package io.kzonix.cobalt
 
+import io.kzonix.persistence.Database
+import io.kzonix.persistence.DatabaseConfig
+import io.kzonix.persistence.MigrationReport
+import io.kzonix.persistence.Migrations
+import io.kzonix.persistence.PoolConfig
 import java.sql.Connection
 import java.util.concurrent.Executors
-
+import org.apache.kafka.clients.admin.Admin
+import org.apache.kafka.clients.admin.NewTopic
+import org.apache.kafka.clients.producer.KafkaProducer
+import org.apache.kafka.clients.producer.ProducerRecord
+import org.apache.kafka.common.serialization.ByteArraySerializer
+import org.apache.kafka.common.serialization.StringSerializer
 import scala.concurrent.Await
 import scala.concurrent.ExecutionContext
 import scala.concurrent.Future
@@ -32,18 +42,6 @@ import scala.concurrent.duration.FiniteDuration
 import scala.jdk.CollectionConverters.*
 import scala.util.Try
 import scala.util.Using
-
-import io.kzonix.persistence.Database
-import io.kzonix.persistence.DatabaseConfig
-import io.kzonix.persistence.MigrationReport
-import io.kzonix.persistence.Migrations
-import io.kzonix.persistence.PoolConfig
-import org.apache.kafka.clients.admin.Admin
-import org.apache.kafka.clients.admin.NewTopic
-import org.apache.kafka.clients.producer.KafkaProducer
-import org.apache.kafka.clients.producer.ProducerRecord
-import org.apache.kafka.common.serialization.ByteArraySerializer
-import org.apache.kafka.common.serialization.StringSerializer
 
 /** The shared slow-tier fixture: one broker, one database, one JVM.
   *
@@ -131,8 +129,8 @@ abstract class CobaltIT extends munit.FunSuite:
   protected def withConnection[A](use: Connection => A): A =
     Using.resource(database.write.get().getConnection)(use)
 
-  /** `TRUNCATE`, not `DELETE`: the fact table is partitioned and append-only, and `V1__events.sql` tunes autovacuum
-    * for insert-driven collection, so a `DELETE` leaves dead tuples nothing comes back for.
+  /** `TRUNCATE`, not `DELETE`: the fact table is partitioned and append-only, and `V1__events.sql` tunes autovacuum for
+    * insert-driven collection, so a `DELETE` leaves dead tuples nothing comes back for.
     */
   protected def truncateEvents(): Unit =
     withConnection: connection =>

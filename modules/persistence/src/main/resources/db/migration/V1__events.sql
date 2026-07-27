@@ -46,15 +46,21 @@ EXCEPTION WHEN others THEN RETURN NULL; END; $$;
 
 -- Ordered severity. Text alone cannot be range-compared; the rank can, which is
 -- what makes "at least warning" an index scan instead of an IN-list.
--- These numbers are the SAME numbers as io.kzonix.kernel.search.Severity. If the
--- two drift, the UI alert filter and partial index (11) disagree on what an alert is.
+-- These numbers are the SAME numbers as io.kzonix.kernel.search.Severity, and the
+-- spellings are the SAME spellings: `Severity.rank(raw)` and this function must agree
+-- for every string, aliases included. If the two drift, the UI alert filter and partial
+-- index (11) disagree on what an alert is — a `crit` event is an alert to the domain
+-- and a NULL rank to the database, so it is missing from the alert feed and from
+-- `severity >= warn` searches while still rendering as critical in the detail view.
+-- `trim` as well as `lower`, because Severity.parse trims before it looks up.
 CREATE OR REPLACE FUNCTION events.severity_rank(s text)
 RETURNS smallint LANGUAGE sql IMMUTABLE PARALLEL SAFE AS $$
-  SELECT CASE lower(s)
+  SELECT CASE btrim(lower(s))
     WHEN 'debug' THEN 10 WHEN 'info' THEN 20 WHEN 'notice' THEN 30
     WHEN 'warn' THEN 40 WHEN 'warning' THEN 40 WHEN 'error' THEN 50
-    WHEN 'critical' THEN 60 WHEN 'alert' THEN 70 WHEN 'fatal' THEN 80
-    WHEN 'emergency' THEN 80 ELSE NULL END::smallint $$;
+    WHEN 'err' THEN 50 WHEN 'critical' THEN 60 WHEN 'crit' THEN 60
+    WHEN 'alert' THEN 70 WHEN 'fatal' THEN 80 WHEN 'emerg' THEN 80
+    WHEN 'emergency' THEN 80 WHEN 'panic' THEN 80 ELSE NULL END::smallint $$;
 
 -- ---------------------------------------------------------------------------
 -- Fact table.
@@ -252,7 +258,20 @@ ALTER TABLE events.cloud_event ALTER COLUMN device_id SET STATISTICS 1000;
 
 -- Append-only tables are never touched by dead-tuple autovacuum; force insert-driven
 -- vacuums so visibility maps stay fresh and index-only scans stay index-only.
-ALTER TABLE events.cloud_event SET (
+--
+-- Set on each LEAF, never on the parent: a partitioned table stores no tuples, so
+-- PostgreSQL rejects storage parameters on it outright ("cannot specify storage
+-- parameters for a partitioned table"). Autovacuum settings are also not inherited
+-- by partitions, so the rolling partition job (ADR §5) must repeat these two
+-- reloptions on every partition it creates or the newest month — the only one being
+-- written to — is the one month that never gets an insert-driven vacuum.
+ALTER TABLE events.cloud_event_2026_07 SET (
+    autovacuum_vacuum_insert_scale_factor = 0.0,
+    autovacuum_vacuum_insert_threshold    = 50000);
+ALTER TABLE events.cloud_event_2026_08 SET (
+    autovacuum_vacuum_insert_scale_factor = 0.0,
+    autovacuum_vacuum_insert_threshold    = 50000);
+ALTER TABLE events.cloud_event_default SET (
     autovacuum_vacuum_insert_scale_factor = 0.0,
     autovacuum_vacuum_insert_threshold    = 50000);
 

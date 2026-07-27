@@ -27,10 +27,10 @@ import scala.annotation.tailrec
 /** Query-string editing for the filter bar, the facet panel and the "load more" cursor.
   *
   * The UI's whole navigation model is "take the URL the user is on and change one parameter": clicking a facet adds
-  * `&device=kitchen-1`, dismissing a chip removes it, paging appends a cursor. Doing that on the *string* rather than on
-  * the [[io.kzonix.kernel.search.Filter]] AST is deliberate — the AST cannot represent a half-built or invalid filter,
-  * and the one thing this UI must never do is silently drop a parameter it could not parse (ADR §6.3). Editing pairs
-  * keeps a malformed value visible in the URL and in the filter bar, where the user can fix it.
+  * `&device=kitchen-1`, dismissing a chip removes it, paging appends a cursor. Doing that on the *string* rather than
+  * on the [[io.kzonix.kernel.search.Filter]] AST is deliberate — the AST cannot represent a half-built or invalid
+  * filter, and the one thing this UI must never do is silently drop a parameter it could not parse (ADR §6.3). Editing
+  * pairs keeps a malformed value visible in the URL and in the filter bar, where the user can fix it.
   *
   * Encoding matches `FilterQuery`'s own codec in `modules/kernel`: the same safe set, so `:` and `/` in a CloudEvents
   * `source` stay legible, and `+` is always escaped on the way out and always read as a space on the way in. It is
@@ -39,8 +39,8 @@ import scala.annotation.tailrec
   */
 object Query:
 
-  private val Safe: Set[Char] =
-    (('A' to 'Z') ++ ('a' to 'z') ++ ('0' to '9')).toSet ++ Set('-', '.', '_', '~', ':', '/', '@', '*')
+  private val Safe: Set[Char] = (('A' to 'Z') ++ ('a' to 'z') ++ ('0' to '9')).toSet ++
+    Set('-', '.', '_', '~', ':', '/', '@', '*')
 
   /** Splits a raw query string into decoded pairs, preserving order and repeats.
     *

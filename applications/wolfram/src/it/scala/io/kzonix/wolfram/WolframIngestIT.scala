@@ -21,14 +21,6 @@
 
 package io.kzonix.wolfram
 
-import java.nio.charset.StandardCharsets.UTF_8
-import java.time.Duration as JavaDuration
-import java.time.Instant
-import java.time.ZoneOffset
-import java.util.Properties
-import scala.concurrent.duration.DurationInt
-import scala.jdk.CollectionConverters.*
-
 import io.kzonix.eventing.CloudEventHeaders
 import io.kzonix.eventing.ContentMode
 import io.kzonix.eventing.KafkaTrace
@@ -42,6 +34,11 @@ import io.opentelemetry.api.trace.propagation.W3CTraceContextPropagator
 import io.opentelemetry.context.propagation.ContextPropagators
 import io.opentelemetry.sdk.OpenTelemetrySdk
 import io.opentelemetry.sdk.trace.SdkTracerProvider
+import java.nio.charset.StandardCharsets.UTF_8
+import java.time.Duration as JavaDuration
+import java.time.Instant
+import java.time.ZoneOffset
+import java.util.Properties
 import munit.FunSuite
 import org.apache.kafka.clients.admin.Admin
 import org.apache.kafka.clients.admin.NewTopic
@@ -50,6 +47,8 @@ import org.apache.kafka.clients.consumer.ConsumerRecord
 import org.apache.kafka.clients.consumer.KafkaConsumer
 import org.apache.kafka.common.serialization.ByteArrayDeserializer
 import org.apache.kafka.common.serialization.StringDeserializer
+import scala.concurrent.duration.DurationInt
+import scala.jdk.CollectionConverters.*
 import sttp.client3.*
 import sttp.model.StatusCode
 
@@ -61,18 +60,23 @@ import sttp.model.StatusCode
   * function chose, and above all whether the `traceparent` a client sent arrives in the consumer's headers on the same
   * trace. None of those is observable without both ends running.
   *
-  * **Broker discovery.** `KAFKA_BOOTSTRAP_SERVERS` from the environment, skipping when it is absent, so `IT/testFull`
-  * is green on a machine with no Docker. ADR §9.2 asks for a Testcontainers `KafkaContainer` behind a shared lazy
-  * singleton, and that is the intended shape — but `testcontainers-scala` is wired to `modules/eventing` and
-  * `modules/persistence` only, and this module's `build.sbt` entry declares no Testcontainers dependency. Adding
-  * `libraryDependencies ++= testContainers.map(_ % IT)` to the `wolfram` project is the whole change; every test below
-  * already takes the broker address as a parameter, exactly as `modules/eventing`'s `KafkaWireIT` does.
+  * **Broker discovery — and a standing build gap.** ADR §9.2 asks for a Testcontainers `KafkaContainer` behind a shared
+  * lazy singleton, which is what `modules/eventing`'s `KafkaWireIT` now does. This module cannot: `build.sbt` adds
+  * `testContainers.map(_ % IT)` to `eventing` and `persistence` only, so `com.dimafeng.testcontainers` is not on
+  * wolfram's IT classpath and the import would not compile. Until that one line is added, the address comes from
+  * `KAFKA_BOOTSTRAP_SERVERS` and the tests **skip** without it.
+  *
+  * Skip, emphatically not pass. This method previously returned unit when the variable was absent, so all three tests
+  * below reported success having executed no assertion and having contacted no broker — the suite had never once run
+  * when it was written, and nothing said so. Every test below already takes the broker address as a parameter, so
+  * wiring the container in is a change to [[bootstrapServers]] and nothing else.
   */
 final class WolframIngestIT extends FunSuite:
 
   /** The single point a Testcontainers `KafkaContainer` replaces. */
-  private def bootstrapServers: Option[String] =
-    sys.env.get("KAFKA_BOOTSTRAP_SERVERS").filter(_.trim.nonEmpty)
+  private val BootstrapEnv: String = "KAFKA_BOOTSTRAP_SERVERS"
+
+  private def bootstrapServers: Option[String] = sys.env.get(BootstrapEnv).filter(_.trim.nonEmpty)
 
   private val incomingTraceParent = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
   private val incomingTraceId = "0af7651916cd43dd8448eb211c80319c"
@@ -150,8 +154,10 @@ final class WolframIngestIT extends FunSuite:
   private def withApp(body: (WolframApp, String, String) => Unit): Unit =
     bootstrapServers match
       case None =>
-        // Skipped rather than failed: the fast tier must stay runnable without a broker (ADR §9.2).
-        ()
+        // `assume`, not `()`. Returning unit reported three PASSING tests that had executed no assertion at all — the
+        // suite was green for months without ever having reached a broker, and green is the one result nobody
+        // investigates. `assume` marks them SKIPPED, which is the only honest word for what is happening.
+        assume(false, s"$BootstrapEnv is not set; wolfram's IT tier has no broker to publish to")
       case Some(servers) =>
         val topic = newTopic(servers)
         val telemetry = Telemetry.start(TelemetryConfig("wolfram", "it", "it-0"), recordingTracing)

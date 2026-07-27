@@ -30,6 +30,14 @@ import scala.jdk.CollectionConverters.*
   * Returned rather than logged so the caller can assert on it: ADR §9.3 makes "the applied-version list matches a
   * committed baseline" a CI gate, which is the mechanism that catches a migration edited in place — the single most
   * common way a schema silently diverges between a developer's database and production.
+  *
+  * `targetVersion` is **the version the schema is at when the run finishes**, which is not what Flyway's
+  * `MigrateResult.targetSchemaVersion` holds: Flyway leaves that field `null` whenever nothing was pending, because to
+  * Flyway it means "the version this run migrated *towards*". Reported verbatim it makes the field say `None` on every
+  * boot after the first — so a replica logs "schema at <none>" against a fully migrated database, and any caller that
+  * reads it as "is the schema applied" is right exactly once and wrong forever after. The version after the run is what
+  * every caller in this repo actually asks for, so that is what this field means and it is never `None` for a database
+  * that has any migration applied.
   */
 final case class MigrationReport(
   initialVersion: Option[String],
@@ -68,9 +76,12 @@ object Migrations:
     */
   def migrate(dataSource: DataSource): MigrationReport =
     val result = flyway(dataSource).migrate()
+    val initial = Option(result.initialSchemaVersion).filter(_.nonEmpty)
     MigrationReport(
-      initialVersion = Option(result.initialSchemaVersion),
-      targetVersion = Option(result.targetSchemaVersion),
+      initialVersion = initial,
+      // `targetSchemaVersion` is null when nothing was pending — see [[MigrationReport]]. Falling back to the version
+      // the database was already at is what makes this field mean "where the schema ended up" on every run.
+      targetVersion = Option(result.targetSchemaVersion).filter(_.nonEmpty).orElse(initial),
       executed = result.migrationsExecuted,
       applied = result.migrations.asScala.toVector.map(_.version)
     )

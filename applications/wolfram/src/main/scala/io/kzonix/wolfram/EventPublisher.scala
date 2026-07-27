@@ -21,11 +21,10 @@
 
 package io.kzonix.wolfram
 
+import io.kzonix.kernel.event.Envelope
 import java.time.Instant
 import java.util.concurrent.atomic.AtomicReference
 import scala.concurrent.Future
-
-import io.kzonix.kernel.event.Envelope
 
 /** What the broker said when it accepted a record.
   *

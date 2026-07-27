@@ -21,20 +21,6 @@
 
 package io.kzonix.wolfram
 
-import java.time.Instant
-import java.util.concurrent.ArrayBlockingQueue
-import java.util.concurrent.Executor
-import java.util.concurrent.Executors
-import java.util.concurrent.RejectedExecutionException
-import java.util.concurrent.ScheduledExecutorService
-import java.util.concurrent.ThreadPoolExecutor
-import java.util.concurrent.TimeUnit
-import scala.concurrent.Future
-import scala.concurrent.Promise
-import scala.concurrent.duration.FiniteDuration
-import scala.jdk.CollectionConverters.*
-import scala.util.control.NonFatal
-
 import com.typesafe.scalalogging.StrictLogging
 import io.kzonix.eventing.KafkaCodecs
 import io.kzonix.eventing.KafkaTrace
@@ -47,11 +33,24 @@ import io.opentelemetry.api.common.Attributes
 import io.opentelemetry.api.trace.SpanKind
 import io.opentelemetry.api.trace.StatusCode
 import io.opentelemetry.context.Context
+import java.time.Instant
+import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.Executor
+import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
+import java.util.concurrent.ScheduledExecutorService
+import java.util.concurrent.ThreadPoolExecutor
+import java.util.concurrent.TimeUnit
 import org.apache.kafka.clients.producer.KafkaProducer
 import org.apache.kafka.clients.producer.Producer
 import org.apache.kafka.clients.producer.ProducerRecord
 import org.apache.kafka.common.serialization.ByteArraySerializer
 import org.apache.kafka.common.serialization.StringSerializer
+import scala.concurrent.Future
+import scala.concurrent.Promise
+import scala.concurrent.duration.FiniteDuration
+import scala.jdk.CollectionConverters.*
+import scala.util.control.NonFatal
 
 /** Publishes validated envelopes to `events.cloudevents.v1` with a plain `KafkaProducer`.
   *
@@ -253,7 +252,11 @@ object KafkaEventPublisher:
       "request.timeout.ms" -> config.requestTimeout.toMillis.toString
     )
     val producer =
-      KafkaProducer[String, Array[Byte]](KafkaCodecs.producerConfig(settings), StringSerializer(), ByteArraySerializer())
+      KafkaProducer[String, Array[Byte]](
+        KafkaCodecs.producerConfig(settings),
+        StringSerializer(),
+        ByteArraySerializer()
+      )
     val sender = boundedSender(config.queueCapacity)
     val prober: ScheduledExecutorService =
       Executors.newSingleThreadScheduledExecutor(daemon("wolfram-kafka-probe"))

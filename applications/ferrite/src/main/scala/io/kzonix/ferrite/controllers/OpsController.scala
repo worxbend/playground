@@ -46,8 +46,9 @@ import scala.util.Success
   * should be taken out of the load-balancer rotation rather than returning 500s. A failed readiness probe removes
   * traffic; it does not remove the process.
   *
-  * `/metrics` and the `/health` subtree are excluded from `http.server.requests` by [[io.kzonix.ferrite.web.MetricsFilter]] (ADR
-  * §7.1) — a scrape endpoint that times itself inflates the request rate of every dashboard that reads it.
+  * `/metrics` and the `/health` subtree are excluded from `http.server.requests` by
+  * [[io.kzonix.ferrite.web.MetricsFilter]] (ADR §7.1) — a scrape endpoint that times itself inflates the request rate
+  * of every dashboard that reads it.
   */
 @Singleton
 final class OpsController @Inject() (cc: ControllerComponents, telemetry: Telemetry, readiness: Readiness)(using

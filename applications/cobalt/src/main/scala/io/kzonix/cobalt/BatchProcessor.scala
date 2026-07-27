@@ -21,22 +21,20 @@
 
 package io.kzonix.cobalt
 
-import java.sql.SQLException
-
-import scala.annotation.tailrec
-import scala.concurrent.ExecutionContext
-import scala.concurrent.Future
-import scala.util.Failure
-import scala.util.Success
-import scala.util.control.NonFatal
-
 import com.typesafe.scalalogging.StrictLogging
 import io.kzonix.eventing.DeadLetter
 import io.kzonix.eventing.DecodeFailure
 import io.kzonix.kernel.event.Source
 import io.kzonix.observability.Meters
 import io.kzonix.persistence.repository.EventRepository
+import java.sql.SQLException
 import org.apache.pekko.kafka.ConsumerMessage.Committable
+import scala.annotation.tailrec
+import scala.concurrent.ExecutionContext
+import scala.concurrent.Future
+import scala.util.Failure
+import scala.util.Success
+import scala.util.control.NonFatal
 
 /** Turns one `groupedWithin` batch into a durable effect, and returns the offsets that effect earned.
   *
@@ -92,8 +90,8 @@ final class BatchProcessor(
   /** Publishes the records that could not be decoded at all.
     *
     * Sequential rather than parallel: a DLQ burst is by definition a bad moment for the pipeline, and firing an
-    * unbounded fan-out of produces at a broker that may itself be the problem is how a poison batch becomes an
-    * outage. Order is also preserved, which makes the DLQ readable.
+    * unbounded fan-out of produces at a broker that may itself be the problem is how a poison batch becomes an outage.
+    * Order is also preserved, which makes the DLQ readable.
     */
   private def deadLetterAll(poison: Vector[DeadLetter]): Future[Unit] =
     poison.foldLeft(Future.unit): (previous, deadLetter) =>
@@ -155,9 +153,9 @@ object BatchProcessor:
   /** SQLSTATE classes that mean "this row, not this database".
     *
     * `22` is a data exception (bad datetime, numeric overflow, invalid text representation); `23` is an integrity
-    * constraint violation, which on this schema is how `cloud_event_specversion_ck`, `cloud_event_required_ck` and
-    * "no partition of relation found for row" all surface. Both are deterministic properties of the row, so retrying
-    * or restarting can only reproduce them.
+    * constraint violation, which on this schema is how `cloud_event_specversion_ck`, `cloud_event_required_ck` and "no
+    * partition of relation found for row" all surface. Both are deterministic properties of the row, so retrying or
+    * restarting can only reproduce them.
     *
     * Everything else is treated as transient — including syntax and privilege errors (class `42`), which are a *build*
     * defect rather than a record defect and must page rather than quietly shovel the whole topic into the DLQ.

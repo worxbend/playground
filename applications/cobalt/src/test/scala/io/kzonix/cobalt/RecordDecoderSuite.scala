@@ -21,10 +21,6 @@
 
 package io.kzonix.cobalt
 
-import java.util.concurrent.TimeUnit
-
-import scala.jdk.CollectionConverters.*
-
 import io.kzonix.eventing.KafkaTrace
 import io.kzonix.observability.Tracing
 import io.opentelemetry.api.trace.Span
@@ -33,11 +29,13 @@ import io.opentelemetry.api.trace.SpanKind
 import io.opentelemetry.api.trace.TraceFlags
 import io.opentelemetry.api.trace.TraceState
 import io.opentelemetry.sdk.common.CompletableResultCode
-import io.opentelemetry.sdk.trace.SdkTracerProvider
-import io.opentelemetry.sdk.trace.data.SpanData
 import io.opentelemetry.sdk.trace.`export`.SimpleSpanProcessor
 import io.opentelemetry.sdk.trace.`export`.SpanExporter
+import io.opentelemetry.sdk.trace.SdkTracerProvider
+import io.opentelemetry.sdk.trace.data.SpanData
+import java.util.concurrent.TimeUnit
 import org.apache.kafka.common.header.internals.RecordHeaders
+import scala.jdk.CollectionConverters.*
 
 /** Decoding must be total and it must continue the trace. Those are the two properties this suite exists for.
   *

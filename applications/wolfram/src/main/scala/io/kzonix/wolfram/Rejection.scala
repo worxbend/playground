@@ -32,8 +32,8 @@ import io.kzonix.observability.Meters
   *
   * **`reason` is drawn from [[Meters.Reasons]] and nothing else.** That closed set is the shared vocabulary of ADR §7.1
   * and it deliberately has fewer values than this enum has cases: `Malformed` and `ImplausibleTime` are different
-  * sentences for a client but the same actionable category for an operator, and minting a per-case tag value would
-  * fork the `ingest.events.rejected` dashboard away from cobalt's `consume.records.poison`.
+  * sentences for a client but the same actionable category for an operator, and minting a per-case tag value would fork
+  * the `ingest.events.rejected` dashboard away from cobalt's `consume.records.poison`.
   *
   * `BrokerUnavailable` is tagged [[Meters.Reasons.Unpersistable]] for the same reason: it is the closest member of the
   * closed set (the event could not be made durable), and adding a `broker-unavailable` value here would mean adding it

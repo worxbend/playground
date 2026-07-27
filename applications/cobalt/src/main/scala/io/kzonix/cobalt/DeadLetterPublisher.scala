@@ -21,10 +21,6 @@
 
 package io.kzonix.cobalt
 
-import scala.concurrent.Future
-import scala.concurrent.Promise
-import scala.util.control.NonFatal
-
 import com.typesafe.scalalogging.StrictLogging
 import io.kzonix.eventing.DeadLetter
 import io.kzonix.eventing.KafkaCodecs
@@ -33,6 +29,9 @@ import org.apache.kafka.clients.producer.KafkaProducer
 import org.apache.kafka.clients.producer.Producer
 import org.apache.kafka.common.serialization.ByteArraySerializer
 import org.apache.kafka.common.serialization.StringSerializer
+import scala.concurrent.Future
+import scala.concurrent.Promise
+import scala.util.control.NonFatal
 
 /** Where a record goes when the consumer gives up on it.
   *
@@ -56,9 +55,9 @@ trait DeadLetterPublisher:
   * be something the batch can `flatMap` on. Splicing a `Producer.flow` into the graph would either reorder that
   * dependency or need a second commit path, and both are ways to lose a poison record while committing past it.
   *
-  * **`acks=all` and idempotence come from [[KafkaCodecs.producerConfig]]** and cannot be turned off by configuration.
-  * A DLQ producer that acknowledges before the record is replicated makes the dead letter *less* durable than the
-  * record it replaces, which defeats the entire mechanism.
+  * **`acks=all` and idempotence come from [[KafkaCodecs.producerConfig]]** and cannot be turned off by configuration. A
+  * DLQ producer that acknowledges before the record is replicated makes the dead letter *less* durable than the record
+  * it replaces, which defeats the entire mechanism.
   */
 final class KafkaDeadLetterPublisher(
   producer: Producer[String, Array[Byte]],
@@ -115,7 +114,7 @@ object KafkaDeadLetterPublisher:
       )
     KafkaDeadLetterPublisher(producer, config.dlqTopic, java.time.Duration.ofMillis(config.drainTimeout.toMillis))
 
-  /** The topic a dead letter goes to when nothing overrides it: kernel's constant, so cobalt and any replayer
-    * agree on the name.
+  /** The topic a dead letter goes to when nothing overrides it: kernel's constant, so cobalt and any replayer agree on
+    * the name.
     */
   val DefaultTopic: String = Topics.CloudEventsDlq

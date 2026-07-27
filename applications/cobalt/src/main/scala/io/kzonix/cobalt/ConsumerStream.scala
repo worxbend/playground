@@ -22,9 +22,6 @@
 package io.kzonix.cobalt
 
 import java.util.concurrent.atomic.AtomicReference
-
-import scala.concurrent.duration.FiniteDuration
-
 import org.apache.pekko.Done
 import org.apache.pekko.NotUsed
 import org.apache.pekko.kafka.ConsumerMessage.Committable
@@ -36,6 +33,7 @@ import org.apache.pekko.stream.RestartSettings
 import org.apache.pekko.stream.scaladsl.Flow
 import org.apache.pekko.stream.scaladsl.RestartSource
 import org.apache.pekko.stream.scaladsl.Source
+import scala.concurrent.duration.FiniteDuration
 
 /** The consumer graph of ADR §4.3, assembled from pieces each of which is testable without a broker.
   *

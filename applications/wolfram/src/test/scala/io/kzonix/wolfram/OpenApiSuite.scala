@@ -85,7 +85,10 @@ final class OpenApiSuite extends FunSuite:
 
   test("the batch endpoint documents both of its success codes"):
     val responses = operation("/events/batch", "post").downField("responses")
-    assertEquals(responses.downField("202").get[String]("description").toOption, Some("Every event in the batch was published."))
+    assertEquals(
+      responses.downField("202").get[String]("description").toOption,
+      Some("Every event in the batch was published.")
+    )
     assert(responses.downField("207").succeeded)
 
   test("the operational endpoints are absent — they are not part of the API's contract"):

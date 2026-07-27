@@ -185,8 +185,8 @@ object Presenter:
 
   /** The facet panel.
     *
-    * Every dimension is emitted even when it has no values, so the panel does not reflow as the filter narrows —
-    * a control that moves under the pointer between clicks is a control that gets misclicked.
+    * Every dimension is emitted even when it has no values, so the panel does not reflow as the filter narrows — a
+    * control that moves under the pointer between clicks is a control that gets misclicked.
     *
     * Severity is the one dimension whose link is not a toggle: the grammar has only `SeverityAtLeast` (ADR §6.1), so
     * selecting `warn` means `severity=>=warn` and selecting it again clears it. Modelling it as a set membership would
@@ -293,13 +293,13 @@ object Presenter:
     */
   def problems(errors: Vector[FilterError]): Vector[Problem] = errors.map { error =>
     val parameter = error match
-      case FilterError.Invalid(name, _)         => name
-      case FilterError.Repeated(name)           => name
-      case FilterError.UnknownParameter(name)   => name
-      case FilterError.Malformed(fragment, _)   => fragment
-      case FilterError.MissingVersion           => SearchQuery.VersionKey
-      case FilterError.UnsupportedVersion(_)    => SearchQuery.VersionKey
-      case FilterError.NotPermalinkable(_)      => ""
+      case FilterError.Invalid(name, _)       => name
+      case FilterError.Repeated(name)         => name
+      case FilterError.UnknownParameter(name) => name
+      case FilterError.Malformed(fragment, _) => fragment
+      case FilterError.MissingVersion         => SearchQuery.VersionKey
+      case FilterError.UnsupportedVersion(_)  => SearchQuery.VersionKey
+      case FilterError.NotPermalinkable(_)    => ""
     Problem(parameter, error.message)
   }
 
@@ -455,9 +455,9 @@ object Presenter:
       )
 
   private def payloadKind(payload: Payload): String = payload match
-    case Payload.Structured(_)         => "JSON"
-    case Payload.Opaque(_, mediaType)  => mediaType
-    case Payload.Empty                 => "none"
+    case Payload.Structured(_)        => "JSON"
+    case Payload.Opaque(_, mediaType) => mediaType
+    case Payload.Empty                => "none"
 
   // ---------------------------------------------------------------------------------------------------------------
   // Failure

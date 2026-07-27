@@ -40,11 +40,11 @@ import scala.concurrent.ExecutionContext
   *
   * **`uri` is a route template, never a raw path.** ferrite serves server-rendered search over millions of events; one
   * timeseries per permalink is, in the ADR's words, the single most likely way to take down Prometheus in this system.
-  * [[RouteTemplate]] collapses every path to one of a fixed handful of shapes, and `Telemetry`'s
-  * `maximumAllowableTags` filter is the backstop for the day someone adds a route and forgets.
+  * [[RouteTemplate]] collapses every path to one of a fixed handful of shapes, and `Telemetry`'s `maximumAllowableTags`
+  * filter is the backstop for the day someone adds a route and forgets.
   *
-  * **`/metrics` and the `/health` subtree are not timed.** A scrape endpoint that times itself adds a request per scrape interval
-  * to every rate panel that reads it, which is a self-fulfilling traffic graph.
+  * **`/metrics` and the `/health` subtree are not timed.** A scrape endpoint that times itself adds a request per
+  * scrape interval to every rate panel that reads it, which is a self-fulfilling traffic graph.
   */
 @Singleton
 final class MetricsFilter @Inject() (telemetry: Telemetry)(using ec: ExecutionContext) extends EssentialFilter:
@@ -85,8 +85,8 @@ object RouteTemplate:
     Meters.UninstrumentedPaths.exists(prefix => request.path == prefix || request.path.startsWith(s"$prefix/"))
 
   def of(request: RequestHeader): String = request.path match
-    case Urls.Root                                   => Urls.Root
-    case Urls.Events                                 => Urls.Events
-    case path if path.startsWith(s"${Urls.Events}/") => s"${Urls.Events}/{eventUid}"
+    case Urls.Root                                         => Urls.Root
+    case Urls.Events                                       => Urls.Events
+    case path if path.startsWith(s"${Urls.Events}/")       => s"${Urls.Events}/{eventUid}"
     case path if path.startsWith(s"${Urls.AssetsPrefix}/") => s"${Urls.AssetsPrefix}/*file"
     case _                                                 => Other

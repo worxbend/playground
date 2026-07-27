@@ -28,8 +28,8 @@ import io.kzonix.observability.Tracing
 /** Cask over a real socket.
   *
   * Cask ships no test kit, so ADR §9.3 puts this tier on `com.lihaoyi::requests` against an ephemeral port. The unit
-  * suite already asserts every *answer*; what is only observable here is that the annotation macros produced the
-  * routes they claim to, that Undertow binds, and that the status code survives the round trip — three things that are
+  * suite already asserts every *answer*; what is only observable here is that the annotation macros produced the routes
+  * they claim to, that Undertow binds, and that the status code survives the round trip — three things that are
   * invisible to a test which calls the handler directly.
   *
   * Port `0` and not a fixed number: this is what [[AdminServer]] owns its own Undertow instance for, since Cask's own
@@ -43,7 +43,8 @@ final class AdminServerIT extends munit.FunSuite:
       val health = HealthChecks.create()
       val server = AdminServer(CobaltRoutes(AdminHandlers(telemetry, health)), "127.0.0.1", 0)
       server.start()
-      (server, health, telemetry),
+      (server, health, telemetry)
+    ,
     teardown = (server, _, telemetry) =>
       server.stop()
       telemetry.close()

@@ -21,12 +21,10 @@
 
 package io.kzonix.cobalt
 
-import java.net.InetSocketAddress
-
-import scala.jdk.CollectionConverters.*
-
 import com.typesafe.scalalogging.StrictLogging
 import io.undertow.Undertow
+import java.net.InetSocketAddress
+import scala.jdk.CollectionConverters.*
 
 /** The Cask route table. Three routes, each a one-line delegation to [[AdminHandlers]].
   *
@@ -55,10 +53,10 @@ object CobaltRoutes:
 /** cobalt's HTTP listener: Cask's routing, Undertow's lifecycle, owned explicitly.
   *
   * **Undertow is built here rather than by `cask.main.Main.main`.** Cask's own `main` binds the port, registers a JVM
-  * shutdown hook and returns nothing — which costs two things this service needs. First, the bound port is
-  * unreachable, so an integration test cannot bind port `0` and then talk to it; it has to guess a free port and race
-  * every other suite for it. Second, the listener's shutdown belongs in `CoordinatedShutdown` alongside the consumer
-  * drain and the pool close, not in a second, independently-ordered JVM hook that may run before or after them.
+  * shutdown hook and returns nothing — which costs two things this service needs. First, the bound port is unreachable,
+  * so an integration test cannot bind port `0` and then talk to it; it has to guess a free port and race every other
+  * suite for it. Second, the listener's shutdown belongs in `CoordinatedShutdown` alongside the consumer drain and the
+  * pool close, not in a second, independently-ordered JVM hook that may run before or after them.
   *
   * Cask still does all the routing: [[cask.main.Main.defaultHandler]] is its dispatch trie, and this class only decides
   * where it is bound and when it stops.
@@ -86,8 +84,8 @@ final class AdminServer(routes: CobaltRoutes, bindHost: String, bindPort: Int)
     listener = Some(server)
     logger.info(s"cobalt admin endpoints listening on $bindHost:$boundPort")
 
-  /** The port actually bound, which differs from the configured one whenever the configuration asks for `0` — the way
-    * a test takes an ephemeral port instead of racing for a fixed one.
+  /** The port actually bound, which differs from the configured one whenever the configuration asks for `0` — the way a
+    * test takes an ephemeral port instead of racing for a fixed one.
     */
   def boundPort: Int =
     listener

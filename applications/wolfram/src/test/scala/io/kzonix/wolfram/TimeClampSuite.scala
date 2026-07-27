@@ -21,13 +21,12 @@
 
 package io.kzonix.wolfram
 
+import io.kzonix.kernel.event.Envelope
 import java.time.Duration
 import java.time.OffsetDateTime
 import java.time.ZoneOffset
-import scala.concurrent.duration.DurationInt
-
-import io.kzonix.kernel.event.Envelope
 import munit.FunSuite
+import scala.concurrent.duration.DurationInt
 
 /** The plausibility clamp of ADR §4.3 / §12.4.
   *

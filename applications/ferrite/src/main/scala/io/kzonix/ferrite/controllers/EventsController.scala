@@ -54,8 +54,8 @@ import scala.util.Try
   * **One URL, two representations.** `/events?…` answers a browser navigation with the whole document and an htmx swap
   * with just the region that changed. The fragment templates are the same templates the page wraps, so there is no
   * second copy of the table to keep in sync — that single decision (ADR §8.4, implemented in [[Hx]]) is what makes htmx
-  * pay for itself here rather than doubling the markup. Every response from this controller carries
-  * `Vary: HX-Request`, without exception, including the error ones.
+  * pay for itself here rather than doubling the markup. Every response from this controller carries `Vary: HX-Request`,
+  * without exception, including the error ones.
   *
   * **Which fragment** is decided by the request, not by a separate endpoint:
   *
@@ -96,7 +96,7 @@ final class EventsController @Inject() (cc: ControllerComponents, service: Searc
           }
         else
           service.search(query).map {
-            case Left(reason) => failure(Presenter.rejected(reason, Urls.events(query.permalink)), None, request)
+            case Left(reason)   => failure(Presenter.rejected(reason, Urls.events(query.permalink)), None, request)
             case Right(outcome) =>
               val model = EventsPage(Presenter.filterBar(query, Vector.empty), Presenter.results(outcome, query, now))
               if Hx.isFragment(request) then
@@ -120,8 +120,8 @@ final class EventsController @Inject() (cc: ControllerComponents, service: Searc
       case Left(reason) => Future.successful(failure(Presenter.rejected(reason, back), None, request))
       case Right(ref)   =>
         service.detail(ref).map {
-          case None         => failure(Presenter.notFound(back), None, request)
-          case Some(found)  =>
+          case None        => failure(Presenter.notFound(back), None, request)
+          case Some(found) =>
             val model = Presenter.detail(found, OffsetDateTime.now(clock), back)
             if Hx.isFragment(request) then Ok(views.html.fragments.detail(model)).varyOnHx
             else Ok(views.html.pages.detail(model)(request)).varyOnHx

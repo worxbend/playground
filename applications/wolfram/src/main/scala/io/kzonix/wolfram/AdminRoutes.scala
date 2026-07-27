@@ -34,8 +34,8 @@ import io.vertx.ext.web.RoutingContext
   * probes to be excluded from `http.server.requests`, because they are the highest-frequency requests the process
   * serves, they are not user traffic, and leaving them in inflates request rate while dragging latency percentiles
   * down. Mounting them outside the Tapir interpreter makes the exclusion structural: [[HttpMetrics]] never sees them,
-  * so no exclusion list exists to fall out of date. They are also absent from the OpenAPI document for the same
-  * reason — they are not part of the API's contract with its clients.
+  * so no exclusion list exists to fall out of date. They are also absent from the OpenAPI document for the same reason
+  * — they are not part of the API's contract with its clients.
   */
 final class AdminRoutes(telemetry: Telemetry, publisher: EventPublisher):
 

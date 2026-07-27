@@ -67,12 +67,19 @@ final class SearchQuerySuite extends FunSuite:
 
   test("a limit above the repository maximum is rejected in the web tier, not silently clamped"):
     val errors = SearchQuery.parse(s"v=1&limit=${SearchRequest.MaxLimit + 1}").swap.getOrElse(Vector.empty)
-    assert(errors.contains(FilterError.Invalid(SearchQuery.LimitKey, s"limit must be at most ${SearchRequest.MaxLimit}")))
+    assert(errors.contains(FilterError.Invalid(
+      SearchQuery.LimitKey,
+      s"limit must be at most ${SearchRequest.MaxLimit}"
+    )))
 
   test("a cursor minted for a different filter is refused by the repository request, not by parsing"):
     val other = SearchQuery.parse("v=1&type=a").getOrElse(fail("query"))
     val cursor = io.kzonix.persistence.search
-      .Cursor(OffsetDateTime.parse("2026-07-26T10:00:00Z"), Fixtures.FirstUid, other.toRequest.map(_.fingerprint).getOrElse(fail("fingerprint")))
+      .Cursor(
+        OffsetDateTime.parse("2026-07-26T10:00:00Z"),
+        Fixtures.FirstUid,
+        other.toRequest.map(_.fingerprint).getOrElse(fail("fingerprint"))
+      )
       .encode
     val changed = SearchQuery.parse(s"v=1&type=b&cursor=$cursor").getOrElse(fail("query"))
     assert(changed.toRequest.isLeft, "a cursor from another filter must not resume this search")

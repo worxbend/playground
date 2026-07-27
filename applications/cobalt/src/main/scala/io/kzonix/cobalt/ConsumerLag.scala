@@ -21,18 +21,16 @@
 
 package io.kzonix.cobalt
 
-import java.util.concurrent.TimeUnit
-
-import scala.concurrent.duration.FiniteDuration
-import scala.jdk.CollectionConverters.*
-
 import io.kzonix.observability.Meters
 import io.micrometer.core.instrument.MeterRegistry
 import io.micrometer.core.instrument.MultiGauge
 import io.micrometer.core.instrument.Tags
+import java.util.concurrent.TimeUnit
 import org.apache.kafka.clients.admin.Admin
 import org.apache.kafka.clients.admin.OffsetSpec
 import org.apache.kafka.common.TopicPartition
+import scala.concurrent.duration.FiniteDuration
+import scala.jdk.CollectionConverters.*
 
 /** The lag arithmetic, separated from every I/O that feeds it.
   *
@@ -100,8 +98,8 @@ final class ConsumerLagGauge(registry: MeterRegistry, groupId: String):
 
 /** Reads committed and log-end offsets for one consumer group.
   *
-  * Split from [[ConsumerLagGauge]] so the gauge can be exercised with hand-written maps, and split from the scheduler so
-  * a failed admin call is a returned failure rather than an exception on a timer thread nobody is watching.
+  * Split from [[ConsumerLagGauge]] so the gauge can be exercised with hand-written maps, and split from the scheduler
+  * so a failed admin call is a returned failure rather than an exception on a timer thread nobody is watching.
   */
 final class AdminOffsets(admin: Admin, timeout: FiniteDuration):
 

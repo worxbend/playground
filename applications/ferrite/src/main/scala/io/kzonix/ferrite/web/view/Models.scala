@@ -65,14 +65,14 @@ final case class EventRow(
 
 /** One bar of the timeline strip.
   *
-  * `heightPercent` is computed server-side against the tallest bar so the template contains no arithmetic, and
-  * `url` narrows the search to this bucket — the histogram is a control, not a decoration.
+  * `heightPercent` is computed server-side against the tallest bar so the template contains no arithmetic, and `url`
+  * narrows the search to this bucket — the histogram is a control, not a decoration.
   *
   * `heightClass` exists because the height cannot be an inline `style` attribute: the Content-Security-Policy in
-  * `application.conf` deliberately omits `'unsafe-inline'` from `style-src`, and a per-bar inline style is exactly
-  * what that directive blocks. Quantising to twenty-one stylesheet classes costs a few percent of visual precision
-  * and buys a policy with no inline-style hole in it — for a chart whose job is to show *shape*, that is the right
-  * side of the trade.
+  * `application.conf` deliberately omits `'unsafe-inline'` from `style-src`, and a per-bar inline style is exactly what
+  * that directive blocks. Quantising to twenty-one stylesheet classes costs a few percent of visual precision and buys
+  * a policy with no inline-style hole in it — for a chart whose job is to show *shape*, that is the right side of the
+  * trade.
   */
 final case class Bar(
   start: String,
@@ -139,8 +139,8 @@ final case class FilterBar(
   *
   * @param emptiness
   *   present exactly when there are no rows, and carries a *reason* rather than a generic apology — the empty state is
-  *   the screen a user sees when they are already confused, and "no events in the last 24 hours; widen the window" is
-  *   a different problem from "no events match device=kitchen-1".
+  *   the screen a user sees when they are already confused, and "no events in the last 24 hours; widen the window" is a
+  *   different problem from "no events match device=kitchen-1".
   */
 final case class Results(
   rows: Vector[EventRow],
@@ -186,8 +186,8 @@ final case class Detail(
 
 /** The error state.
   *
-  * Carries the offending parameters and a way back, because a bare status code on a search UI leaves the user holding
-  * a URL they cannot fix. `status` drives the HTTP response code too, so the page and the response can never disagree.
+  * Carries the offending parameters and a way back, because a bare status code on a search UI leaves the user holding a
+  * URL they cannot fix. `status` drives the HTTP response code too, so the page and the response can never disagree.
   */
 final case class Failure(
   status: Int,

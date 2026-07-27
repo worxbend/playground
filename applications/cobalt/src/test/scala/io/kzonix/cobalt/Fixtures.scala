@@ -21,15 +21,6 @@
 
 package io.kzonix.cobalt
 
-import java.time.OffsetDateTime
-import java.time.ZoneOffset
-import java.util.Optional
-import java.util.concurrent.ConcurrentLinkedQueue
-import java.util.concurrent.atomic.AtomicInteger
-
-import scala.concurrent.Future
-import scala.jdk.CollectionConverters.*
-
 import io.circe.Json
 import io.kzonix.eventing.ContentMode
 import io.kzonix.eventing.DeadLetter
@@ -56,6 +47,11 @@ import io.kzonix.persistence.repository.HistogramRequest
 import io.kzonix.persistence.repository.NewEvent
 import io.kzonix.persistence.repository.SearchPage
 import io.kzonix.persistence.repository.SearchRequest
+import java.time.OffsetDateTime
+import java.time.ZoneOffset
+import java.util.Optional
+import java.util.concurrent.ConcurrentLinkedQueue
+import java.util.concurrent.atomic.AtomicInteger
 import org.apache.kafka.clients.consumer.ConsumerRecord
 import org.apache.kafka.common.header.Headers
 import org.apache.kafka.common.header.internals.RecordHeaders
@@ -64,12 +60,14 @@ import org.apache.pekko.kafka.ConsumerMessage.Committable
 import org.apache.pekko.kafka.ConsumerMessage.CommittableMessage
 import org.apache.pekko.kafka.ConsumerMessage.CommittableOffset
 import org.apache.pekko.kafka.testkit.ConsumerResultFactory
+import scala.concurrent.Future
+import scala.jdk.CollectionConverters.*
 
 /** Hand-built doubles for everything the consumer talks to.
   *
   * Deliberately not a mocking framework: every assertion in these suites is about *ordering* — which record went where,
-  * and whether a commit happened after its write — and a recorded sequence of plain values cannot lie about the order it
-  * was appended in the way a verification DSL can.
+  * and whether a commit happened after its write — and a recorded sequence of plain values cannot lie about the order
+  * it was appended in the way a verification DSL can.
   */
 object Fixtures:
 

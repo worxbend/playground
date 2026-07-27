@@ -21,24 +21,23 @@
 
 package io.kzonix.wolfram
 
-import java.nio.charset.StandardCharsets.UTF_8
-import java.time.Duration
-import scala.concurrent.Await
-import scala.concurrent.ExecutionContext
-import scala.concurrent.duration.DurationInt
-
 import io.kzonix.eventing.ContentMode
 import io.kzonix.kernel.Rfc3339
 import io.kzonix.observability.Meters
 import io.micrometer.core.instrument.MeterRegistry
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry
+import java.nio.charset.StandardCharsets.UTF_8
+import java.time.Duration
 import munit.FunSuite
+import scala.concurrent.Await
+import scala.concurrent.ExecutionContext
+import scala.concurrent.duration.DurationInt
 
 /** The application service: validation order, the partition key, and the metric a rejection produces.
   *
   * The metric assertions are as load-bearing as the behavioural ones. `ingest.events.rejected{reason}` is what an
-  * operator alerts on, and a rejection path that returns the right status while incrementing nothing is invisible —
-  * the API looks healthy and events silently do not arrive.
+  * operator alerts on, and a rejection path that returns the right status while incrementing nothing is invisible — the
+  * API looks healthy and events silently do not arrive.
   */
 final class IngestionServiceSuite extends FunSuite:
 
@@ -46,7 +45,7 @@ final class IngestionServiceSuite extends FunSuite:
 
   private def bytes(text: String): Array[Byte] = text.getBytes(UTF_8)
 
-  private final case class Harness(
+  final private case class Harness(
     service: IngestionService,
     registry: MeterRegistry,
     publisher: Fixtures.StubPublisher
@@ -64,7 +63,13 @@ final class IngestionServiceSuite extends FunSuite:
   private def harness(publisher: Fixtures.StubPublisher = Fixtures.StubPublisher()): Harness =
     val registry = SimpleMeterRegistry()
     val service =
-      IngestionService(publisher, TimeClamp.from(Fixtures.ingest), Fixtures.ingest, IngestMetrics(registry), () => Fixtures.now)
+      IngestionService(
+        publisher,
+        TimeClamp.from(Fixtures.ingest),
+        Fixtures.ingest,
+        IngestMetrics(registry),
+        () => Fixtures.now
+      )
     Harness(service, registry, publisher)
 
   private def ingest(harness: Harness, headers: Map[String, String], body: String) =
@@ -162,7 +167,8 @@ final class IngestionServiceSuite extends FunSuite:
   test("a batch element with an implausible time is refused without taking the rest of the batch down"):
     val h = harness()
     val stale = Rfc3339.render(Fixtures.at(Duration.ofDays(-200)))
-    val body = Fixtures.batchBody(Fixtures.structuredBody(id = "a", time = Some(stale)), Fixtures.structuredBody(id = "b"))
+    val body =
+      Fixtures.batchBody(Fixtures.structuredBody(id = "a", time = Some(stale)), Fixtures.structuredBody(id = "b"))
     val outcome = Await
       .result(h.service.ingestBatch(bytes(body)), 5.seconds)
       .fold(rejection => fail(rejection.message), identity)

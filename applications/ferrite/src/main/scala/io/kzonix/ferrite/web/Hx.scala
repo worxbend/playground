@@ -33,11 +33,11 @@ import play.api.mvc.Result
   *
   * Two consequences fall out of that, and both are load-bearing:
   *
-  *   - **Links stay shareable.** A permalink pasted into a new tab is a normal request and gets the whole page. The back
-  *     button, `hx-boost` and a crawler all work with no special-casing.
+  *   - **Links stay shareable.** A permalink pasted into a new tab is a normal request and gets the whole page. The
+  *     back button, `hx-boost` and a crawler all work with no special-casing.
   *   - **`Vary: HX-Request` is mandatory.** Two representations of one URL differing on a request header is exactly the
-  *     situation `Vary` exists for; without it a shared proxy will serve a naked `<tbody>` to someone who typed the URL.
-  *     [[varyOnHx]] is applied to every response from a dual-representation route, including error responses.
+  *     situation `Vary` exists for; without it a shared proxy will serve a naked `<tbody>` to someone who typed the
+  *     URL. [[varyOnHx]] is applied to every response from a dual-representation route, including error responses.
   *
   * The negative half of [[isFragment]] matters as much as the positive half. htmx re-fetches the full page when its
   * history cache misses, and it marks that request `HX-History-Restore-Request: true` while *also* sending

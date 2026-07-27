@@ -56,6 +56,13 @@ object Severity:
 
   private val ByLabel: Map[String, Severity] = values.iterator.map(s => s.label -> s).toMap ++ Aliases
 
+  /** Every spelling [[parse]] accepts, canonical labels and aliases alike.
+    *
+    * Public so the integration tier can assert `events.severity_rank()` against all of them rather than against the
+    * eight canonical labels only — the aliases are exactly the half that drifted, and iterating `values` cannot see it.
+    */
+  val Spellings: Set[String] = ByLabel.keySet
+
   /** The lowest severity that counts as an alert — index (11) in ADR §5 is partial on exactly this threshold. */
   val AlertThreshold: Severity = Error
 

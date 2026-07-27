@@ -21,26 +21,25 @@
 
 package io.kzonix.wolfram
 
-import java.util.concurrent.TimeUnit
-
 import io.kzonix.eventing.ContentMode
 import io.kzonix.kernel.event.Envelope
 import io.kzonix.observability.Meters
 import io.micrometer.core.instrument.MeterRegistry
 import io.micrometer.core.instrument.Tags
+import java.util.concurrent.TimeUnit
 
 /** wolfram's domain metrics, expressed only in the shared vocabulary of `modules/observability`.
   *
   * **No meter name or tag value is invented here.** ADR §7.1 makes that the enforceable rule: three services, one
   * Grafana dashboard, so the names live in [[Meters]] and this class is a typed façade over them. The façade earns its
   * keep by making the *tags* impossible to get wrong — `ingest.events.received` is tagged `(type, mode)` in exactly one
-  * place, so a second call site cannot register the same meter with a different tag set and split the timeseries in
-  * two (which Micrometer permits and Prometheus renders as two unrelated series).
+  * place, so a second call site cannot register the same meter with a different tag set and split the timeseries in two
+  * (which Micrometer permits and Prometheus renders as two unrelated series).
   *
-  * **Broker errors are not a separate meter.** They are the `outcome=failure` count of
-  * [[Meters.KafkaProduceLatency]], which is a `Timer` and therefore already publishes a count per tag combination.
-  * Adding a `kafka.produce.errors` counter would mean the same event incremented two meters that must then be kept
-  * consistent, and would put a name in wolfram's exposition that cobalt's dashboard does not know.
+  * **Broker errors are not a separate meter.** They are the `outcome=failure` count of [[Meters.KafkaProduceLatency]],
+  * which is a `Timer` and therefore already publishes a count per tag combination. Adding a `kafka.produce.errors`
+  * counter would mean the same event incremented two meters that must then be kept consistent, and would put a name in
+  * wolfram's exposition that cobalt's dashboard does not know.
   *
   * **`-Werror` trap (ADR §7.4).** `Counter#increment` and `Timer#record` return `Unit`, but `MeterRegistry#counter`
   * returns the meter, so a bare `registry.counter(...)` line would trip `-Wnonunit-statement`. Every builder call below
@@ -75,8 +74,8 @@ final class IngestMetrics(registry: MeterRegistry):
 
 object IngestMetrics:
 
-  /** The closed tag value for a content mode. A `match` and not `toString`, so renaming the enum cannot silently
-    * rename a Prometheus label.
+  /** The closed tag value for a content mode. A `match` and not `toString`, so renaming the enum cannot silently rename
+    * a Prometheus label.
     */
   def modeTag(mode: ContentMode): String = mode match
     case ContentMode.Binary     => Meters.Modes.Binary

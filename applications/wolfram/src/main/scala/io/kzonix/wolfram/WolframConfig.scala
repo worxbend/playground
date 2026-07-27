@@ -21,11 +21,10 @@
 
 package io.kzonix.wolfram
 
-import scala.concurrent.duration.FiniteDuration
-
 import pureconfig.ConfigReader
 import pureconfig.ConfigSource
 import pureconfig.error.ConfigReaderFailures
+import scala.concurrent.duration.FiniteDuration
 
 /** Where the HTTP listener binds.
   *

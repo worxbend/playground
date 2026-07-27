@@ -21,13 +21,12 @@
 
 package io.kzonix.wolfram
 
+import io.kzonix.kernel.Rfc3339
+import io.kzonix.kernel.event.Envelope
 import java.time.Instant
 import java.time.OffsetDateTime
 import scala.concurrent.duration.DurationInt
 import scala.concurrent.duration.FiniteDuration
-
-import io.kzonix.kernel.Rfc3339
-import io.kzonix.kernel.event.Envelope
 
 /** The ingest-time plausibility check on CloudEvents `time` (ADR §4.3, §12.4).
   *
@@ -94,8 +93,8 @@ final case class TimeClamp(maxFutureSkew: FiniteDuration, maxPastSkew: FiniteDur
           )
         else Right(value)
 
-  /** Durations are rendered for humans rather than with `FiniteDuration#toString`, which prints `2073600000 milliseconds`
-    * for 24 days once HOCON has normalised the unit.
+  /** Durations are rendered for humans rather than with `FiniteDuration#toString`, which prints
+    * `2073600000 milliseconds` for 24 days once HOCON has normalised the unit.
     */
   private def describe(duration: FiniteDuration): String =
     val hours = duration.toHours

@@ -21,8 +21,6 @@
 
 package io.kzonix.cobalt
 
-import scala.util.control.NonFatal
-
 import io.kzonix.eventing.DeadLetter
 import io.kzonix.eventing.DecodeFailure
 import io.kzonix.eventing.KafkaCodecs
@@ -35,12 +33,13 @@ import io.opentelemetry.api.trace.Tracer
 import org.apache.kafka.clients.consumer.ConsumerRecord
 import org.apache.pekko.kafka.ConsumerMessage.Committable
 import org.apache.pekko.kafka.ConsumerMessage.CommittableMessage
+import scala.util.control.NonFatal
 
 /** A record that decoded, together with everything the write path needs.
   *
   * The original `ConsumerRecord` is kept even though the [[Envelope]] is fully decoded, because a record that the
-  * *database* later rejects still has to become a [[DeadLetter]], and a dead letter is only replayable if it carries the
-  * original bytes and headers.
+  * *database* later rejects still has to become a [[DeadLetter]], and a dead letter is only replayable if it carries
+  * the original bytes and headers.
   */
 final case class PendingWrite(
   record: ConsumerRecord[String, Array[Byte]],
@@ -51,8 +50,9 @@ final case class PendingWrite(
 /** One consumed record, decoded, with its offset still attached.
   *
   * `outcome` is an `Either` and never an exception, which is the whole point of decoding in a stream stage rather than
-  * in a `Deserializer` (ADR §4.3): a throwing deserializer throws inside `KafkaConsumer.poll`, before the connector sees
-  * the record, so the stream dies with the offset uncommitted and every restart replays the same poison record forever.
+  * in a `Deserializer` (ADR §4.3): a throwing deserializer throws inside `KafkaConsumer.poll`, before the connector
+  * sees the record, so the stream dies with the offset uncommitted and every restart replays the same poison record
+  * forever.
   *
   * The `committable` travels with the record all the way to the commit stage. It is what makes "commit only after the
   * write" expressible as stream topology instead of as a convention.

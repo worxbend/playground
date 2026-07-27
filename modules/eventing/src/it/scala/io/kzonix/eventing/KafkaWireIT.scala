@@ -21,6 +21,7 @@
 
 package io.kzonix.eventing
 
+import com.dimafeng.testcontainers.KafkaContainer
 import io.circe.Json
 import io.kzonix.kernel.event.AttrValue
 import io.kzonix.kernel.event.ContentType
@@ -48,6 +49,7 @@ import org.apache.kafka.common.serialization.ByteArrayDeserializer
 import org.apache.kafka.common.serialization.ByteArraySerializer
 import org.apache.kafka.common.serialization.StringDeserializer
 import org.apache.kafka.common.serialization.StringSerializer
+import org.testcontainers.utility.DockerImageName
 import scala.annotation.tailrec
 import scala.jdk.CollectionConverters.*
 
@@ -58,17 +60,14 @@ import scala.jdk.CollectionConverters.*
   * across the wire protocol, a `null` value versus an empty one, key-based partitioning, and trace context arriving
   * intact on a different JVM. Those are only observable here.
   *
-  * **Broker discovery.** The suite takes `KAFKA_BOOTSTRAP_SERVERS` from the environment and skips when it is absent, so
-  * `IT/testFull` is green on a machine with no Docker. ADR §9.2 calls for Testcontainers with a shared lazy singleton
-  * per forked JVM, and that is the intended shape — but `testcontainers-scala` is declared in
-  * `project/Dependencies.scala` and wired to no module, so it is not on any classpath yet. Swapping it in is a change
-  * to [[bootstrapServers]] and nothing else: every test below already takes the address as a parameter.
+  * **Broker discovery.** ADR §9.2 calls for Testcontainers behind a shared lazy singleton per forked JVM, which is what
+  * [[KafkaWireIT.bootstrapServers]] provides: `IT / fork := true` gives this module its own JVM, `IT /
+  * parallelExecution := false` means nothing races for the broker, and Ryuk reaps the container when the JVM exits.
+  * `KAFKA_BOOTSTRAP_SERVERS` still wins when set, so a CI job that already runs a broker can point the suite at it.
   */
 class KafkaWireIT extends FunSuite:
 
-  /** The single point a Testcontainers `KafkaContainer` replaces. */
-  private def bootstrapServers: Option[String] =
-    sys.env.get("KAFKA_BOOTSTRAP_SERVERS").filter(_.trim.nonEmpty)
+  private def bootstrapServers: String = KafkaWireIT.bootstrapServers
 
   private val traceId = "4bf92f3577b34da6a3ce929d0e0e4736"
   private val spanId = "00f067aa0ba902b7"
@@ -164,11 +163,7 @@ class KafkaWireIT extends FunSuite:
   // Fixtures
   // -------------------------------------------------------------------------------------------------------------
 
-  private def withBroker(body: String => Unit): Unit =
-    bootstrapServers match
-      case Some(servers) => body(servers)
-      case None          =>
-        assume(false, "KAFKA_BOOTSTRAP_SERVERS is not set; skipping the broker round trip")
+  private def withBroker(body: String => Unit): Unit = body(bootstrapServers)
 
   private def producerContext: Context =
     val spanContext = SpanContext.createFromRemoteParent(traceId, spanId, TraceFlags.getSampled, TraceState.getDefault)
@@ -250,3 +245,25 @@ class KafkaWireIT extends FunSuite:
       records.headOption match
         case Some(record) => record
         case None         => poll(consumer, deadlineNanos)
+
+/** The broker, started once per forked JVM.
+  *
+  * A companion object rather than a field: a `lazy val` on the suite instance would start one broker per *test*, since
+  * munit constructs a fresh suite instance for each. The image is the one ADR §3.10 pins — `apache/kafka`, KRaft, no
+  * ZooKeeper and no Confluent image.
+  */
+object KafkaWireIT:
+
+  val Image: String = "apache/kafka:4.3.1"
+
+  private lazy val container: Option[KafkaContainer] =
+    Option.when(sys.env.get("KAFKA_BOOTSTRAP_SERVERS").forall(_.trim.isEmpty)):
+      val started = KafkaContainer(DockerImageName.parse(Image))
+      started.start()
+      started
+
+  lazy val bootstrapServers: String =
+    sys.env
+      .get("KAFKA_BOOTSTRAP_SERVERS")
+      .filter(_.trim.nonEmpty)
+      .getOrElse(container.map(_.bootstrapServers).getOrElse(sys.error("no broker")))

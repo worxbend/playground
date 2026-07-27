@@ -21,12 +21,8 @@
 
 package io.kzonix.cobalt
 
-import java.util.concurrent.atomic.AtomicReference
-
-import scala.concurrent.ExecutionContext
-import scala.concurrent.Future
-
 import com.typesafe.scalalogging.StrictLogging
+import java.util.concurrent.atomic.AtomicReference
 import org.apache.kafka.common.serialization.ByteArrayDeserializer
 import org.apache.kafka.common.serialization.StringDeserializer
 import org.apache.pekko.Done
@@ -38,15 +34,17 @@ import org.apache.pekko.kafka.Subscriptions
 import org.apache.pekko.kafka.scaladsl.Committer
 import org.apache.pekko.kafka.scaladsl.Consumer
 import org.apache.pekko.stream.scaladsl.Sink
+import scala.concurrent.ExecutionContext
+import scala.concurrent.Future
 
 /** The running consumer: the graph, its restart supervision, and its shutdown contract.
   *
   * **Shutdown is the reason this is a class and not four lines in `Main`.** A SIGTERM arrives while a batch of up to
-  * `batchSize` records is mid-insert. Killing the stream there loses nothing durable — the offsets were not
-  * committed — but it *does* mean those records are re-consumed and re-inserted on the next boot, and it means every
-  * rolling deploy replays a batch. `drainAndShutdown` instead stops the Kafka fetcher, lets the in-flight batch finish
-  * and commit, and only then completes. Wired to `CoordinatedShutdown`'s `PhaseServiceRequestsDone`, that is what makes
-  * a rolling deploy invisible in the data.
+  * `batchSize` records is mid-insert. Killing the stream there loses nothing durable — the offsets were not committed —
+  * but it *does* mean those records are re-consumed and re-inserted on the next boot, and it means every rolling deploy
+  * replays a batch. `drainAndShutdown` instead stops the Kafka fetcher, lets the in-flight batch finish and commit, and
+  * only then completes. Wired to `CoordinatedShutdown`'s `PhaseServiceRequestsDone`, that is what makes a rolling
+  * deploy invisible in the data.
   *
   * The `Consumer.Control` lives behind an `AtomicReference` that [[ConsumerStream.restarting]] re-sets on every restart
   * attempt; see that method for the failure mode a single capture produces.

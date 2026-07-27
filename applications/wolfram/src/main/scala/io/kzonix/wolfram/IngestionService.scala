@@ -21,13 +21,12 @@
 
 package io.kzonix.wolfram
 
+import io.kzonix.eventing.ContentMode
+import io.kzonix.kernel.event.Envelope
 import java.time.Instant
 import java.time.OffsetDateTime
 import scala.concurrent.ExecutionContext
 import scala.concurrent.Future
-
-import io.kzonix.eventing.ContentMode
-import io.kzonix.kernel.event.Envelope
 
 /** One event that passed validation, with everything the publisher and the response need already decided. */
 final case class Accepted(envelope: Envelope, mode: ContentMode, occurredAt: OffsetDateTime, partitionKey: String)
@@ -53,8 +52,8 @@ final case class BatchOutcome(results: Vector[Either[Rejection, Receipt]]):
   * from [[Rejection]] to a status code lives once, in [[ApiModel]].
   *
   * **Order of checks is deliberate.** Size first, because a 2 GB body must be refused before it is turned into a
-  * `String`; then decode, because everything after needs an envelope; then the time clamp, because it is the only
-  * check whose failure is a *policy* rather than a spec violation and it reads better in a message when the event is
+  * `String`; then decode, because everything after needs an envelope; then the time clamp, because it is the only check
+  * whose failure is a *policy* rather than a spec violation and it reads better in a message when the event is
   * otherwise known-good.
   *
   * **The partition key is not computed here.** It is read off the envelope — `Envelope.partitionKey`, kernel's single
@@ -100,16 +99,17 @@ final class IngestionService(
           else
             val instant = now()
             elements
-              .foldLeft(Future.successful(Vector.empty[Either[Rejection, Receipt]])):
-                (acc, element) =>
-                  acc.flatMap: results =>
-                    val one = element.flatMap(envelope => check(envelope, ContentMode.Structured, instant)) match
-                      case Left(rejection)  => Future.successful(Left(record(rejection)))
-                      case Right(candidate) => publish(candidate)
-                    one.map(results :+ _)
+              .foldLeft(Future.successful(Vector.empty[Either[Rejection, Receipt]])): (acc, element) =>
+                acc.flatMap: results =>
+                  val one = element.flatMap(envelope => check(envelope, ContentMode.Structured, instant)) match
+                    case Left(rejection)  => Future.successful(Left(record(rejection)))
+                    case Right(candidate) => publish(candidate)
+                  one.map(results :+ _)
               .map(results => Right(BatchOutcome(results)))
 
-  /** Everything that can be decided without talking to the broker. Pure, and therefore the part that is property-tested. */
+  /** Everything that can be decided without talking to the broker. Pure, and therefore the part that is
+    * property-tested.
+    */
   def validate(headers: Map[String, String], body: Array[Byte]): Either[Rejection, Accepted] =
     if body.length > limits.maxEventBytes then
       Left(Rejection.TooLarge(limits.maxEventBytes, body.length.toLong, "bytes"))

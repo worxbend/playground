@@ -33,9 +33,9 @@ import scala.concurrent.duration.FiniteDuration
   * cheaply and a duplicated format string between a fragment and the page that wraps it is invisible until the two
   * disagree on screen. Everything here is pure and total.
   *
-  * `Locale.ROOT` throughout. This is an operator-facing tool whose output sits next to ISO timestamps, JSON and SQL;
-  * a thousands separator that changes with the server's default locale would make two replicas render different
-  * numbers for the same data, and there is no i18n requirement to trade that against.
+  * `Locale.ROOT` throughout. This is an operator-facing tool whose output sits next to ISO timestamps, JSON and SQL; a
+  * thousands separator that changes with the server's default locale would make two replicas render different numbers
+  * for the same data, and there is no i18n requirement to trade that against.
   */
 object Format:
 

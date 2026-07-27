@@ -51,15 +51,15 @@ trait Readiness:
   * **ferrite never migrates.** ADR §1 assigns the Flyway migrations to this service's *repository module*, but running
   * them is a deployment step, not something a web replica does on boot: three replicas starting together would race on
   * the schema-history table, and a migration that fails halfway leaves a replica serving traffic against a schema it
-  * cannot describe. `modules/persistence` exposes `Migrations` for a deliberate operator-run job; nothing here calls it,
-  * and that is the whole of ferrite's relationship with DDL.
+  * cannot describe. `modules/persistence` exposes `Migrations` for a deliberate operator-run job; nothing here calls
+  * it, and that is the whole of ferrite's relationship with DDL.
   *
   * Opening eagerly is deliberate: `HikariPool.open` keeps Hikari's default `initializationFailTimeout`, so an
   * unreachable database fails at boot rather than on the first user request. A ferrite that starts without a database
   * is a ferrite that reports itself healthy and serves errors.
   *
-  * The stop hook is the only shutdown path. Pools hold server-side sessions and a restart loop that leaks them
-  * exhausts `max_connections` for every *other* service too.
+  * The stop hook is the only shutdown path. Pools hold server-side sessions and a restart loop that leaks them exhausts
+  * `max_connections` for every *other* service too.
   */
 @Singleton
 final class Databases @Inject() (configuration: Configuration, lifecycle: ApplicationLifecycle):
@@ -73,7 +73,10 @@ final class Databases @Inject() (configuration: Configuration, lifecycle: Applic
   val config: DatabaseConfig =
     DatabaseConfig
       .load(ConfigSource.fromConfig(configuration.underlying))
-      .fold(failures => throw IllegalStateException(s"ferrite: unusable database configuration: ${failures.prettyPrint()}"), identity)
+      .fold(
+        failures => throw IllegalStateException(s"ferrite: unusable database configuration: ${failures.prettyPrint()}"),
+        identity
+      )
 
   val database: Database = Database.open(config)
 

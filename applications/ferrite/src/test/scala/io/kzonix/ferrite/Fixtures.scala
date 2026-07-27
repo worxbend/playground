@@ -33,8 +33,8 @@ import io.kzonix.persistence.repository.EventRepository
 import io.kzonix.persistence.repository.EventSummary
 import io.kzonix.persistence.repository.FacetDimension
 import io.kzonix.persistence.repository.FacetRequest
-import io.kzonix.persistence.repository.FacetValue
 import io.kzonix.persistence.repository.Facets
+import io.kzonix.persistence.repository.FacetValue
 import io.kzonix.persistence.repository.HistogramBucket
 import io.kzonix.persistence.repository.HistogramRequest
 import io.kzonix.persistence.repository.NewEvent
@@ -57,8 +57,8 @@ import scala.concurrent.Future
   */
 object Fixtures:
 
-  /** Every relative timestamp in these tests is measured against this instant. A fixed clock is not a convenience —
-    * a suite that asserts "3 m ago" against the wall clock fails at midnight and passes on a rerun.
+  /** Every relative timestamp in these tests is measured against this instant. A fixed clock is not a convenience — a
+    * suite that asserts "3 m ago" against the wall clock fails at midnight and passes on a rerun.
     */
   val Now: OffsetDateTime = OffsetDateTime.parse("2026-07-26T12:00:00Z")
 
@@ -128,8 +128,8 @@ object Fixtures:
     HistogramBucket(Now, 12L)
   )
 
-  /** Records every request it is handed, so a test can assert on the query the web tier *built* rather than only on
-    * the HTML that came back.
+  /** Records every request it is handed, so a test can assert on the query the web tier *built* rather than only on the
+    * HTML that came back.
     */
   final class StubRepository(
     rows: Vector[EventSummary] = Vector(summary()),

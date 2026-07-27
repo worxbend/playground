@@ -166,24 +166,42 @@ final class PresentationSuite extends FunSuite:
   test("the empty state distinguishes 'nothing ingested' from 'this filter matched nothing'"):
     val unfiltered = SearchQuery.parse("").getOrElse(fail("query"))
     val filtered = SearchQuery.parse("v=1&device=kitchen-1").getOrElse(fail("query"))
-    val outcome = SearchOutcome(SearchPage(Vector.empty, None), SearchService.EmptyFacets, Vector.empty, 0L,
-      TimeWindow(now.minusHours(24), now), 15.minutes)
+    val outcome = SearchOutcome(
+      SearchPage(Vector.empty, None),
+      SearchService.EmptyFacets,
+      Vector.empty,
+      0L,
+      TimeWindow(now.minusHours(24), now),
+      15.minutes
+    )
     assert(Presenter.emptiness(unfiltered, outcome).headline.contains("last 24 hours"))
     assert(Presenter.emptiness(filtered, outcome).headline.contains("match this search"))
     assert(Presenter.emptiness(filtered, outcome).suggestions.nonEmpty)
 
   test("the results view reports an approximate total honestly"):
     val query = SearchQuery.parse("").getOrElse(fail("query"))
-    val over = SearchOutcome(SearchPage(Vector(Fixtures.summary()), None), Fixtures.facets, Fixtures.buckets,
-      SearchService.TotalCap.toLong + 1, TimeWindow(now.minusHours(24), now), 1.hour)
+    val over = SearchOutcome(
+      SearchPage(Vector(Fixtures.summary()), None),
+      Fixtures.facets,
+      Fixtures.buckets,
+      SearchService.TotalCap.toLong + 1,
+      TimeWindow(now.minusHours(24), now),
+      1.hour
+    )
     val results = Presenter.results(over, query, now)
     assertEquals(results.totalIsExact, false)
     assertEquals(results.totalLabel, "10,000+")
 
   test("the sort control flips direction and announces it"):
     val query = SearchQuery.parse("v=1&type=a").getOrElse(fail("query"))
-    val outcome = SearchOutcome(SearchPage(Vector(Fixtures.summary()), None), Fixtures.facets, Fixtures.buckets, 3L,
-      TimeWindow(now.minusHours(24), now), 1.hour)
+    val outcome = SearchOutcome(
+      SearchPage(Vector(Fixtures.summary()), None),
+      Fixtures.facets,
+      Fixtures.buckets,
+      3L,
+      TimeWindow(now.minusHours(24), now),
+      1.hour
+    )
     val results = Presenter.results(outcome, query, now)
     assertEquals(results.sortAria, "descending")
     assert(results.sortUrl.contains("sort=oldest"), results.sortUrl)

@@ -21,13 +21,6 @@
 
 package io.kzonix.cobalt
 
-import java.time.OffsetDateTime
-import java.time.ZoneOffset
-import java.util.concurrent.atomic.AtomicReference
-
-import scala.concurrent.Future
-import scala.concurrent.duration.DurationInt
-
 import io.circe.Json
 import io.kzonix.eventing.ContentMode
 import io.kzonix.eventing.DeadLetter
@@ -44,6 +37,9 @@ import io.kzonix.observability.TelemetryConfig
 import io.kzonix.observability.Tracing
 import io.kzonix.persistence.repository.NewEvent
 import io.kzonix.persistence.repository.PostgresEventRepository
+import java.time.OffsetDateTime
+import java.time.ZoneOffset
+import java.util.concurrent.atomic.AtomicReference
 import org.apache.kafka.clients.producer.ProducerRecord
 import org.apache.pekko.actor.ActorSystem
 import org.apache.pekko.kafka.Subscriptions
@@ -51,6 +47,8 @@ import org.apache.pekko.kafka.scaladsl.Committer
 import org.apache.pekko.kafka.scaladsl.Consumer
 import org.apache.pekko.stream.scaladsl.Keep
 import org.apache.pekko.stream.scaladsl.Sink
+import scala.concurrent.Future
+import scala.concurrent.duration.DurationInt
 
 /** The at-least-once contract, end to end, against a real broker and a real PostgreSQL.
   *
@@ -80,8 +78,8 @@ final class CobaltIngestIT extends CobaltIT:
       payload = Payload.Structured(
         Json.obj(
           "deviceId" -> Json.fromString("device-it"),
-          "value"    -> Json.fromDoubleOrNull(21.5d),
-          "unit"     -> Json.fromString("celsius")
+          "value" -> Json.fromDoubleOrNull(21.5d),
+          "unit" -> Json.fromString("celsius")
         )
       )
     )

@@ -21,11 +21,10 @@
 
 package io.kzonix.cobalt
 
-import scala.concurrent.duration.DurationInt
-
 import io.kzonix.kernel.event.Topics
 import io.kzonix.persistence.DatabaseConfig
 import pureconfig.ConfigSource
+import scala.concurrent.duration.DurationInt
 
 /** The shipped `application.conf`, parsed.
   *

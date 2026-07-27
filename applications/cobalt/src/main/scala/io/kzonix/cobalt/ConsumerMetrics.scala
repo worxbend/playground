@@ -21,11 +21,10 @@
 
 package io.kzonix.cobalt
 
-import java.util.concurrent.TimeUnit
-
 import io.kzonix.observability.Meters
 import io.micrometer.core.instrument.MeterRegistry
 import io.micrometer.core.instrument.Tags
+import java.util.concurrent.TimeUnit
 
 /** cobalt's domain metrics, expressed in the shared vocabulary of `modules/observability`.
   *
@@ -40,8 +39,8 @@ import io.micrometer.core.instrument.Tags
   * is every record in a successful batch, new or already present — tagged by type, and [[duplicates]] separately counts
   * the shortfall untagged. Inventing a per-type split would produce a number that looks precise and is not.
   *
-  * **`-Werror` trap (ADR §7.4).** Every Micrometer builder returns `this` and `MeterRegistry#counter` returns the meter,
-  * so a bare registration line trips `-Wnonunit-statement`. Every call below is part of an expression.
+  * **`-Werror` trap (ADR §7.4).** Every Micrometer builder returns `this` and `MeterRegistry#counter` returns the
+  * meter, so a bare registration line trips `-Wnonunit-statement`. Every call below is part of an expression.
   */
 final class ConsumerMetrics(registry: MeterRegistry):
 

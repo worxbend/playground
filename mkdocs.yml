@@ -26,6 +26,14 @@ theme:
         icon: material/weather-sunny
         name: Switch to light mode
 
+# MkDocs only reports a broken *anchor* at INFO by default, so `--strict` would
+# not catch one. Raised to a warning: under --strict a stale `#section-slug` now
+# fails CI exactly like a stale file path does.
+validation:
+  links:
+    anchors: warn
+    unrecognized_links: warn
+
 markdown_extensions:
   - admonition
   - attr_list
@@ -40,6 +48,16 @@ markdown_extensions:
 
 nav:
   - Overview: index.md
+  - Services:
+      - wolfram — ingestion API: services/wolfram.md
+      - cobalt — Kafka consumer: services/cobalt.md
+      - ferrite — web application: services/ferrite.md
+  - Reference:
+      - Event model: event-model.md
+      - Database schema: data/schema.md
+  - Running it:
+      - Development: development.md
+      - Operations: operations.md
   - Architecture:
       - Decision record: adr/0000-architecture.md
   - API docs:

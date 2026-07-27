@@ -55,15 +55,10 @@ jobs:
             src="applications/$a/target/scala-3.8.4/api"
             [ -d "$src" ] && cp -r "$src" "_site/api/$a"
           done
-          # Landing page for /api, since MkDocs does not generate one.
-          {
-            echo '<!doctype html><meta charset="utf-8"><title>Scaladoc</title>'
-            echo '<h1>Scaladoc</h1><ul>'
-            for d in _site/api/*/; do
-              n=$(basename "$d"); echo "<li><a href=\"$n/index.html\">$n</a></li>"
-            done
-            echo '</ul>'
-          } > _site/api/index.html
+          # The /api landing page is docs/api/index.html, copied through by MkDocs
+          # above. It is NOT generated here: `mkdocs build --strict` runs first and
+          # would fail on the nav entry for a file that did not exist yet.
+          test -f _site/api/index.html
 
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3

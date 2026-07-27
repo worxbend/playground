@@ -118,13 +118,14 @@ lazy val persistenceDeps: Seq[ModuleID] = Dependencies.persistence
   */
 lazy val ferrite = (project in file("applications/ferrite"))
   .configs(IT)
-  .enablePlugins(PlayScala, PlayPekkoHttpServer, AutomateHeaderPlugin)
+  .enablePlugins(PlayScala, PlayPekkoHttpServer, DockerPlugin, AshScriptPlugin, AutomateHeaderPlugin)
   .disablePlugins(PlayLayoutPlugin)
   .dependsOn(kernel, persistence, observability)
   .settings(commonSettings *)
   .settings(
     name := "ferrite",
     libraryDependencies ++= Seq(guice, jsoup % Test) ++ webjars,
+    libraryDependencies ++= testContainers.map(_ % IT),
     // Twirl generates code this build's -Wunused and indentation rules do not govern.
     Compile / scalacOptions ~= (_.filterNot(_ == "-new-syntax")),
     Compile / routes / sources := Nil
@@ -139,7 +140,8 @@ lazy val cobalt = (project in file("applications/cobalt"))
   .settings(packagingSettings *)
   .settings(
     name := "cobalt",
-    libraryDependencies ++= Seq(cask, pekkoKafka, requests % Test) ++ pekko ++ pekkoTestkit.map(_ % Test)
+    libraryDependencies ++= Seq(cask, pekkoKafka, requests % Test) ++ pekko ++ pekkoTestkit.map(_ % Test),
+    libraryDependencies ++= testContainers.map(_ % IT)
   )
 
 /** wolfram — the CloudEvents ingestion API. Validates and publishes to Kafka; owns no state. */
@@ -151,7 +153,8 @@ lazy val wolfram = (project in file("applications/wolfram"))
   .settings(packagingSettings *)
   .settings(
     name := "wolfram",
-    libraryDependencies ++= tapir ++ Seq(vertx, circeGeneric) ++ tapirTestkit.map(_ % Test)
+    libraryDependencies ++= tapir ++ Seq(vertx, circeGeneric) ++ tapirTestkit.map(_ % Test),
+    libraryDependencies ++= testContainers.map(_ % IT)
   )
 
 // ---------------------------------------------------------------------------------------------------------------

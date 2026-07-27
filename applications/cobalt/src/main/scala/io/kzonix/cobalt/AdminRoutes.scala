@@ -42,9 +42,9 @@ final class AdminHandlers(telemetry: Telemetry, health: HealthChecks):
 
   /** The Prometheus exposition, served verbatim with the registry's own content type.
     *
-    * One scrape endpoint for the whole process, because `modules/observability` hands out one `PrometheusRegistry`
-    * (ADR §7.1) — Micrometer's meters, the JVM binders and anything a library registers natively all land in this one
-    * body, with no bridging and no second port.
+    * One scrape endpoint for the whole process, because `modules/observability` hands out one `PrometheusRegistry` (ADR
+    * §7.1) — Micrometer's meters, the JVM binders and anything a library registers natively all land in this one body,
+    * with no bridging and no second port.
     */
   def metrics(): AdminReply = AdminReply(200, Telemetry.ContentType, telemetry.scrape())
 
@@ -58,8 +58,8 @@ final class AdminHandlers(telemetry: Telemetry, health: HealthChecks):
 
   /** Readiness: can this replica do its job right now?
     *
-    * Both dependencies count. Without Kafka there is nothing to consume; without PostgreSQL there is nowhere to put
-    * it, and a consumer that keeps polling while every insert fails burns through its restart budget and then dies. The
+    * Both dependencies count. Without Kafka there is nothing to consume; without PostgreSQL there is nowhere to put it,
+    * and a consumer that keeps polling while every insert fails burns through its restart budget and then dies. The
     * unreachable dependency's reason is included in the body so the probe itself carries the diagnosis.
     *
     * The values are read from [[DependencyHealth]], never probed inline — see that class for why.
@@ -69,7 +69,7 @@ final class AdminHandlers(telemetry: Telemetry, health: HealthChecks):
     AdminRoutes.json(
       if ok then 200 else 503,
       Json.obj(
-        "status"       -> Json.fromString(if ok then "UP" else "OUT_OF_SERVICE"),
+        "status" -> Json.fromString(if ok then "UP" else "OUT_OF_SERVICE"),
         "dependencies" -> Json.obj(
           health.dependencies.map { dependency =>
             dependency.name -> Json.obj(

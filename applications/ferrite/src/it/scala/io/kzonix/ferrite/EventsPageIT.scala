@@ -21,11 +21,21 @@
 
 package io.kzonix.ferrite
 
+import io.circe.Json
 import io.kzonix.ferrite.web.Urls
+import io.kzonix.kernel.event.Envelope
+import io.kzonix.kernel.event.EventId
+import io.kzonix.kernel.event.EventType
+import io.kzonix.kernel.event.Payload
+import io.kzonix.kernel.event.Source
+import io.kzonix.kernel.event.Subject
 import io.kzonix.persistence.Database
 import io.kzonix.persistence.DatabaseConfig
 import io.kzonix.persistence.Migrations
 import io.kzonix.persistence.PoolConfig
+import io.kzonix.persistence.repository.NewEvent
+import io.kzonix.persistence.repository.PostgresEventRepository
+import java.time.OffsetDateTime
 import munit.FunSuite
 import org.jsoup.Jsoup
 import play.api.Application
@@ -38,24 +48,27 @@ import play.api.test.Helpers.defaultAwaitTimeout
 import play.api.test.Helpers.route
 import play.api.test.Helpers.status
 import play.api.test.Helpers.writeableOf_AnyContentAsEmpty
+import scala.concurrent.Await
+import scala.concurrent.ExecutionContext
 import scala.concurrent.duration.DurationInt
+import scala.util.Using
 
 /** The whole Play stack over a real PostgreSQL.
   *
   * `GuiceApplicationBuilder` + `route()` and not an HTTP client: the router, the filters (including CSRF), the module
-  * bindings, the Hikari pools, the bounded search dispatcher and every template are exercised, and no socket is
-  * opened. ADR §9.3 puts ferrite's integration tier here deliberately — `scalatestplus-play` is a standing rejection.
+  * bindings, the Hikari pools, the bounded search dispatcher and every template are exercised, and no socket is opened.
+  * ADR §9.3 puts ferrite's integration tier here deliberately — `scalatestplus-play` is a standing rejection.
   *
   * **The database is provisioned outside the suite**, exactly as `modules/persistence`'s integration suites do: the
   * connection details arrive in `IT_POSTGRES_*` and the suite ignores itself when they are absent. That is the honest
-  * behaviour for a fixture that cannot provision its own dependency — a red suite on a laptop with no database
-  * teaches people to ignore red suites. Wiring Testcontainers here needs `testContainers.map(_ % IT)` on the ferrite
-  * project in the root `build.sbt`; the dimafeng and Testcontainers artifacts are **not** on this module's IT
-  * classpath today, so the import would not compile.
+  * behaviour for a fixture that cannot provision its own dependency — a red suite on a laptop with no database teaches
+  * people to ignore red suites. Wiring Testcontainers here needs `testContainers.map(_ % IT)` on the ferrite project in
+  * the root `build.sbt`; the dimafeng and Testcontainers artifacts are **not** on this module's IT classpath today, so
+  * the import would not compile.
   *
   * **Migrations are run by the fixture, never by the application.** That is the arrangement under test rather than a
-  * convenience: `io.kzonix.ferrite.wiring.Databases` applies no DDL, and if ferrite ever started migrating on boot
-  * this is where it would surface.
+  * convenience: `io.kzonix.ferrite.wiring.Databases` applies no DDL, and if ferrite ever started migrating on boot this
+  * is where it would surface.
   */
 final class EventsPageIT extends FunSuite:
 
@@ -83,16 +96,54 @@ final class EventsPageIT extends FunSuite:
     connectionInitSql = None
   )
 
-  /** Applies the schema once per JVM, on a pool of the fixture's own. */
+  /** Applies the schema and seeds exactly the rows this suite asserts on, once per JVM, on a pool of its own.
+    *
+    * **It seeds.** The page renders a results table when there are rows and an empty state when there are none, which
+    * is correct and is also why a page assertion that does not control the row count is an assertion about whichever
+    * other suite touched this database last: with `IT_POSTGRES_URL` pointing several modules at one server, this suite
+    * passed after `modules/persistence` had run and failed when it ran first, and nothing about ferrite had changed in
+    * between. `TRUNCATE` then insert makes the page deterministic in both directions.
+    */
   private lazy val migrated: Boolean =
     jdbcUrl.exists { url =>
       val database = Database.open(DatabaseConfig(url, username, password, fixturePool, fixturePool))
       try
         val report = Migrations.migrate(database.write.get())
-        // A repeat run executes nothing and is still a success; what matters is that a target version exists.
+        seed(database)
+        // `targetVersion` is the version the schema is at when the run finishes, so it is populated on a repeat run
+        // too — which is the whole point of it not being Flyway's `targetSchemaVersion` verbatim.
         report.targetVersion.isDefined
       finally database.close()
     }
+
+  /** One row, built through the kernel's encoder so the generated columns are computed from a real CloudEvent. */
+  private def seed(database: Database): Unit =
+    def force[A](result: Either[String, A]): A = result.fold(message => fail(message), identity)
+    val envelope = Envelope(
+      id = force(EventId("ferrite-it-1")),
+      source = force(Source("/gateways/it")),
+      eventType = force(EventType("io.kzonix.iot.telemetry")),
+      time = Some(OffsetDateTime.parse("2026-07-15T12:00:00Z")),
+      subject = Some(force(Subject("kitchen-1"))),
+      dataContentType = None,
+      schema = None,
+      extensions = Map.empty,
+      payload = Payload.Structured(
+        Json.obj(
+          "deviceId" -> Json.fromString("kitchen-1"),
+          "roomId" -> Json.fromString("kitchen"),
+          "severity" -> Json.fromString("error"),
+          "value" -> Json.fromDoubleOrNull(21.5)
+        )
+      )
+    )
+    Using.resource(database.write.get().getConnection): connection =>
+      Using.resource(connection.createStatement()): statement =>
+        val _ = statement.execute("TRUNCATE TABLE events.cloud_event")
+    // Written through the production repository, so this also proves ferrite's own classpath can run the insert.
+    given ExecutionContext = ExecutionContext.parasitic
+    val repository = PostgresEventRepository(database.read.transactor, database.write.transactor)
+    val _ = Await.result(repository.insertAll(Vector(force(NewEvent.from(envelope)))), 30.seconds)
 
   private def application(): Application =
     GuiceApplicationBuilder()
@@ -121,6 +172,21 @@ final class EventsPageIT extends FunSuite:
       assertEquals(document.select("section#results[aria-live=polite]").size(), 1)
       assertEquals(document.select("main#main").size(), 1)
       assertEquals(document.select("table.event-table thead th").size(), 9)
+      assertEquals(document.select("table.event-table tbody tr.event-row").size(), 1)
+
+  test("a filter that matches nothing renders the empty state, not an empty table"):
+    // The other half of the branch above, and the reason that one has to seed: `fragments/results` renders a table or
+    // an empty state depending on the row count, so a page assertion that does not own its data is an assertion about
+    // whichever suite wrote to this database last.
+    assert(migrated, "the schema could not be applied")
+    val app = application()
+    Helpers.running(app):
+      val url = Urls.events("v=1&device=nothing-called-this")
+      val result = route(app, FakeRequest("GET", url)).getOrElse(fail("the list route is not wired"))
+      assertEquals(status(result), Status.OK)
+      val document = Jsoup.parse(contentAsString(result))
+      assertEquals(document.select("table.event-table").size(), 0)
+      assertEquals(document.select(".empty-state").size(), 1)
 
   test("a permalink round-trips through the real filter-to-SQL compiler"):
     assert(migrated, "the schema could not be applied")
