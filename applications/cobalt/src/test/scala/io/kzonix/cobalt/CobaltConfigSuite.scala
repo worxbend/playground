@@ -56,6 +56,33 @@ final class CobaltConfigSuite extends munit.FunSuite:
     assert(config.lag.refreshInterval >= 15.seconds)
     assert(config.lag.requestTimeout < config.lag.refreshInterval)
 
+  test("maintenance is on by default, because forgetting it costs an outage at a month boundary"):
+    // A partition job nobody enabled produces no error, no failed probe and no Kafka symptom — right up to the first
+    // of the month, when every insert starts failing with "no partition of relation found for row".
+    assert(config.maintenance.enabled, "database maintenance must be on unless a deployment turns it off")
+    assertEquals(config.maintenance.monthsAhead, 3, "ADR §5 says N+3")
+
+  test("retention is absent by default: detaching is configured, never defaulted"):
+    // Detaching is the one operation in this service that makes data vanish from queries. It happens because an
+    // operator asked for it.
+    assertEquals(config.maintenance.retainMonths, None)
+    assertEquals(config.maintenance.policy.retainMonths, None)
+
+  test("the refresh interval is the staleness floor for every dashboard, and the budget the refresh must fit in"):
+    // REFRESH ... CONCURRENTLY is a full recompute, never incremental: when its duration approaches this value the
+    // materialized view is finished and ADR §12.4's incremental merge tables are the replacement.
+    assert(config.maintenance.refreshInterval <= 15.minutes, "a dashboard this stale is a dashboard nobody trusts")
+    assert(
+      config.maintenance.partitionInterval > config.maintenance.refreshInterval,
+      "months are long; there is nothing to gain from re-checking the calendar as often as the rollup"
+    )
+
+  test("the detach lock timeout is short, because waiting for ACCESS EXCLUSIVE queues every ingest insert behind it"):
+    assert(config.maintenance.detachLockTimeout <= 30.seconds)
+    // Constructing the policy is what would reject a nonsensical combination, so it is exercised here rather than
+    // discovered at boot.
+    assertEquals(config.maintenance.policy.monthsAhead, config.maintenance.monthsAhead)
+
   test("the database namespace resolves from modules/persistence's reference.conf"):
     val database = DatabaseConfig
       .load(ConfigSource.default)

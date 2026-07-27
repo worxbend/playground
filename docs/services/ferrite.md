@@ -334,6 +334,8 @@ curl -s localhost:9000/metrics | grep http_server_requests
 
 The Tailwind stylesheet is checked in as a build resource under `src/main/resources/public/css`, so **the runtime
 image never needs Node**; htmx and Alpine are WebJars unpacked by sbt-web onto the same classpath prefix.
+Because it is committed output, a template that gains a utility class needs `sbt ferrite/tailwind` in the same
+change — `sbt ferrite/tailwindCheck` is what says otherwise. See `docs/development.md` §8.
 
 Full stack: `sbt ferrite/Docker/publishLocal` then `docker compose -f deploy/docker-compose.yml up -d`; ferrite is
 published on host port **9000**. `APPLICATION_SECRET` and `ALLOWED_HOSTS` must be set there.

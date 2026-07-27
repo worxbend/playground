@@ -21,6 +21,7 @@
 
 package io.kzonix.cobalt
 
+import io.kzonix.persistence.maintenance.PartitionPolicy
 import pureconfig.ConfigReader
 import pureconfig.ConfigSource
 import pureconfig.error.ConfigReaderFailures
@@ -149,6 +150,61 @@ object LagConfig:
   given reader: ConfigReader[LagConfig] =
     ConfigReader.forProduct2("refresh-interval", "request-timeout")(LagConfig.apply)
 
+/** The two scheduled database maintenance jobs (ADR §5).
+  *
+  * Both intervals are here rather than derived from anything, because they answer unrelated questions. The partition
+  * interval is "how stale may our knowledge of the calendar be", which is measured in hours because months are long;
+  * the refresh interval is "how stale may a dashboard be", which is measured in minutes because that is what a person
+  * looking at a chart will tolerate.
+  *
+  * @param enabled
+  *   the escape hatch for a deployment whose partitions are managed elsewhere. Defaults to `true`: the failure mode of
+  *   forgetting to switch it on is a total ingest outage at a month boundary.
+  * @param monthsAhead
+  *   months beyond the current one to keep partitioned — ADR §5's N+3. Also the number of consecutive runs the job may
+  *   miss before an event has nowhere to go, which is the reading that makes `3` generous rather than arbitrary.
+  * @param retainMonths
+  *   months to keep attached, counting back from and including the current one. `None` — the default — disables
+  *   retention entirely. Detaching is the one thing here that makes data vanish from queries, so it happens because
+  *   somebody configured it and never because a default did.
+  * @param partitionInterval
+  *   how often to re-check the calendar. Hours, not minutes: creating a partition is a `CREATE TABLE` with thirteen
+  *   indexes and there is nothing to gain from discovering the new month sooner than a few hours in.
+  * @param refreshInterval
+  *   how often to rebuild the hourly rollup. **The floor on how stale every dashboard number is**, and simultaneously
+  *   the budget the refresh must fit inside: `REFRESH ... CONCURRENTLY` is a full recompute, so when its duration
+  *   approaches this value the materialized-view design is finished and ADR §12.4's incremental merge tables are the
+  *   replacement. That is what `maintenance.job.duration` is watched for.
+  * @param detachLockTimeout
+  *   how long a detach may wait for `ACCESS EXCLUSIVE` on the fact table before giving up until the next pass. The
+  *   waiting is the dangerous part: while the detach queues, every new ingest insert queues behind it.
+  */
+final case class MaintenanceConfig(
+  enabled: Boolean,
+  monthsAhead: Int,
+  retainMonths: Option[Int],
+  partitionInterval: FiniteDuration,
+  refreshInterval: FiniteDuration,
+  detachLockTimeout: FiniteDuration
+):
+
+  /** The policy half, as `modules/persistence` wants it. The intervals stay here: *when* to run is cobalt's business,
+    * *what* a run does is the job's.
+    */
+  def policy: PartitionPolicy = PartitionPolicy(monthsAhead, retainMonths, detachLockTimeout)
+
+object MaintenanceConfig:
+
+  given reader: ConfigReader[MaintenanceConfig] =
+    ConfigReader.forProduct6(
+      "enabled",
+      "months-ahead",
+      "retain-months",
+      "partition-interval",
+      "refresh-interval",
+      "detach-lock-timeout"
+    )(MaintenanceConfig.apply)
+
 /** cobalt's whole configuration, read once by the composition root.
   *
   * One aggregate rather than four independent lookups, so a typo in any namespace refuses the boot rather than
@@ -158,7 +214,8 @@ final case class CobaltConfig(
   server: ServerConfig,
   consumer: ConsumerConfig,
   restart: RestartConfig,
-  lag: LagConfig
+  lag: LagConfig,
+  maintenance: MaintenanceConfig
 )
 
 object CobaltConfig:
@@ -167,7 +224,7 @@ object CobaltConfig:
   val Namespace: String = "cobalt"
 
   given reader: ConfigReader[CobaltConfig] =
-    ConfigReader.forProduct4("server", "consumer", "restart", "lag")(CobaltConfig.apply)
+    ConfigReader.forProduct5("server", "consumer", "restart", "lag", "maintenance")(CobaltConfig.apply)
 
   /** Loads from the ambient config, returning failures rather than throwing.
     *

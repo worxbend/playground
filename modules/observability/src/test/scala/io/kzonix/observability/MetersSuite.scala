@@ -43,6 +43,11 @@ final class MetersSuite extends munit.FunSuite:
       Meters.SearchQueryDuration,
       Meters.SearchFacetsCapped,
       Meters.PartitionDefaultRows,
+      Meters.MaintenanceDuration,
+      Meters.MaintenancePartitionsCreated,
+      Meters.MaintenancePartitionsDetached,
+      Meters.MaintenancePartitionHeadroom,
+      Meters.MaintenancePartitionsBlocked,
       Meters.HttpServerRequests
     )
 
@@ -60,7 +65,8 @@ final class MetersSuite extends munit.FunSuite:
       Meters.TagKeys.Shape,
       Meters.TagKeys.Route,
       Meters.TagKeys.Uri,
-      Meters.TagKeys.Outcome
+      Meters.TagKeys.Outcome,
+      Meters.TagKeys.Job
     )
 
   test("meter names use Micrometer's dot convention, not the Prometheus spelling"):
@@ -84,7 +90,17 @@ final class MetersSuite extends munit.FunSuite:
 
   test("closed tag-value sets stay closed"):
     assertEquals(Set(Meters.Modes.Binary, Meters.Modes.Structured).size, 2)
-    assertEquals(Set(Meters.Outcomes.Success, Meters.Outcomes.Failure, Meters.Outcomes.Duplicate).size, 3)
+    assertEquals(
+      Set(Meters.Outcomes.Success, Meters.Outcomes.Failure, Meters.Outcomes.Duplicate, Meters.Outcomes.Skipped).size,
+      4
+    )
+    assertEquals(Set(Meters.Jobs.Partitions, Meters.Jobs.Rollup).size, 2)
+
+  test("job names are stable kebab-case identifiers a dashboard can group by"):
+    // Same rule as the reason values below, and for the same reason: these end up in a Prometheus label that a
+    // recording rule and an alert both spell out by hand.
+    List(Meters.Jobs.Partitions, Meters.Jobs.Rollup).foreach: job =>
+      assert(job.matches("[a-z][a-z-]*[a-z]"), s"$job is not a stable kebab-case job name")
 
   test("reason values are operator-facing categories, not free text"):
     val reasons = List(

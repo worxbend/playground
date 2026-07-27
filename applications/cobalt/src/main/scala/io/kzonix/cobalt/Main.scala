@@ -27,6 +27,8 @@ import io.kzonix.observability.Telemetry
 import io.kzonix.persistence.Database
 import io.kzonix.persistence.DatabaseConfig
 import io.kzonix.persistence.Migrations
+import io.kzonix.persistence.maintenance.PartitionMaintenance
+import io.kzonix.persistence.maintenance.RollupRefresh
 import io.kzonix.persistence.repository.PostgresEventRepository
 import java.util.concurrent.Executors
 import java.util.concurrent.ThreadFactory
@@ -119,6 +121,18 @@ object CobaltApp extends StrictLogging:
     )
     val poller = Probes.start(probes, config.lag.refreshInterval)
 
+    // Before the consumer exists, not after. A fresh deployment of this build has whatever partitions
+    // `V1__events.sql` created and nothing else, so the first batch through the stream would either fail with
+    // "no partition of relation found for row" or land in the default partition — where it is invisible to partition
+    // pruning and where its presence then blocks the partition this job is about to try to create.
+    val maintenance = MaintenanceJobs.start(
+      partitions = PartitionMaintenance(pools.write.get(), config.maintenance.policy),
+      rollup = RollupRefresh(pools.write.get()),
+      metrics = MaintenanceMetrics(telemetry.registry),
+      config = config.maintenance,
+      scheduler = system.scheduler
+    )(using blocking)
+
     val deadLetters = KafkaDeadLetterPublisher.start(config.consumer)
     val decoder = RecordDecoder(DeadLetterSource, telemetry.tracing.tracer)
     val processor = BatchProcessor(
@@ -144,6 +158,9 @@ object CobaltApp extends StrictLogging:
     shutdown.addTask(CoordinatedShutdown.PhaseBeforeActorSystemTerminate, "close-resources"): () =>
       Future:
         quietly("stopping the probe scheduler")(poller.close())
+        // Cancelled before the pools close, or a maintenance tick lands on a closed DataSource during shutdown and
+        // logs a failure that is nothing but the shutdown itself.
+        quietly("cancelling the maintenance schedule")(maintenance.close())
         quietly("closing the dead-letter producer")(deadLetters.close())
         quietly("closing the Kafka admin client")(admin.close())
         quietly("closing the connection pools")(pools.close())

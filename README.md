@@ -71,6 +71,9 @@ sbt fmt         # scalafmt, build sources included
 sbt headerCreate  # stamp licence headers — never hand-write one
 sbt doc         # Scaladoc; -Werror applies, so a broken doc link fails the build
 
+sbt ferrite/tailwind       # regenerate ferrite's committed stylesheet from the Twirl templates
+sbt ferrite/tailwindCheck  # fail if it is stale — see docs/development.md §8
+
 sbt wolfram/run   # :8080 (HTTP_PORT)
 sbt cobalt/run    # :8080 (HTTP_PORT)
 sbt ferrite/run   # :9000, Play dev mode
@@ -87,21 +90,23 @@ Run a single suite with `sbt "cobalt/testOnly io.kzonix.cobalt.BatchProcessorSui
 collector, Prometheus and Grafana — on a single host.
 
 ```bash
-sbt cobalt/Docker/publishLocal wolfram/Docker/publishLocal
+sbt ";ferrite/Docker/publishLocal;cobalt/Docker/publishLocal;wolfram/Docker/publishLocal"
 cd deploy
+cp .env.example .env      # then edit; .env is gitignored
 $EDITOR .env              # POSTGRES_PASSWORD, APPLICATION_SECRET, GRAFANA_ADMIN_PASSWORD are mandatory
 docker compose config -q  # validates interpolation and the mandatory vars
 docker compose up -d
 ```
 
 Then the UI is at <http://localhost:9000/events>, ingestion at <http://localhost:8081/events>, Prometheus at
-`:9090` and Grafana at `:3000`. See [docs/operations.md](docs/operations.md) for the smoke test, the runbooks and
-the environment-variable reference.
+`:9090` and Grafana at `:3000` with the **Event observatory** dashboard already provisioned. See
+[docs/operations.md](docs/operations.md) for the smoke test, the runbooks and the environment-variable reference.
 
-> **The stack does not yet come up clean from a cold checkout.** `deploy/.env.example` is missing, ferrite has no
-> `DockerPlugin` (so `ferrite:latest` cannot be built), and compose passes `DB_URL`/`DB_USER`/`DB_PASSWORD` where
-> the services read `DATABASE_*`. All of these and their workarounds are listed under
-> [Known limitations](docs/operations.md#8-known-limitations).
+> **This is a single-host homelab deployment, and it is honest about it.** One Kafka broker at replication factor
+> 1, no TLS, traces logged and dropped rather than sent to a backend, and Play on a milestone release. Nothing
+> there stops the stack coming up clean from a cold checkout; all of it matters before this runs anywhere that
+> matters. The current list is [Known limitations](docs/operations.md#8-known-limitations), and it is kept to
+> things that are true today.
 
 ## Documentation
 

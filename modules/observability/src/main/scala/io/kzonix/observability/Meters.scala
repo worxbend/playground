@@ -89,16 +89,37 @@ object Meters:
     /** Success/failure of an operation — see [[Outcomes]]. */
     val Outcome: String = "outcome"
 
+    /** Which scheduled maintenance job — see [[Jobs]]. A closed set of two, so one timer family covers both without
+      * either one hiding the other's failures behind the other's volume.
+      */
+    val Job: String = "job"
+
   /** Closed value set for [[TagKeys.Mode]]: the CloudEvents Kafka content modes. */
   object Modes:
     val Binary: String = "binary"
     val Structured: String = "structured"
 
-  /** Closed value set for [[TagKeys.Outcome]]. Deliberately three values and not the exception class name. */
+  /** Closed value set for [[TagKeys.Outcome]]. Four values, and never the exception class name.
+    *
+    * [[Skipped]] is the one that needs justifying. A replica that loses the race for a maintenance job's advisory lock
+    * neither succeeded nor failed: folding it into `success` makes "every replica is doing the work" indistinguishable
+    * from "one replica is doing the work", and folding it into `failure` pages somebody every cycle for the system
+    * behaving exactly as designed. With N replicas the healthy steady state is one `success` and N-1 `skipped` per
+    * tick, and that ratio is itself the signal that the locking works.
+    */
   object Outcomes:
     val Success: String = "success"
     val Failure: String = "failure"
     val Duplicate: String = "duplicate"
+    val Skipped: String = "skipped"
+
+  /** Closed value set for [[TagKeys.Job]]. */
+  object Jobs:
+    /** Rolling monthly partition creation and retention. */
+    val Partitions: String = "partition-maintenance"
+
+    /** `REFRESH MATERIALIZED VIEW CONCURRENTLY` on the hourly rollup. */
+    val Rollup: String = "rollup-refresh"
 
   /** Closed value set for [[TagKeys.Reason]].
     *
@@ -205,6 +226,52 @@ object Meters:
     * out. Alert on `> 0`, not on a rate.
     */
   val PartitionDefaultRows: String = "partition.default.rows"
+
+  // --- shared: scheduled database maintenance ----------------------------------------------------------------------
+
+  /** Timer. One scheduled maintenance run, tagged [[TagKeys.Job]] and [[TagKeys.Outcome]].
+    *
+    * **The meter that makes a silently dead job visible.** Partition creation and rollup refresh share the property
+    * that failing produces no error anywhere a user or an alert can see it: the partition job stops creating months and
+    * nothing happens until a month boundary, at which point ingest fails completely; the refresh job stops running and
+    * dashboards keep serving numbers that are merely old. Both failure modes are invisible in logs unless somebody is
+    * reading them. A timer with an `outcome` tag makes three different alerts expressible on one meter family — "the
+    * failure rate is non-zero", "no run of any outcome in the last N intervals" (the job thread is dead, and a counter
+    * that stops incrementing is the only trace it leaves), and "the p99 duration is approaching the interval", which is
+    * ADR §12.4's tripwire for retiring the materialized view in favour of incremental merge tables.
+    *
+    * A timer rather than a counter plus a gauge because Micrometer's timer already exposes the count, so a run that is
+    * timed is a run that is counted, and there is no way to record one without the other.
+    */
+  val MaintenanceDuration: String = "maintenance.job.duration"
+
+  /** Counter. Monthly partitions created, cumulative. Its *rate* is the interesting reading and it should be a step
+    * function of roughly one per month; a flat zero for longer than that means the job is running and achieving
+    * nothing, which [[MaintenanceDuration]] alone cannot distinguish from a healthy no-op.
+    */
+  val MaintenancePartitionsCreated: String = "maintenance.partitions.created"
+
+  /** Counter. Partitions detached by the retention policy. Detached, never dropped — see
+    * `io.kzonix.persistence.maintenance.PartitionMaintenance` for why that asymmetry is deliberate — so this counts
+    * tables that still exist and still hold their rows.
+    */
+  val MaintenancePartitionsDetached: String = "maintenance.partitions.detached"
+
+  /** Gauge. Consecutive months from the current one that already have a partition — ADR §5's "months of headroom".
+    *
+    * The leading indicator that [[PartitionDefaultRows]] is the lagging one for: headroom decaying towards zero is a
+    * job that has stopped working, and it is visible weeks before the first row lands in the catch-all. Alert below
+    * two, not below one — one means the fix has to happen this month.
+    */
+  val MaintenancePartitionHeadroom: String = "maintenance.partitions.headroom"
+
+  /** Gauge. Months whose partition cannot be created because the `DEFAULT` partition already holds rows for them.
+    *
+    * Non-zero means a *manual* remedy is required and the job has said so in its logs with the exact statements to run:
+    * PostgreSQL refuses an overlapping partition while matching rows sit in `DEFAULT`, and moving them is an
+    * exclusive-lock operation no unattended job should take on an operator's behalf.
+    */
+  val MaintenancePartitionsBlocked: String = "maintenance.partitions.blocked"
 
   // --- shared: HTTP ------------------------------------------------------------------------------------------------
 

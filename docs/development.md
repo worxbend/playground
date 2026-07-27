@@ -14,6 +14,7 @@ work inside it.
 | sbt | **2.0.3** | Pinned in `.sdkmanrc` and `project/build.properties`. sbt 1 will not load this build. |
 | Docker | any recent daemon | Required for `sbt verifyIt` (Testcontainers) and for the images. Not needed for `sbt verify`. |
 | Python + MkDocs | 3.12, `mkdocs` 1.6.1 + `mkdocs-material` 9.7.7 | Only for building the docs site locally. |
+| Tailwind CSS CLI | **4.3.3** standalone binary | Only for `ferrite/tailwind` — see §8. Absent, the task warns and leaves the committed stylesheet alone. |
 
 ```bash
 sdk env          # adopts the JDK and sbt from .sdkmanrc
@@ -39,10 +40,14 @@ sbt cobalt/run    # :8080 (HTTP_PORT)
 sbt wolfram/run   # :8080 (HTTP_PORT)
 sbt ferrite/run   # :9000, Play dev mode
 
+sbt ferrite/tailwind       # regenerate ferrite's committed stylesheet — see §8
+sbt ferrite/tailwindCheck  # fail if it is stale
+
 sbt "cobalt/testOnly io.kzonix.cobalt.BatchProcessorSuite"
 sbt "persistence/IT/testOnly io.kzonix.persistence.MigrationIT"
 
-sbt cobalt/Docker/publishLocal wolfram/Docker/publishLocal
+# One quoted argument each, or a ";a;b;c" sequence: sbt 2 does not split a single space-joined string.
+sbt ";ferrite/Docker/publishLocal;cobalt/Docker/publishLocal;wolfram/Docker/publishLocal"
 ```
 
 Run `sbt verify` before handing work back. `headerCheck` fails on any file `sbt-header` has not stamped, and new
@@ -328,9 +333,66 @@ it must not start against a schema older than its own inserts. ferrite never mig
 
 ---
 
-## 8. Gotchas worth remembering
+## 8. Changing ferrite's stylesheet
 
-- `sbt verify` is green at 475 unit tests. If your change makes the count *drop*, you probably renamed a suite
+`applications/ferrite/src/main/resources/public/css/app.css` is **committed CLI output**, not a hand-written file.
+It is what the standalone Tailwind CSS CLI v4.3.3 produces from
+`applications/ferrite/src/main/assets/css/app.css`, which imports Tailwind, imports the hand-written
+`components.css`, declares the theme tokens, and declares the class scan with `@source`. That arrangement is
+ADR §8.3's, and its whole purpose is that the runtime image never contains Node or Tailwind.
+
+The cost of committing generated output is that it goes stale silently: a template gains `class="mt-4"`, the CSS
+does not contain `.mt-4`, and the page renders without it. Nothing in a compile, a test or a page load says so.
+
+```bash
+sbt ferrite/tailwind        # regenerate the committed stylesheet in place
+sbt ferrite/tailwindCheck   # fail if it differs from what the templates imply
+```
+
+**Run `ferrite/tailwind` in the same change as any template edit that touches a class.** Then `sbt verify` as
+usual — the regenerated file is a source file like any other.
+
+### Getting the binary
+
+The CLI is a 112 MB self-contained binary from GitHub releases, **not** from Maven (`org.webjars.npm:tailwindcss`
+ships the `@tailwindcss/oxide` native compiler and needs Node). `Tailwind.resolve` in `project/Tailwind.scala`
+looks for it in this order — `TAILWIND_BIN`, then `~/.cache/kzonix/tailwindcss-<platform>-4.3.3`, then
+`tailwindcss` on `PATH` — and if none is there, **it warns with the exact `curl` command and changes nothing.**
+
+```bash
+mkdir -p ~/.cache/kzonix
+curl -fsSL -o ~/.cache/kzonix/tailwindcss-linux-x64-4.3.3 \
+  https://github.com/tailwindlabs/tailwindcss/releases/download/v4.3.3/tailwindcss-linux-x64
+chmod +x ~/.cache/kzonix/tailwindcss-linux-x64-4.3.3
+```
+
+`PATH` is searched last on purpose: a globally installed `tailwindcss` is very often a different major version,
+and the pinned copy in the cache is the one that reproduces the committed file byte for byte. On a musl host
+(Alpine) take the `-musl` asset from the same release and point `TAILWIND_BIN` at it; the glibc build will not
+run there. In CI, cache `~/.cache/kzonix` beside `~/.cache/coursier`.
+
+### Four decisions in that task worth not re-litigating
+
+- **It is not a `Compile / resourceGenerators` entry**, which is what ADR §8.3 sketched. A generator must produce
+  a file on every build, so on a machine without the CLI it would have to invent one — an empty file, an
+  un-compiled copy of `components.css`, or a build failure. All three are worse than the checked-in file, which
+  is already correct. An explicit task can do the one right thing: change nothing, and say why.
+- **Absence is a warning, never an error, and never a rewrite.** The committed CSS is only ever replaced by bytes
+  a successful, non-empty CLI run produced into a scratch file first — a CLI that died half-way through writing
+  its `--output` would otherwise leave a truncated stylesheet behind.
+- **`tailwindCheck` is not in `verify`.** `verify` must stay runnable with nothing but a JDK. Without the CLI the
+  check warns and passes, exactly like `tailwind` does. That is the one gap left, and it is recorded as such in
+  `docs/operations.md` §8.
+- **Both tasks are wrapped in `Def.uncached`.** sbt 2 caches task results by declared inputs, and neither task
+  declares the Twirl templates as one. Without it the first invocation is replayed for every later one and a
+  template that gained a class reports "up to date" forever — the exact failure the tasks exist to catch. This
+  was observed, not anticipated.
+
+---
+
+## 9. Gotchas worth remembering
+
+- `sbt verify` is green at 531 unit tests. If your change makes the count *drop*, you probably renamed a suite
   into invisibility.
 - OpenTelemetry's `Context` is `ThreadLocal`-backed and `Context.current()` returns root **silently** on any
   thread it was not entered on. Across a `Future`, a Pekko stream stage or a Vert.x event-loop hop, capture the

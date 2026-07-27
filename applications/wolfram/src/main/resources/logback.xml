@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  wolfram's logging configuration (ADR-0000 section 7.3).
+
+  This file has to exist. `modules/observability` ships the shared JSON configuration as an *includable* fragment
+  rather than as a `logback.xml`, precisely so that a library jar cannot auto-configure its consumers — which means
+  nothing includes it unless a service does so by name. Without this file logback finds no configuration at all and
+  falls back to `BasicConfigurator`: the root logger sits at DEBUG and every line is unstructured text. In a
+  container that is not a cosmetic problem. The Kafka client narrates each metadata refresh, each API-version
+  negotiation and each partition epoch at DEBUG, so a broker with twelve partitions produces kilobytes of log per
+  producer per second, none of it queryable and none of it responsive to LOG_LEVEL.
+
+  Levels come from LOG_LEVEL / LOG_APP_LEVEL, read by the included fragment.
+-->
+<configuration>
+  <include resource="io/kzonix/observability/logback-json.xml"/>
+</configuration>

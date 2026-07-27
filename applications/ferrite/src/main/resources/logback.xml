@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  ferrite's logging configuration (ADR-0000 section 7.3).
+
+  This file has to exist, and for ferrite it also has to *win*. `modules/observability` ships the shared JSON
+  configuration as an includable fragment rather than as a `logback.xml`, so nothing includes it unless a service
+  does so by name; and Play, unlike a plain application, does not simply fall back to logback's `BasicConfigurator`
+  — its `LogbackLoggerConfigurator` falls back to `logback-play-default.xml` from inside the `play-logback` jar,
+  which is a text-pattern console appender. Either way ferrite's log stream would be the one of the three that is
+  not JSON, which is exactly the drift the shared module exists to prevent.
+
+  Levels come from LOG_LEVEL / LOG_APP_LEVEL, read by the included fragment.
+-->
+<configuration>
+  <include resource="io/kzonix/observability/logback-json.xml"/>
+
+  <!--
+    Play narrates its module wiring, its router and every filter at INFO on boot and says nothing actionable
+    afterwards. Pinned here rather than in the shared fragment because Play is ferrite's dependency alone.
+  -->
+  <logger name="play.api.Play" level="WARN"/>
+  <logger name="play.api.libs.concurrent.ActorSystemProvider" level="WARN"/>
+  <logger name="play.core.server" level="WARN"/>
+</configuration>

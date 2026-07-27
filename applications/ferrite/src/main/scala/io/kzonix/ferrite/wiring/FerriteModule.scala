@@ -28,6 +28,7 @@ import play.api.Configuration
 import play.api.Environment
 import play.api.inject.Binding
 import play.api.inject.Module
+import play.filters.hosts.AllowedHostsConfig
 
 /** Every binding this application adds to Play's defaults, in one file.
   *
@@ -51,5 +52,8 @@ final class FerriteModule extends Module:
       bind[Databases].toSelf.eagerly(),
       bind[EventRepository].toProvider[EventRepositoryProvider],
       bind[Readiness].to[DatabaseReadiness],
-      bind[Telemetry].toProvider[TelemetryProvider]
+      bind[Telemetry].toProvider[TelemetryProvider],
+      // Replaces Play's own provider, which is disabled in `application.conf`. See `AllowedHosts` for why a
+      // comma-separated environment variable cannot reach `play.filters.hosts.allowed` directly.
+      bind[AllowedHostsConfig].toProvider[AllowedHostsProvider]
     )

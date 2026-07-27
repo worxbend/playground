@@ -476,3 +476,6 @@ project/plugins/project/
 docker/lenses/.env
 # Homelab secrets
 deploy/.env
+
+# mkdocs build output (`mkdocs build --strict`), regenerated on demand.
+site/

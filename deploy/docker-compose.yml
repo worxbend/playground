@@ -22,6 +22,10 @@ x-service-defaults: &service-defaults
     OTEL_TRACES_SAMPLER: ${OTEL_TRACES_SAMPLER:-parentbased_traceidratio}
     OTEL_TRACES_SAMPLER_ARG: ${OTEL_TRACES_SAMPLER_ARG:-0.1}
     LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    # The `version` tag on every meter and the `service.version` resource attribute on every span. Left unset, all
+    # three services report `0.0.0-unknown`, and a rollout — the single most common cause of a metric changing shape —
+    # is the one thing no dashboard can see. It is the image tag; keep it in step with what sbt built.
+    SERVICE_VERSION: ${SERVICE_VERSION:-0.1.0-SNAPSHOT}
 
 services:
   postgres:
@@ -37,13 +41,24 @@ services:
       # Modest tuning for an event store on a homelab box: most queries are
       # index scans over recent partitions, so shared_buffers matters more than
       # work_mem, and a high effective_cache_size keeps the planner honest.
+      #
+      # `-c` and its argument MUST be separate list elements. Postgres parses
+      # `-c=shared_buffers=512MB` as the setting named "" with value
+      # "shared_buffers=512MB" and dies with `unrecognized configuration
+      # parameter ""` before it ever opens a socket.
       - postgres
-      - -c=shared_buffers=512MB
-      - -c=effective_cache_size=1536MB
-      - -c=work_mem=16MB
-      - -c=maintenance_work_mem=256MB
-      - -c=random_page_cost=1.1
-      - -c=max_connections=100
+      - -c
+      - shared_buffers=512MB
+      - -c
+      - effective_cache_size=1536MB
+      - -c
+      - work_mem=16MB
+      - -c
+      - maintenance_work_mem=256MB
+      - -c
+      - random_page_cost=1.1
+      - -c
+      - max_connections=100
     volumes:
       - postgres-data:/var/lib/postgresql/18/docker
     healthcheck:
@@ -75,6 +90,11 @@ services:
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
       KAFKA_LOG_RETENTION_HOURS: 168
+      # Without this the broker defaults to /tmp/kraft-combined-logs *inside the
+      # container* and the kafka-data volume below is never written to, so every
+      # `docker compose up --force-recreate` silently discards the log and the
+      # committed consumer offsets with it.
+      KAFKA_LOG_DIRS: /var/lib/kafka/data
     volumes:
       - kafka-data:/var/lib/kafka/data
     healthcheck:
@@ -165,7 +185,11 @@ services:
       <<: *otel-env
       OTEL_SERVICE_NAME: ferrite
       APPLICATION_SECRET: ${APPLICATION_SECRET:?APPLICATION_SECRET is required}
-      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1}
+      # `ferrite` is appended, not left to the operator. Prometheus scrapes http://ferrite:9000/metrics over the
+      # compose network, so the compose service name IS a hostname this service is served on — and AllowedHostsFilter
+      # answers 400 for anything else, which shows up as a permanently DOWN scrape target and a blank dashboard
+      # rather than as an error anyone sees. A port-less pattern matches any port, so `ferrite` covers `ferrite:9000`.
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1},ferrite
       DATABASE_URL: jdbc:postgresql://postgres:5432/${POSTGRES_DB:-observatory}
       DATABASE_USER: ${POSTGRES_USER:-observatory}
       DATABASE_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
@@ -215,6 +239,10 @@ services:
     volumes:
       - grafana-data:/var/lib/grafana
       - ./observability/grafana-datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+      # The provider config and the dashboards it points at must not share a directory:
+      # Grafana parses everything under the provider's `options.path` as a dashboard.
+      - ./observability/grafana-dashboards.yml:/etc/grafana/provisioning/dashboards/dashboards.yml:ro
+      - ./observability/dashboards:/var/lib/grafana/dashboards:ro
     ports: ["3000:3000"]
     deploy:
       resources:
