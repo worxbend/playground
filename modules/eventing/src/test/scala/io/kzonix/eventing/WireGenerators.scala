@@ -21,10 +21,6 @@
 
 package io.kzonix.eventing
 
-import java.time.Instant
-import java.time.OffsetDateTime
-import java.time.ZoneOffset
-
 import io.circe.Json
 import io.kzonix.kernel.event.AttrValue
 import io.kzonix.kernel.event.Binary
@@ -37,6 +33,9 @@ import io.kzonix.kernel.event.Payload
 import io.kzonix.kernel.event.SchemaRef
 import io.kzonix.kernel.event.Source
 import io.kzonix.kernel.event.Subject
+import java.time.Instant
+import java.time.OffsetDateTime
+import java.time.ZoneOffset
 import org.scalacheck.Arbitrary
 import org.scalacheck.Gen
 
@@ -62,7 +61,14 @@ object WireGenerators:
 
   val genText: Gen[String] =
     Gen
-      .listOf(Gen.oneOf(Gen.alphaNumChar, Gen.const(' '), Gen.const('-'), Gen.const('/'), Gen.const('ä'), Gen.const('中')))
+      .listOf(Gen.oneOf(
+        Gen.alphaNumChar,
+        Gen.const(' '),
+        Gen.const('-'),
+        Gen.const('/'),
+        Gen.const('ä'),
+        Gen.const('中')
+      ))
       .map(_.mkString)
 
   private val genKey: Gen[String] =
@@ -82,10 +88,11 @@ object WireGenerators:
       Gen.frequency(
         6 -> scalar,
         2 -> Gen.choose(0, 3).flatMap(n => Gen.listOfN(n, genJson(depth - 1))).map(Json.fromValues),
-        2 -> Gen
-          .choose(0, 3)
-          .flatMap(n => Gen.listOfN(n, Gen.zip(genKey, genJson(depth - 1))))
-          .map(Json.fromFields)
+        2 ->
+          Gen
+            .choose(0, 3)
+            .flatMap(n => Gen.listOfN(n, Gen.zip(genKey, genJson(depth - 1))))
+            .map(Json.fromFields)
       )
 
   val genEventId: Gen[EventId] =
@@ -114,14 +121,14 @@ object WireGenerators:
   val genSubject: Gen[Subject] =
     Gen.identifier.map(id => force(Subject(s"device-${id.take(8)}")))
 
-  /** Whole quarter-hour offsets: RFC 3339 admits only `±HH:MM`, and a second-precision offset is a value no other
-    * tool would accept back.
+  /** Whole quarter-hour offsets: RFC 3339 admits only `±HH:MM`, and a second-precision offset is a value no other tool
+    * would accept back.
     */
   val genTime: Gen[OffsetDateTime] =
     for
       epochSecond <- Gen.choose(0L, 4102444800L)
-      nano        <- Gen.choose(0, 999999999)
-      quarters    <- Gen.choose(-56, 56)
+      nano <- Gen.choose(0, 999999999)
+      quarters <- Gen.choose(-56, 56)
     yield OffsetDateTime.ofInstant(
       Instant.ofEpochSecond(epochSecond, nano.toLong),
       ZoneOffset.ofTotalSeconds(quarters * 900)
@@ -138,7 +145,7 @@ object WireGenerators:
   val genSchemaRef: Gen[SchemaRef] =
     Gen.oneOf(
       for
-        name  <- Gen.oneOf("telemetry", "state-changed", "alarm", "unknown")
+        name <- Gen.oneOf("telemetry", "state-changed", "alarm", "unknown")
         major <- Gen.choose(1, 3)
         minor <- Gen.choose(0, 9)
         patch <- Gen.choose(0, 9)
@@ -179,9 +186,10 @@ object WireGenerators:
   val genPayload: Gen[Payload] =
     Gen.frequency(
       6 -> genJson(3).map(Payload.Structured.apply),
-      2 -> Gen
-        .listOf(Arbitrary.arbitrary[Byte])
-        .map(bytes => Payload.Opaque(Binary.copyOf(bytes.toArray), ContentType.OctetStream)),
+      2 ->
+        Gen
+          .listOf(Arbitrary.arbitrary[Byte])
+          .map(bytes => Payload.Opaque(Binary.copyOf(bytes.toArray), ContentType.OctetStream)),
       1 -> Gen.const(Payload.Empty)
     )
 
@@ -189,20 +197,20 @@ object WireGenerators:
     *
     * Used for the SDK adapter properties, and the distinction matters: `Envelope.canonical` collapses `Time`, `Ref` and
     * `Bytes` extensions into `Text`, because kernel's *JSON* format carries no per-extension type. The SDK's extension
-    * model does carry it, so canonicalising first would quietly make "typed extensions survive the adapter"
-    * untestable — the very property the `AttrValue` ADT exists for.
+    * model does carry it, so canonicalising first would quietly make "typed extensions survive the adapter" untestable
+    * — the very property the `AttrValue` ADT exists for.
     */
   val genRawEnvelope: Gen[Envelope] =
     for
-      id          <- genEventId
-      source      <- genSource
-      eventType   <- genEventType
-      time        <- Gen.option(genTime)
-      subject     <- Gen.option(genSubject)
+      id <- genEventId
+      source <- genSource
+      eventType <- genEventType
+      time <- Gen.option(genTime)
+      subject <- Gen.option(genSubject)
       contentType <- Gen.option(genContentType)
-      schema      <- Gen.option(genSchemaRef)
-      extensions  <- genExtensions
-      payload     <- genPayload
+      schema <- Gen.option(genSchemaRef)
+      extensions <- genExtensions
+      payload <- genPayload
     yield Envelope(id, source, eventType, time, subject, contentType, schema, extensions, payload)
 
   /** Envelopes already in `Envelope.canonical` form, so kernel's own normalisation is never what a structured-mode
@@ -214,39 +222,39 @@ object WireGenerators:
   val genUnrepresentableEnvelope: Gen[Envelope] =
     for
       envelope <- genRawEnvelope
-      name     <- genInvalidExtensionName
-      value    <- genAttrValue
+      name <- genInvalidExtensionName
+      value <- genAttrValue
     yield envelope.copy(extensions = envelope.extensions + (name -> value))
 
   val genDecodeFailure: Gen[DecodeFailure] =
     for
-      detail  <- genText.map(t => if t.isEmpty then "no detail" else t)
+      detail <- genText.map(t => if t.isEmpty then "no detail" else t)
       failure <- Gen.oneOf(
-                   DecodeFailure.UnknownEncoding(detail),
-                   DecodeFailure.MalformedStructured(detail),
-                   DecodeFailure.MalformedBinary(detail),
-                   DecodeFailure.Unconvertible(detail)
-                 )
+        DecodeFailure.UnknownEncoding(detail),
+        DecodeFailure.MalformedStructured(detail),
+        DecodeFailure.MalformedBinary(detail),
+        DecodeFailure.Unconvertible(detail)
+      )
     yield failure
 
   val genRecordOrigin: Gen[RecordOrigin] =
     for
-      topic     <- Gen.oneOf("events.cloudevents.v1", "events.cloudevents.v1.dlq", "other.topic")
+      topic <- Gen.oneOf("events.cloudevents.v1", "events.cloudevents.v1.dlq", "other.topic")
       partition <- Gen.choose(0, 11)
-      offset    <- Gen.choose(0L, 9000000000L)
+      offset <- Gen.choose(0L, 9000000000L)
       timestamp <- Gen.option(Gen.choose(0L, 4102444800000L))
-      key       <- Gen.option(genText)
+      key <- Gen.option(genText)
     yield RecordOrigin(topic, partition, offset, timestamp, key)
 
   val genDeadLetter: Gen[DeadLetter] =
     for
-      origin  <- genRecordOrigin
+      origin <- genRecordOrigin
       failure <- genDecodeFailure
       failedAt <- genTime
       headers <- Gen
-                   .choose(0, 4)
-                   .flatMap(n => Gen.listOfN(n, Gen.zip(Gen.identifier.map(_.take(10)), genText)))
-                   .map(_.toMap)
+        .choose(0, 4)
+        .flatMap(n => Gen.listOfN(n, Gen.zip(Gen.identifier.map(_.take(10)), genText)))
+        .map(_.toMap)
       payload <- Gen.option(Gen.listOf(Arbitrary.arbitrary[Byte]).map(bytes => Binary.copyOf(bytes.toArray)))
-      source  <- genSource
+      source <- genSource
     yield DeadLetter(origin, failure.reason, failure.detail, failedAt, headers, payload, source)

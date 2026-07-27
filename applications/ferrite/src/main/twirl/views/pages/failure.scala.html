@@ -1,0 +1,21 @@
+@*
+ * The full-page error. Renders the filter bar whenever there is one, so a rejected permalink comes back with each
+ * bad value still sitting in the input that produced it (ADR section 6.3) — an error page without the bar leaves the
+ * user holding a URL they can neither see nor edit.
+ *@
+@import io.kzonix.ferrite.web.view.Failure
+@import io.kzonix.ferrite.web.view.FilterBar
+
+@(failure: Failure, bar: Option[FilterBar])(implicit request: RequestHeader)
+
+@layout.main(s"${failure.status} · observatory", io.kzonix.ferrite.web.Urls.Events) {
+  @for(filterBar <- bar) {
+    @fragments.filterbar(filterBar)
+  }
+
+  <h1 id="results-heading" class="results-heading" tabindex="-1">@failure.title</h1>
+
+  <section id="results" class="results" aria-labelledby="results-heading" aria-live="polite" aria-busy="false">
+    @fragments.failure(failure)
+  </section>
+}

@@ -1,0 +1,30 @@
+@*
+ * The full list page. It contributes the document shell and the results REGION; the region's contents come from the
+ * same fragment an htmx swap receives, so there is exactly one definition of the results markup.
+ *
+ * The region element is what carries the accessibility contract and it must survive every swap:
+ *   - `aria-live="polite"` so a filter change is announced instead of silently replacing what a screen-reader user
+ *     was reading. It is set on the container and not recreated per response, because a live region that is itself
+ *     replaced is a live region the assistive technology has stopped watching.
+ *   - `aria-busy` is toggled by /assets/js/app.js around every htmx request, so "loading" is announced as a state
+ *     rather than inferred from a spinner nobody can see.
+ *   - `tabindex="-1"` on the heading so focus can be moved there after a swap; without that, keyboard users are
+ *     returned to the top of the document on every keystroke in the filter bar.
+ *@
+@import io.kzonix.ferrite.web.view.EventsPage
+
+@(page: EventsPage)(implicit request: RequestHeader)
+
+@layout.main("Events · observatory", io.kzonix.ferrite.web.Urls.Events) {
+  @fragments.filterbar(page.bar)
+
+  <h1 id="results-heading" class="results-heading" tabindex="-1">Events</h1>
+
+  <section id="results"
+           class="results"
+           aria-labelledby="results-heading"
+           aria-live="polite"
+           aria-busy="false">
+    @fragments.results(page.results)
+  </section>
+}

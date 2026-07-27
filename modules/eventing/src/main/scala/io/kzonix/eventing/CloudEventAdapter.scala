@@ -21,13 +21,6 @@
 
 package io.kzonix.eventing
 
-import java.net.URI
-import java.nio.charset.StandardCharsets.UTF_8
-import java.util.Locale
-
-import scala.jdk.CollectionConverters.*
-import scala.util.control.NonFatal
-
 import io.circe.parser
 import io.cloudevents.CloudEvent
 import io.cloudevents.SpecVersion
@@ -44,6 +37,11 @@ import io.kzonix.kernel.event.Payload
 import io.kzonix.kernel.event.SchemaRef
 import io.kzonix.kernel.event.Source
 import io.kzonix.kernel.event.Subject
+import java.net.URI
+import java.nio.charset.StandardCharsets.UTF_8
+import java.util.Locale
+import scala.jdk.CollectionConverters.*
+import scala.util.control.NonFatal
 
 /** The one place where the domain [[io.kzonix.kernel.event.Envelope]] and the SDK's `io.cloudevents.CloudEvent` meet.
   *
@@ -62,28 +60,28 @@ import io.kzonix.kernel.event.Subject
   *
   *   - **Reserved names are not extensions.** `id`, `time`, `data` &c. are context attributes; an extension so named
   *     would collide with the attribute on the wire. They are dropped, matching `Envelope.canonical`.
-  *   - **`AttrValue.Other` becomes `Text`.** The SDK's extension model has exactly six types and a JSON array or
-  *     object is not among them. Encoding the JSON text and decoding it back as a string keeps the data; guessing on
-  *     the way back — "does this string parse as JSON?" — would corrupt every string extension that happens to look
-  *     like JSON, which is the far more common case. The other five `AttrValue` shapes round-trip *typed*, which is
-  *     the point of the ADT and is why this is not simply `Map[String, String]`.
+  *   - **`AttrValue.Other` becomes `Text`.** The SDK's extension model has exactly six types and a JSON array or object
+  *     is not among them. Encoding the JSON text and decoding it back as a string keeps the data; guessing on the way
+  *     back — "does this string parse as JSON?" — would corrupt every string extension that happens to look like JSON,
+  *     which is the far more common case. The other five `AttrValue` shapes round-trip *typed*, which is the point of
+  *     the ADT and is why this is not simply `Map[String, String]`.
   *   - **The payload's shape follows the media type.** `CloudEventData` is bytes; the `data` versus `data_base64`
   *     distinction that kernel's JSON codec relies on does not exist here. So [[canonical]] resolves the shape by
   *     literally encoding and re-decoding the payload, which makes agreement between the two directions structural
   *     rather than a pair of functions someone has to keep in step.
   *
   * **Extension *names* cannot be normalised, so they are rejected.** CloudEvents requires lowercase alphanumerics, and
-  * the SDK builder throws on anything else. Renaming would lose data and dropping would lose more, so
-  * [[toCloudEvent]] returns a `Left` naming the offending keys — which is exactly the ingest-time validation ADR §4.3
-  * asks for ("Reject; never invent defaults") rather than a surprise `RuntimeException` inside a producer callback.
+  * the SDK builder throws on anything else. Renaming would lose data and dropping would lose more, so [[toCloudEvent]]
+  * returns a `Left` naming the offending keys — which is exactly the ingest-time validation ADR §4.3 asks for ("Reject;
+  * never invent defaults") rather than a surprise `RuntimeException` inside a producer callback.
   */
 object CloudEventAdapter:
 
   /** The media types whose payload is JSON text rather than opaque bytes.
     *
     * An **absent** `datacontenttype` counts as JSON-ish. That is the reading that keeps kernel's two payload shapes
-    * distinguishable: its JSON codec puts a bare `data` value (structured) next to `data_base64` (opaque), and the
-    * only signal that survives into a byte-oriented binding is the media type.
+    * distinguishable: its JSON codec puts a bare `data` value (structured) next to `data_base64` (opaque), and the only
+    * signal that survives into a byte-oriented binding is the media type.
     */
   def isJsonMediaType(contentType: ContentType): Boolean =
     val essence = contentType.takeWhile(_ != ';').trim.toLowerCase(Locale.ROOT)
@@ -123,10 +121,10 @@ object CloudEventAdapter:
 
   /** [[canonical]], plus the further collapse that *binary content mode* forces: every extension becomes `Text`.
     *
-    * Kafka headers are bytes, so the binding writes extension values as strings and a reader has no way to recover
-    * that `sequence` was an Integer and `sampled` a Boolean — the type is simply not on the wire. Making that erasure
-    * an explicit function, rather than a surprise in a round-trip assertion, is what lets the binary-mode property be
-    * an equation. Structured mode does not need this: kernel's JSON codec keeps Integer and Boolean typed.
+    * Kafka headers are bytes, so the binding writes extension values as strings and a reader has no way to recover that
+    * `sequence` was an Integer and `sampled` a Boolean — the type is simply not on the wire. Making that erasure an
+    * explicit function, rather than a surprise in a round-trip assertion, is what lets the binary-mode property be an
+    * equation. Structured mode does not need this: kernel's JSON codec keeps Integer and Boolean typed.
     */
   def binaryCanonical(envelope: Envelope): Envelope =
     val normalised = canonical(envelope)
@@ -135,8 +133,8 @@ object CloudEventAdapter:
   /** The string form of an extension value in a Kafka header.
     *
     * Written here rather than delegated to the SDK's writer on purpose: the SDK renders a timestamp with
-    * `DateTimeFormatter.ISO_OFFSET_DATE_TIME`, which drops the seconds field when it is zero and is therefore not
-    * RFC 3339 — the precise deviation `io.kzonix.kernel.Rfc3339` exists to prevent. Any value whose `toString` the SDK
+    * `DateTimeFormatter.ISO_OFFSET_DATE_TIME`, which drops the seconds field when it is zero and is therefore not RFC
+    * 3339 — the precise deviation `io.kzonix.kernel.Rfc3339` exists to prevent. Any value whose `toString` the SDK
     * would have used unchecked (notably `byte[]`, which renders as `[B@1f2a3b`) is spelled out instead.
     */
   def headerValue(value: AttrValue): String = value match
@@ -170,15 +168,15 @@ object CloudEventAdapter:
     */
   def toEnvelope(event: CloudEvent): Either[String, Envelope] =
     for
-      _         <- Either.cond(
-                     event.getSpecVersion == SpecVersion.V1,
-                     (),
-                     s"unsupported specversion '${event.getSpecVersion}'; this build speaks ${Envelope.SpecVersion} only"
-                   )
-      id        <- required("id", Option(event.getId)).flatMap(EventId.apply)
-      source    <- required("source", Option(event.getSource)).flatMap(uri => Source(uri.toString))
+      _ <- Either.cond(
+        event.getSpecVersion == SpecVersion.V1,
+        (),
+        s"unsupported specversion '${event.getSpecVersion}'; this build speaks ${Envelope.SpecVersion} only"
+      )
+      id <- required("id", Option(event.getId)).flatMap(EventId.apply)
+      source <- required("source", Option(event.getSource)).flatMap(uri => Source(uri.toString))
       eventType <- required("type", Option(event.getType)).flatMap(EventType.apply)
-      subject   <- Option(event.getSubject).fold(rightNone[Subject])(Subject.apply(_).map(Some.apply))
+      subject <- Option(event.getSubject).fold(rightNone[Subject])(Subject.apply(_).map(Some.apply))
       mediaType <- Option(event.getDataContentType).fold(rightNone[ContentType])(ContentType.apply(_).map(Some.apply))
     yield Envelope(
       id = id,
@@ -232,14 +230,15 @@ object CloudEventAdapter:
       .withId(event.id)
       .withSource(URI(event.source))
       .withType(event.eventType)
-    val withSubject     = event.subject.fold(base)(base.withSubject)
-    val withTime        = event.time.fold(withSubject)(withSubject.withTime)
+    val withSubject = event.subject.fold(base)(base.withSubject)
+    val withTime = event.time.fold(withSubject)(withSubject.withTime)
     val withContentType = event.dataContentType.fold(withTime)(withTime.withDataContentType)
-    val withSchema      = event.schema.fold(withContentType)(ref => withContentType.withDataSchema(ref.uri))
-    val withExtensions  = event.extensions.foldLeft(withSchema)((builder, entry) => extended(builder, entry._1, entry._2))
-    val withData        = dataOf(event.payload).fold(withExtensions)(bytes =>
-                            withExtensions.withData(BytesCloudEventData.wrap(bytes))
-                          )
+    val withSchema = event.schema.fold(withContentType)(ref => withContentType.withDataSchema(ref.uri))
+    val withExtensions =
+      event.extensions.foldLeft(withSchema)((builder, entry) => extended(builder, entry._1, entry._2))
+    val withData = dataOf(event.payload).fold(withExtensions)(bytes =>
+      withExtensions.withData(BytesCloudEventData.wrap(bytes))
+    )
     withData.build()
 
   private def extended(builder: CloudEventBuilder, name: String, value: AttrValue): CloudEventBuilder = value match
@@ -261,10 +260,10 @@ object CloudEventAdapter:
       .toMap
 
   private def attrValueOf(value: AnyRef): AttrValue = value match
-    case v: String                  => AttrValue.Text(v)
-    case v: java.lang.Boolean       => AttrValue.Flag(v.booleanValue)
-    case v: java.lang.Integer       => AttrValue.Num(v.intValue)
-    case v: java.net.URI            => AttrValue.Ref(v)
+    case v: String                   => AttrValue.Text(v)
+    case v: java.lang.Boolean        => AttrValue.Flag(v.booleanValue)
+    case v: java.lang.Integer        => AttrValue.Num(v.intValue)
+    case v: java.net.URI             => AttrValue.Ref(v)
     case v: java.time.OffsetDateTime => AttrValue.Time(v)
-    case v: Array[Byte]             => AttrValue.Bytes(Binary.copyOf(v))
-    case other                      => AttrValue.Text(other.toString)
+    case v: Array[Byte]              => AttrValue.Bytes(Binary.copyOf(v))
+    case other                       => AttrValue.Text(other.toString)

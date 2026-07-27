@@ -1,0 +1,48 @@
+@*
+ * Table rows plus the keyset sentinel. This is the fragment a "load more" returns, so it must contain nothing but
+ * <tr> elements — anything else would be invalid inside <tbody> and the browser would hoist it out of the table.
+ *
+ * The sentinel is a <button>, not a bare element with hx-get on it: ADR section 8.4 is explicit that every htmx
+ * trigger must be an <a> or a <button>, because hx-get on a <div> is not keyboard reachable and not announced. The
+ * `revealed` trigger gives infinite scroll on top of that, so pointer users never click it and keyboard users can.
+ *
+ * The swap replaces the sentinel row with the next batch plus a fresh sentinel, which is why the incoming fragment
+ * carries the same id.
+ *@
+@import io.kzonix.ferrite.web.view.EventRow
+
+@(rows: Seq[EventRow], moreUrl: Option[String])
+
+@for(row <- rows) {
+  <tr class="event-row severity-@row.severityTone" data-uid="@row.eventUid">
+    <td class="cell-time">
+      <a class="row-open" href="@row.detailUrl">
+        <time datetime="@row.occurredAt" title="@row.occurredAtLabel">@row.relative</time>
+      </a>
+    </td>
+    <td class="cell-severity"><span class="severity-badge">@row.severity</span></td>
+    <td class="cell-type"><span class="mono">@row.eventType</span></td>
+    <td class="cell-source"><span class="mono">@row.source</span></td>
+    <td class="cell-subject">@row.subject</td>
+    <td class="cell-device">@row.device</td>
+    <td class="cell-room">@row.room</td>
+    <td class="cell-person">@row.person</td>
+    <td class="cell-metric mono">@row.metric</td>
+  </tr>
+}
+
+@for(url <- moreUrl) {
+  <tr id="load-more" class="load-more-row">
+    <td colspan="9">
+      <button type="button"
+              class="button load-more"
+              hx-get="@url"
+              hx-target="#load-more"
+              hx-swap="outerHTML"
+              hx-trigger="click, revealed from:closest tr"
+              hx-indicator="#busy">
+        Load more events
+      </button>
+    </td>
+  </tr>
+}

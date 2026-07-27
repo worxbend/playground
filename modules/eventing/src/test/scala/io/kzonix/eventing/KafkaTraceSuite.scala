@@ -21,8 +21,6 @@
 
 package io.kzonix.eventing
 
-import java.util.Optional
-
 import io.kzonix.kernel.event.Topics
 import io.opentelemetry.api.OpenTelemetry
 import io.opentelemetry.api.trace.Span
@@ -30,6 +28,7 @@ import io.opentelemetry.api.trace.SpanContext
 import io.opentelemetry.api.trace.TraceFlags
 import io.opentelemetry.api.trace.TraceState
 import io.opentelemetry.context.Context
+import java.util.Optional
 import munit.FunSuite
 import org.apache.kafka.clients.consumer.ConsumerRecord
 import org.apache.kafka.common.header.internals.RecordHeaders
@@ -38,11 +37,11 @@ import org.apache.kafka.common.record.TimestampType
 /** Trace propagation over Kafka headers: inject on produce, extract on consume, and the consumer span landing in the
   * producer's trace.
   *
-  * These assertions are made against the OpenTelemetry **API** — a remote `SpanContext`, the W3C propagator and a
-  * no-op tracer — rather than against an SDK `InMemorySpanExporter`. That is not the preferred shape: an exporter
-  * would let the test assert on the recorded span's *parent span id* directly. It is what this module's classpath
-  * allows, because `opentelemetry-sdk-testing` is scoped to `modules/observability` only (ADR §3.5) and adding it here
-  * is a build change outside this change's scope.
+  * These assertions are made against the OpenTelemetry **API** — a remote `SpanContext`, the W3C propagator and a no-op
+  * tracer — rather than against an SDK `InMemorySpanExporter`. That is not the preferred shape: an exporter would let
+  * the test assert on the recorded span's *parent span id* directly. It is what this module's classpath allows, because
+  * `opentelemetry-sdk-testing` is scoped to `modules/observability` only (ADR §3.5) and adding it here is a build
+  * change outside this change's scope.
   *
   * What is asserted is nevertheless the property that matters end to end: the traceparent survives the header round
   * trip byte for byte, and a span opened by [[KafkaTrace.withConsumerSpan]] on the consuming side reports the
@@ -118,8 +117,8 @@ class KafkaTraceSuite extends FunSuite:
   test("trace context travels alongside the CloudEvents headers without disturbing them"):
     val envelope = WireGenerators.force(
       for
-        id        <- io.kzonix.kernel.event.EventId("event-1")
-        source    <- io.kzonix.kernel.event.Source("/sensors/kitchen")
+        id <- io.kzonix.kernel.event.EventId("event-1")
+        source <- io.kzonix.kernel.event.Source("/sensors/kitchen")
         eventType <- io.kzonix.kernel.event.EventType("io.kzonix.iot.telemetry")
       yield io.kzonix.kernel.event.Envelope(
         id,

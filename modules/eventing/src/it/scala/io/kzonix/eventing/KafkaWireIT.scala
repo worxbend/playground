@@ -1,10 +1,25 @@
+/*
+ * Copyright (c) 2020 Kzonix Projects
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy of
+ * this software and associated documentation files (the "Software"), to deal in
+ * the Software without restriction, including without limitation the rights to
+ * use, copy, modify, merge, publish, distribute, sublicense, and/or sell copies of
+ * the Software, and to permit persons to whom the Software is furnished to do so,
+ * subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+ * FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+ * COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER
+ * IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN
+ * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
+
 package io.kzonix.eventing
-
-import java.time.Duration as JDuration
-import java.util.UUID
-
-import scala.annotation.tailrec
-import scala.jdk.CollectionConverters.*
 
 import io.circe.Json
 import io.kzonix.kernel.event.AttrValue
@@ -20,6 +35,8 @@ import io.opentelemetry.api.trace.SpanContext
 import io.opentelemetry.api.trace.TraceFlags
 import io.opentelemetry.api.trace.TraceState
 import io.opentelemetry.context.Context
+import java.time.Duration as JDuration
+import java.util.UUID
 import munit.FunSuite
 import org.apache.kafka.clients.admin.Admin
 import org.apache.kafka.clients.admin.NewTopic
@@ -31,17 +48,19 @@ import org.apache.kafka.common.serialization.ByteArrayDeserializer
 import org.apache.kafka.common.serialization.ByteArraySerializer
 import org.apache.kafka.common.serialization.StringDeserializer
 import org.apache.kafka.common.serialization.StringSerializer
+import scala.annotation.tailrec
+import scala.jdk.CollectionConverters.*
 
 /** The wire contract against a **real broker**.
   *
   * Everything in `src/test` proves that this module's encoder and decoder are inverses. That is necessary and not
-  * sufficient: the things that actually break in production are the ones a broker is in the middle of — header
-  * survival across the wire protocol, a `null` value versus an empty one, key-based partitioning, and trace context
-  * arriving intact on a different JVM. Those are only observable here.
+  * sufficient: the things that actually break in production are the ones a broker is in the middle of — header survival
+  * across the wire protocol, a `null` value versus an empty one, key-based partitioning, and trace context arriving
+  * intact on a different JVM. Those are only observable here.
   *
-  * **Broker discovery.** The suite takes `KAFKA_BOOTSTRAP_SERVERS` from the environment and skips when it is absent,
-  * so `IT/testFull` is green on a machine with no Docker. ADR §9.2 calls for Testcontainers with a shared lazy
-  * singleton per forked JVM, and that is the intended shape — but `testcontainers-scala` is declared in
+  * **Broker discovery.** The suite takes `KAFKA_BOOTSTRAP_SERVERS` from the environment and skips when it is absent, so
+  * `IT/testFull` is green on a machine with no Docker. ADR §9.2 calls for Testcontainers with a shared lazy singleton
+  * per forked JVM, and that is the intended shape — but `testcontainers-scala` is declared in
   * `project/Dependencies.scala` and wired to no module, so it is not on any classpath yet. Swapping it in is a change
   * to [[bootstrapServers]] and nothing else: every test below already takes the address as a parameter.
   */
@@ -158,10 +177,10 @@ class KafkaWireIT extends FunSuite:
   private def telemetry: Envelope =
     val built =
       for
-        id        <- EventId(UUID.randomUUID().toString)
-        source    <- Source("https://home.example/gateway/1")
+        id <- EventId(UUID.randomUUID().toString)
+        source <- Source("https://home.example/gateway/1")
         eventType <- EventType("io.kzonix.iot.telemetry")
-        subject   <- Subject("kitchen-1")
+        subject <- Subject("kitchen-1")
         mediaType <- ContentType("application/json")
       yield Envelope(
         id = id,
@@ -175,8 +194,8 @@ class KafkaWireIT extends FunSuite:
         payload = Payload.Structured(
           Json.obj(
             "metric" -> Json.fromString("temperature"),
-            "value"  -> Json.fromDoubleOrNull(21.5),
-            "unit"   -> Json.fromString("celsius")
+            "value" -> Json.fromDoubleOrNull(21.5),
+            "unit" -> Json.fromString("celsius")
           )
         )
       )
@@ -204,14 +223,14 @@ class KafkaWireIT extends FunSuite:
       producer.flush()
     finally producer.close()
 
-  /** Polls until one record arrives or the deadline passes. Deliberately not a `while (records.isEmpty)` with no
-    * bound: a broken assertion should fail the suite, not hang CI.
+  /** Polls until one record arrives or the deadline passes. Deliberately not a `while (records.isEmpty)` with no bound:
+    * a broken assertion should fail the suite, not hang CI.
     */
   private def consumeOne(servers: String, topic: String): ConsumerRecord[String, Array[Byte]] =
     val config = Map[String, AnyRef](
-      "bootstrap.servers"  -> servers,
-      "group.id"           -> s"eventing-it-${UUID.randomUUID()}",
-      "auto.offset.reset"  -> "earliest",
+      "bootstrap.servers" -> servers,
+      "group.id" -> s"eventing-it-${UUID.randomUUID()}",
+      "auto.offset.reset" -> "earliest",
       "enable.auto.commit" -> "false"
     )
     val consumer = KafkaConsumer[String, Array[Byte]](config.asJava, StringDeserializer(), ByteArrayDeserializer())
@@ -222,8 +241,8 @@ class KafkaWireIT extends FunSuite:
 
   @tailrec
   private def poll(
-      consumer: KafkaConsumer[String, Array[Byte]],
-      deadlineNanos: Long
+    consumer: KafkaConsumer[String, Array[Byte]],
+    deadlineNanos: Long
   ): ConsumerRecord[String, Array[Byte]] =
     if System.nanoTime() > deadlineNanos then fail("no record arrived within the deadline")
     else

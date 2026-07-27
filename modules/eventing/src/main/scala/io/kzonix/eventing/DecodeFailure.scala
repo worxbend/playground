@@ -23,11 +23,11 @@ package io.kzonix.eventing
 
 /** Why a Kafka record could not be turned into an [[io.kzonix.kernel.event.Envelope]].
   *
-  * **This is a value, never an exception.** ADR §4.3 explains the failure it exists to prevent: a throwing
-  * deserializer throws inside `KafkaConsumer.poll`, *before* the stream connector ever sees the record. The stream
-  * dies, the offset is never committed, and the restart replays the same poison record forever — an outage that looks
-  * like a crash loop and whose cause is one malformed byte. Decoding therefore returns `Either`, the bad record
-  * becomes a [[DeadLetter]], and the offset is still committed.
+  * **This is a value, never an exception.** ADR §4.3 explains the failure it exists to prevent: a throwing deserializer
+  * throws inside `KafkaConsumer.poll`, *before* the stream connector ever sees the record. The stream dies, the offset
+  * is never committed, and the restart replays the same poison record forever — an outage that looks like a crash loop
+  * and whose cause is one malformed byte. Decoding therefore returns `Either`, the bad record becomes a [[DeadLetter]],
+  * and the offset is still committed.
   *
   * **`reason` is separate from `detail` because one is a metric tag and the other is not.** ADR §7 specifies
   * `consume.records.poison{reason}`; tagging that counter with a parser message would mint a Prometheus timeseries per

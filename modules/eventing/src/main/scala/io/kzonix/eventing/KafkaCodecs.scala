@@ -21,12 +21,9 @@
 
 package io.kzonix.eventing
 
-import java.util as ju
-
-import scala.jdk.CollectionConverters.*
-
 import io.kzonix.kernel.event.Envelope
 import io.kzonix.kernel.event.Topics
+import java.util as ju
 import org.apache.kafka.clients.consumer.ConsumerRecord
 import org.apache.kafka.clients.producer.ProducerRecord
 import org.apache.kafka.common.errors.SerializationException
@@ -34,6 +31,7 @@ import org.apache.kafka.common.header.Headers
 import org.apache.kafka.common.header.internals.RecordHeaders
 import org.apache.kafka.common.serialization.Deserializer
 import org.apache.kafka.common.serialization.Serializer
+import scala.jdk.CollectionConverters.*
 
 /** Producer and consumer wiring: the only place in the build that turns an [[io.kzonix.kernel.event.Envelope]] into a
   * `ProducerRecord`, or a `ConsumerRecord` back into an envelope.
@@ -65,14 +63,14 @@ object KafkaCodecs:
     * between the producer and any future republisher. `mode` defaults to binary, the mode of `events.cloudevents.v1`.
     *
     * Partition and timestamp are left for the broker to assign. A producer-side timestamp would be the *ingest* clock,
-    * and this system already carries the producer's own `time` attribute, which is the one that decides which
-    * partition an event is stored in downstream (ADR §5).
+    * and this system already carries the producer's own `time` attribute, which is the one that decides which partition
+    * an event is stored in downstream (ADR §5).
     */
   def producerRecord(
-      topic: String,
-      envelope: Envelope,
-      mode: ContentMode = ContentMode.Binary,
-      key: Option[String] = None
+    topic: String,
+    envelope: Envelope,
+    mode: ContentMode = ContentMode.Binary,
+    key: Option[String] = None
   ): Either[String, ProducerRecord[String, Array[Byte]]] =
     val headers: Headers = RecordHeaders()
     ContentMode.write(mode, envelope, headers).map: value =>
@@ -86,8 +84,8 @@ object KafkaCodecs:
     * replayed poison record overwrites its predecessor under compaction instead of accumulating a copy per retry.
     */
   def deadLetterRecord(
-      deadLetter: DeadLetter,
-      topic: String = Topics.CloudEventsDlq
+    deadLetter: DeadLetter,
+    topic: String = Topics.CloudEventsDlq
   ): Either[String, ProducerRecord[String, Array[Byte]]] =
     producerRecord(topic, deadLetter.toEnvelope, ContentMode.Structured, Some(deadLetter.origin.dlqKey))
 
@@ -102,9 +100,9 @@ object KafkaCodecs:
   /** A `Serializer` for the producer's value slot, so wolfram can hold a `KafkaProducer[String, Envelope]` and never
     * name an SDK type.
     *
-    * Only the headers-aware overload can work — in binary mode the attributes *are* the headers — so the
-    * two-argument `serialize(topic, data)` that Kafka keeps for source compatibility fails loudly rather than emitting
-    * a record that would come back as `UnknownEncoding`. Every Kafka client since 2.1 calls the three-argument form.
+    * Only the headers-aware overload can work — in binary mode the attributes *are* the headers — so the two-argument
+    * `serialize(topic, data)` that Kafka keeps for source compatibility fails loudly rather than emitting a record that
+    * would come back as `UnknownEncoding`. Every Kafka client since 2.1 calls the three-argument form.
     */
   def envelopeSerializer(mode: ContentMode = ContentMode.Binary): Serializer[Envelope] =
     new Serializer[Envelope]:
@@ -154,9 +152,9 @@ object KafkaCodecs:
   val producerDefaults: Map[String, String] =
     Map(
       "enable.idempotence" -> "true",
-      "acks"               -> "all",
-      "compression.type"   -> "zstd",
-      "linger.ms"          -> "5"
+      "acks" -> "all",
+      "compression.type" -> "zstd",
+      "linger.ms" -> "5"
     )
 
   /** [[producerDefaults]] merged over `overrides`, as the `java.util.Map` `KafkaProducer`'s constructor wants.

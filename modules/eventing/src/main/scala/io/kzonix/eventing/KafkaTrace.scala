@@ -21,9 +21,6 @@
 
 package io.kzonix.eventing
 
-import scala.jdk.CollectionConverters.*
-import scala.util.control.NonFatal
-
 import io.opentelemetry.api.common.AttributeKey
 import io.opentelemetry.api.common.Attributes
 import io.opentelemetry.api.trace.Span
@@ -38,6 +35,8 @@ import io.opentelemetry.context.propagation.TextMapSetter
 import org.apache.kafka.clients.consumer.ConsumerRecord
 import org.apache.kafka.clients.producer.ProducerRecord
 import org.apache.kafka.common.header.Headers
+import scala.jdk.CollectionConverters.*
+import scala.util.control.NonFatal
 
 /** W3C trace-context propagation across Kafka: inject on produce, extract on consume.
   *
@@ -128,9 +127,9 @@ object KafkaTrace:
     * because an `OutOfMemoryError` is not a span attribute.
     */
   def withConsumerSpan[A, K, V](
-      record: ConsumerRecord[K, V],
-      tracer: Tracer,
-      propagator: TextMapPropagator = defaultPropagator
+    record: ConsumerRecord[K, V],
+    tracer: Tracer,
+    propagator: TextMapPropagator = defaultPropagator
   )(body: Span => A): A =
     val span = tracer
       .spanBuilder(s"${record.topic} process")

@@ -1,0 +1,48 @@
+@*
+ * The refine panel. Every dimension is emitted even when empty, so the panel does not reflow as the search narrows —
+ * a control that moves under the pointer between two clicks is a control that gets misclicked.
+ *
+ * Counts mean "refine within the current selection": all filters, including this dimension's own, are applied. Above
+ * the candidate cap they are lower bounds and carry a "+" (ADR section 6.3) — a count that is silently approximate is
+ * a count that will be quoted in a meeting.
+ *@
+@import io.kzonix.ferrite.web.view.Facet
+
+@(facets: Seq[Facet], capped: Boolean)
+
+<aside class="facets" aria-labelledby="facets-heading">
+  <h2 id="facets-heading" class="facets-heading">Refine</h2>
+
+  @if(capped) {
+    <p class="facets-capped" role="note">
+      Counts are lower bounds: more rows matched than the facet pass samples.
+    </p>
+  }
+
+  @for(facet <- facets) {
+    <section class="facet">
+      <h3 class="facet-heading" id="facet-@facet.key">@facet.label</h3>
+      @if(facet.entries.isEmpty) {
+        <p class="facet-empty">No values in this result set.</p>
+      } else {
+        <ul class="facet-values" aria-labelledby="facet-@facet.key">
+          @for(entry <- facet.entries) {
+            <li>
+              <a class="facet-entry @if(entry.selected){is-selected}"
+                 href="@entry.url"
+                 hx-get="@entry.url"
+                 hx-target="#results"
+                 hx-swap="innerHTML"
+                 hx-push-url="true"
+                 hx-indicator="#busy"
+                 @if(entry.selected){aria-current="true"}>
+                <span class="facet-value">@entry.label</span>
+                <span class="facet-count">@entry.count</span>
+              </a>
+            </li>
+          }
+        </ul>
+      }
+    </section>
+  }
+</aside>

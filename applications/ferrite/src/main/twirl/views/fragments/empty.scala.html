@@ -1,0 +1,30 @@
+@*
+ * The empty state. Not an apology — a diagnosis and two ways out.
+ *
+ * "No results" is the screen a user reaches when they are already confused, and the three ways of arriving at it are
+ * different problems: nothing has been ingested at all (an operational incident), the window is too narrow, or the
+ * filter is. `Presenter.emptiness` picks the wording; this template only places it.
+ *@
+@import io.kzonix.ferrite.web.view.Emptiness
+
+@(emptiness: Emptiness)
+
+<div class="empty-state">
+  <h2 class="empty-headline">@emptiness.headline</h2>
+  <p class="empty-explanation">@emptiness.explanation</p>
+  @if(emptiness.suggestions.nonEmpty) {
+    <ul class="empty-suggestions">
+      @for(suggestion <- emptiness.suggestions) {
+        <li>
+          <a class="button"
+             href="@suggestion.url"
+             hx-get="@suggestion.url"
+             hx-target="#results"
+             hx-swap="innerHTML"
+             hx-push-url="true"
+             hx-indicator="#busy">@suggestion.label</a>
+        </li>
+      }
+    </ul>
+  }
+</div>

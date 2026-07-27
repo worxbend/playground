@@ -21,8 +21,6 @@
 
 package io.kzonix.eventing
 
-import java.time.OffsetDateTime
-
 import io.circe.Decoder
 import io.circe.DecodingFailure
 import io.circe.Encoder
@@ -38,6 +36,7 @@ import io.kzonix.kernel.event.Payload
 import io.kzonix.kernel.event.Source
 import io.kzonix.kernel.event.Subject
 import io.kzonix.kernel.event.Topics
+import java.time.OffsetDateTime
 import org.apache.kafka.clients.consumer.ConsumerRecord
 
 /** Where a record came from, in the coordinates that identify it uniquely and forever.
@@ -47,11 +46,11 @@ import org.apache.kafka.clients.consumer.ConsumerRecord
   * off that triple.
   */
 final case class RecordOrigin(
-    topic: String,
-    partition: Int,
-    offset: Long,
-    timestamp: Option[Long],
-    key: Option[String]
+  topic: String,
+  partition: Int,
+  offset: Long,
+  timestamp: Option[Long],
+  key: Option[String]
 ):
 
   /** The DLQ record key (ADR §4.3): keying on the origin coordinates means a replayed poison record *overwrites* its
@@ -73,20 +72,20 @@ object RecordOrigin:
   given encoder: Encoder[RecordOrigin] = Encoder.instance: origin =>
     Json.fromFields(
       Vector(
-        "topic"     -> Json.fromString(origin.topic),
+        "topic" -> Json.fromString(origin.topic),
         "partition" -> Json.fromInt(origin.partition),
-        "offset"    -> Json.fromLong(origin.offset)
+        "offset" -> Json.fromLong(origin.offset)
       ) ++ origin.timestamp.map(v => "timestamp" -> Json.fromLong(v)).toVector
         ++ origin.key.map(v => "key" -> Json.fromString(v)).toVector
     )
 
   given decoder: Decoder[RecordOrigin] = Decoder.instance: cursor =>
     for
-      topic     <- cursor.get[String]("topic")
+      topic <- cursor.get[String]("topic")
       partition <- cursor.get[Int]("partition")
-      offset    <- cursor.get[Long]("offset")
+      offset <- cursor.get[Long]("offset")
       timestamp <- cursor.get[Option[Long]]("timestamp")
-      key       <- cursor.get[Option[String]]("key")
+      key <- cursor.get[Option[String]]("key")
     yield RecordOrigin(topic, partition, offset, timestamp, key)
 
 /** The wrapper that makes a poison pill diagnosable and replayable.
@@ -96,8 +95,8 @@ object RecordOrigin:
   *
   *   - **why** — [[DecodeFailure.reason]], a bounded tag safe for `consume.records.poison{reason}`, next to the
   *     unbounded `detail` a human actually reads;
-  *   - **where** — the origin coordinates, which are the record's only identity when its `id` is the thing that
-  *     failed to parse, and which double as the DLQ key so retries overwrite;
+  *   - **where** — the origin coordinates, which are the record's only identity when its `id` is the thing that failed
+  *     to parse, and which double as the DLQ key so retries overwrite;
   *   - **what** — the original value bytes verbatim, plus the original headers. Replay is republishing these two, so
   *     anything less makes the DLQ a graveyard rather than a queue.
   *
@@ -112,13 +111,13 @@ object RecordOrigin:
   * exercises until the day it matters.
   */
 final case class DeadLetter(
-    origin: RecordOrigin,
-    reason: String,
-    detail: String,
-    failedAt: OffsetDateTime,
-    headers: Map[String, String],
-    payload: Option[Binary],
-    source: Source
+  origin: RecordOrigin,
+  reason: String,
+  detail: String,
+  failedAt: OffsetDateTime,
+  headers: Map[String, String],
+  payload: Option[Binary],
+  source: Source
 ):
 
   /** The dead letter as a CloudEvent envelope, ready for structured-mode publication to the DLQ.
@@ -149,8 +148,8 @@ object DeadLetter:
   val EventTypeName: EventType =
     EventType("io.kzonix.eventing.dead-letter").getOrElse(throw IllegalStateException("dead-letter type is invalid"))
 
-  /** The default `source` — overridden by each consumer with its own identity, because "which consumer gave up on
-    * this record" is the first question asked of a DLQ with more than one reader.
+  /** The default `source` — overridden by each consumer with its own identity, because "which consumer gave up on this
+    * record" is the first question asked of a DLQ with more than one reader.
     */
   val DefaultSource: Source =
     Source("urn:kzonix:eventing:dead-letter").getOrElse(throw IllegalStateException("dead-letter source is invalid"))
@@ -169,10 +168,10 @@ object DeadLetter:
 
   /** Builds the dead letter for a record the consumer could not decode. */
   def of(
-      record: ConsumerRecord[String, Array[Byte]],
-      failure: DecodeFailure,
-      source: Source = DefaultSource,
-      failedAt: OffsetDateTime = OffsetDateTime.now()
+    record: ConsumerRecord[String, Array[Byte]],
+    failure: DecodeFailure,
+    source: Source = DefaultSource,
+    failedAt: OffsetDateTime = OffsetDateTime.now()
   ): DeadLetter =
     DeadLetter(
       origin = RecordOrigin.of(record),
@@ -191,12 +190,12 @@ object DeadLetter:
   given encoder: Encoder[DeadLetter] = Encoder.instance: value =>
     Json.fromFields(
       Vector(
-        "reason"   -> Json.fromString(value.reason),
-        "detail"   -> Json.fromString(value.detail),
+        "reason" -> Json.fromString(value.reason),
+        "detail" -> Json.fromString(value.detail),
         "failedAt" -> Json.fromString(Rfc3339.render(value.failedAt)),
-        "source"   -> Json.fromString(value.source),
-        "origin"   -> RecordOrigin.encoder(value.origin),
-        "headers"  -> Json.fromFields(value.headers.toVector.sortBy((name, _) => name).map { (name, header) =>
+        "source" -> Json.fromString(value.source),
+        "origin" -> RecordOrigin.encoder(value.origin),
+        "headers" -> Json.fromFields(value.headers.toVector.sortBy((name, _) => name).map { (name, header) =>
           name -> Json.fromString(header)
         })
       ) ++ value.payload.map(bytes => "payload" -> Json.fromString(bytes.base64)).toVector
@@ -204,13 +203,13 @@ object DeadLetter:
 
   given decoder: Decoder[DeadLetter] = Decoder.instance: cursor =>
     for
-      reason   <- cursor.get[String]("reason")
-      detail   <- cursor.get[String]("detail")
+      reason <- cursor.get[String]("reason")
+      detail <- cursor.get[String]("detail")
       failedAt <- cursor.get[String]("failedAt").flatMap(refine(cursor, Rfc3339.parse))
-      source   <- cursor.get[String]("source").flatMap(refine(cursor, Source.apply))
-      origin   <- cursor.get[RecordOrigin]("origin")
-      headers  <- cursor.get[Map[String, String]]("headers")
-      payload  <- cursor.get[Option[String]]("payload").flatMap(traverse(refine(cursor, Binary.fromBase64)))
+      source <- cursor.get[String]("source").flatMap(refine(cursor, Source.apply))
+      origin <- cursor.get[RecordOrigin]("origin")
+      headers <- cursor.get[Map[String, String]]("headers")
+      payload <- cursor.get[Option[String]]("payload").flatMap(traverse(refine(cursor, Binary.fromBase64)))
     yield DeadLetter(origin, reason, detail, failedAt, headers, payload, source)
 
   /** Reads a dead letter back out of the envelope [[DeadLetter.toEnvelope]] produced — the replay path. */

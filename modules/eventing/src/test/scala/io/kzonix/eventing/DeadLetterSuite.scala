@@ -21,11 +21,10 @@
 
 package io.kzonix.eventing
 
-import java.nio.charset.StandardCharsets.UTF_8
-import java.util.Optional
-
 import io.kzonix.kernel.event.Binary
 import io.kzonix.kernel.event.Topics
+import java.nio.charset.StandardCharsets.UTF_8
+import java.util.Optional
 import munit.ScalaCheckSuite
 import org.apache.kafka.clients.consumer.ConsumerRecord
 import org.apache.kafka.common.header.internals.RecordHeaders
@@ -121,10 +120,10 @@ private object Envelopes:
 
   def simple(subject: String): Either[String, io.kzonix.kernel.event.Envelope] =
     for
-      id        <- io.kzonix.kernel.event.EventId("plain-1")
-      source    <- io.kzonix.kernel.event.Source("/sensors/kitchen")
+      id <- io.kzonix.kernel.event.EventId("plain-1")
+      source <- io.kzonix.kernel.event.Source("/sensors/kitchen")
       eventType <- io.kzonix.kernel.event.EventType("io.kzonix.iot.telemetry")
-      subj      <- io.kzonix.kernel.event.Subject(subject)
+      subj <- io.kzonix.kernel.event.Subject(subject)
     yield io.kzonix.kernel.event.Envelope(
       id,
       source,

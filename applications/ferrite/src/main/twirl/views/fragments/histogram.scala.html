@@ -1,0 +1,44 @@
+@*
+ * The timeline strip. A control, not a decoration: every bar links to its own half-open window, so drilling into a
+ * spike is one click and the result is a shareable URL.
+ *
+ * Empty buckets are rendered as zero-height bars rather than collapsed, because a chart that silently drops gaps
+ * lies about the shape of the data — which is the one thing this strip exists to show.
+ *
+ * The bar height is a class, never an inline style: the CSP has no 'unsafe-inline' in style-src. An <ol> because the
+ * order is the meaning, and each bar carries its own screen-reader text since the visual encoding conveys nothing to
+ * a non-visual reader.
+ *@
+@import io.kzonix.ferrite.web.view.Histogram
+
+@(histogram: Histogram)
+
+<section class="histogram" aria-labelledby="histogram-heading">
+  <h2 id="histogram-heading" class="sr-only">Events over time</h2>
+
+  @if(histogram.empty) {
+    <p class="histogram-empty">No events between @histogram.fromLabel and @histogram.untilLabel.</p>
+  } else {
+    <ol class="histogram-bars">
+      @for(bar <- histogram.bars) {
+        <li class="histogram-bar @bar.heightClass">
+          <a href="@bar.url"
+             hx-get="@bar.url"
+             hx-target="#results"
+             hx-swap="innerHTML"
+             hx-push-url="true"
+             hx-indicator="#busy"
+             title="@bar.startLabel — @bar.countLabel events">
+            <span class="sr-only">@bar.startLabel: @bar.countLabel events</span>
+          </a>
+        </li>
+      }
+    </ol>
+  }
+
+  <p class="histogram-axis">
+    <span>@histogram.fromLabel</span>
+    <span class="histogram-scale">@histogram.widthLabel per bar · peak @histogram.peakLabel</span>
+    <span>@histogram.untilLabel</span>
+  </p>
+</section>

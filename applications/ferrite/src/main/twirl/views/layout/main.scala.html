@@ -1,0 +1,58 @@
+@*
+ * The one full-document shell. Pages call it; fragments never do (ADR section 8.4).
+ *
+ * It takes `request` implicitly because it needs the CSRF token: `hx-headers` is set ONCE, on <body>, and htmx
+ * inherits it down the DOM — so every request any descendant issues carries the token, and unlike a hidden input it
+ * survives an innerHTML swap of the region a form lives in.
+ *
+ * Accessibility is wired here rather than per page, because these are document-level obligations: the skip link, the
+ * landmark roles, the focusable <main>, and the single busy indicator every htmx trigger points `hx-indicator` at.
+ * The keyboard shortcuts and post-swap focus management live in /assets/js/app.js — the Content-Security-Policy
+ * deliberately has no 'unsafe-inline' in script-src, so there is no inline <script> anywhere in this application.
+ *@
+@(title: String, activePath: String)(content: Html)(implicit request: RequestHeader)
+
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="light dark">
+    <title>@title</title>
+    <link rel="stylesheet" href="@io.kzonix.ferrite.web.Urls.asset("css/app.css")">
+    @*
+     * htmx and Alpine come from WebJars, unpacked under /public by sbt-web, and are cache-busted by build version
+     * rather than by a content digest (ADR section 8.3 rejects sbt-digest's milestone artifact).
+     * `defer` on both, Alpine last: Alpine initialises on DOMContentLoaded and its MutationObserver then picks up
+     * anything htmx swaps in afterwards, which is why swapped fragments need no re-initialisation glue.
+     *@
+    <script defer src="@io.kzonix.ferrite.web.Urls.asset("lib/htmx.org/dist/htmx.min.js")"></script>
+    <script defer src="@io.kzonix.ferrite.web.Urls.asset("js/app.js")"></script>
+    <script defer src="@io.kzonix.ferrite.web.Urls.asset("lib/alpinejs/dist/cdn.min.js")"></script>
+  </head>
+  <body class="app" hx-headers='@io.kzonix.ferrite.web.Csrf.hxHeaders(request)' x-data="observatory">
+    <a class="skip-link" href="#main">Skip to results</a>
+
+    <header class="app-header" role="banner">
+      <div class="app-brand">
+        <span class="app-mark" aria-hidden="true"></span>
+        <span class="app-title">Event observatory</span>
+      </div>
+      <nav class="app-nav" aria-label="Primary">
+        <a href="@io.kzonix.ferrite.web.Urls.Events" @if(activePath == io.kzonix.ferrite.web.Urls.Events){aria-current="page"}>Events</a>
+        <a href="@io.kzonix.ferrite.web.Urls.HealthReady">Health</a>
+        <a href="@io.kzonix.ferrite.web.Urls.Metrics">Metrics</a>
+      </nav>
+      <p class="app-hint">Press <kbd>/</kbd> to search, <kbd>j</kbd>/<kbd>k</kbd> to move, <kbd>Enter</kbd> to open.</p>
+    </header>
+
+    <main id="main" class="app-main" tabindex="-1">
+      @content
+    </main>
+
+    <footer class="app-footer" role="contentinfo">
+      <span>ferrite @io.kzonix.ferrite.web.BuildVersion.value</span>
+      <span>Reads only. Migrations are an operator-run job, never a boot step.</span>
+    </footer>
+  </body>
+</html>

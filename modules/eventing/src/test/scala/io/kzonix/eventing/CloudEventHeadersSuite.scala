@@ -21,11 +21,10 @@
 
 package io.kzonix.eventing
 
-import java.net.URI
-
 import io.cloudevents.core.builder.CloudEventBuilder
 import io.cloudevents.kafka.KafkaMessageFactory
 import io.cloudevents.kafka.impl.KafkaHeaders
+import java.net.URI
 import munit.FunSuite
 import org.apache.kafka.common.header.internals.RecordHeaders
 

@@ -1,0 +1,117 @@
+@*
+ * The filter bar. A real <form method="get"> first and an htmx control second, so it works with JavaScript disabled
+ * and degrades to a full page load — which is also what makes every result set a shareable URL.
+ *
+ * `hx-trigger` debounces typing and `hx-sync="this:replace"` cancels an in-flight search when a newer keystroke
+ * arrives, so the results region can never be overwritten by a stale response that finished late.
+ *
+ * Every value here is the RAW query-string text, not a value re-rendered from a parsed filter: a rejected permalink
+ * has to come back with the offending text still in the box that produced it (ADR section 6.3).
+ *@
+@import io.kzonix.ferrite.web.view.FilterBar
+
+@(bar: FilterBar)
+
+<form id="filter-form"
+      class="filter-bar"
+      role="search"
+      aria-label="Event filters"
+      method="get"
+      action="@bar.action"
+      hx-get="@bar.action"
+      hx-target="#results"
+      hx-swap="innerHTML"
+      hx-push-url="true"
+      hx-indicator="#busy"
+      hx-sync="this:replace"
+      hx-trigger="submit, search, input changed delay:250ms">
+
+  @* The permalink grammar is versioned and the version is mandatory, so the form always sends it. *@
+  <input type="hidden" name="v" value="@bar.version">
+
+  @* Facet selections and payload predicates have no input of their own; without these they would be dropped the
+     moment the user typed in the search box. *@
+  @for((key, value) <- bar.hidden) {
+    <input type="hidden" name="@key" value="@value">
+  }
+
+  <div class="filter-field filter-field-wide">
+    <label for="q">Full-text</label>
+    <input id="q"
+           name="q"
+           type="search"
+           value="@bar.text"
+           autocomplete="off"
+           spellcheck="false"
+           placeholder="&quot;kitchen sensor&quot; -debug"
+           aria-describedby="q-help">
+    <p id="q-help" class="filter-help">Phrases in quotes, <code>-</code> to exclude, <code>or</code> between terms.</p>
+  </div>
+
+  <div class="filter-field">
+    <label for="from">From</label>
+    <input id="from" name="from" type="text" value="@bar.from" placeholder="2026-07-26T00:00:00Z" spellcheck="false">
+  </div>
+
+  <div class="filter-field">
+    <label for="until">Until</label>
+    <input id="until" name="until" type="text" value="@bar.until" placeholder="2026-07-27T00:00:00Z" spellcheck="false">
+  </div>
+
+  <div class="filter-field">
+    <label for="severity">Severity at least</label>
+    <select id="severity" name="severity">
+      <option value="" @if(bar.severity.isEmpty){selected}>Any</option>
+      @for(level <- io.kzonix.kernel.search.Severity.values.toSeq) {
+        <option value="&gt;=@level.label" @if(bar.severity == level.label){selected}>@level.label</option>
+      }
+    </select>
+  </div>
+
+  <div class="filter-actions">
+    <button type="submit" class="button button-primary">Search</button>
+    <a class="button" href="@bar.clearUrl" hx-get="@bar.clearUrl" hx-target="#results" hx-swap="innerHTML" hx-push-url="true">Clear</a>
+    <span id="busy" class="htmx-indicator" role="status">Searching…</span>
+  </div>
+
+  @if(bar.problems.nonEmpty) {
+    <div class="filter-problems" role="alert">
+      <h2>This link could not be read in full</h2>
+      <ul>
+        @for(problem <- bar.problems) {
+          <li>
+            @if(problem.parameter.nonEmpty) { <code>@problem.parameter</code> }
+            @problem.message
+          </li>
+        }
+      </ul>
+    </div>
+  }
+
+  @if(bar.chips.nonEmpty) {
+    <ul class="filter-chips" aria-label="Active filters">
+      @for(chip <- bar.chips) {
+        <li class="chip">
+          <span class="chip-label">@chip.label</span>
+          <span class="chip-value">@chip.value</span>
+          <a class="chip-remove"
+             href="@chip.removeUrl"
+             hx-get="@chip.removeUrl"
+             hx-target="#results"
+             hx-swap="innerHTML"
+             hx-push-url="true"
+             aria-label="Remove filter @chip.label @chip.value">&times;</a>
+        </li>
+      }
+    </ul>
+  }
+
+  <div class="filter-permalink">
+    <label for="permalink">Permalink</label>
+    <input id="permalink" type="text" readonly value="@bar.permalink" x-ref="permalink">
+    <button type="button"
+            class="button"
+            x-on:click="copy($refs.permalink.value)"
+            x-text="copied ? 'Copied' : 'Copy'">Copy</button>
+  </div>
+</form>

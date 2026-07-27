@@ -1,0 +1,62 @@
+/*
+ * The Tailwind v4 entry point (ADR section 8.3).
+ *
+ * v4 is CSS-native: no `tailwind.config.js`, no `package.json`, no `node_modules`. The theme is declared in CSS and
+ * the class scan is declared in CSS, so the whole configuration is this file and the build step is one binary
+ * invocation, documented under HOW THIS IS BUILT below.
+ *
+ * `components.css` is imported rather than inlined because it is also the fallback the build copies verbatim when
+ * the Tailwind binary cannot be resolved. One stylesheet, two delivery paths — see the comment at the head of that
+ * file.
+ *
+ * HOW THIS IS BUILT
+ * -----------------
+ * The committed output at `src/main/resources/public/css/app.css` is the real CLI output of
+ *
+ *   tailwindcss --input src/main/assets/css/app.css \
+ *               --output src/main/resources/public/css/app.css --minify
+ *
+ * and must be regenerated whenever a template gains a class. Wiring that into sbt belongs in the root `build.sbt`
+ * as a resource generator on ferrite — a subproject-local `.sbt` file is not enough, `Compile / resourceGenerators`
+ * added there does not reach the project in sbt 2.0.3:
+ *
+ *   ferrite / Compile / resourceGenerators += Def.uncached {   // sbt 2 rejects File-valued CACHED tasks
+ *     Def.task {
+ *       val log      = streams.value.log
+ *       val input    = (Compile / sourceDirectory).value / "assets" / "css" / "app.css"
+ *       val fallback = (Compile / sourceDirectory).value / "assets" / "css" / "components.css"
+ *       val output   = (Compile / resourceManaged).value / "public" / "css" / "app.css"
+ *       IO.createDirectory(output.getParentFile)
+ *       // TAILWIND_BIN, else ~/.cache/kzonix/tailwindcss-linux-x64-4.3.3, else download it from the GitHub release.
+ *       Tailwind.resolve("4.3.3", log) match
+ *         case Some(cli) => run(cli, input, output)              // 42 ms, 20 KB minified, measured
+ *         case None      => IO.copyFile(fallback, output)        // never fail the build
+ *       Seq(output)
+ *     }
+ *   }.taskValue
+ *
+ * Output lands on the classpath at `public/css/app.css`, exactly where `Assets.at("/public", …)` looks, so the
+ * runtime image never sees Tailwind or Node.
+ */
+@import "tailwindcss";
+@import "./components.css";
+
+/*
+ * Where the class scan looks. Twirl templates are the only markup in this application, plus the small asset script
+ * that toggles a couple of classes at runtime; nothing else can contribute a class name.
+ */
+@source "../../twirl";
+@source "../../resources/public/js";
+
+/*
+ * The design tokens Tailwind itself should know about, so that a utility written in a template resolves to the same
+ * colours the component layer uses. Kept deliberately small: this is an operator tool, and every token added here is
+ * a decision someone later has to keep consistent across two systems.
+ */
+@theme {
+  --color-surface: #f7f8fa;
+  --color-surface-raised: #ffffff;
+  --color-accent: #2f5bd0;
+
+  --font-mono: ui-monospace, "SF Mono", "JetBrains Mono", "Fira Code", Menlo, Consolas, monospace;
+}

@@ -22,10 +22,8 @@
 package io.kzonix.eventing
 
 import java.nio.charset.StandardCharsets.UTF_8
-
-import scala.jdk.CollectionConverters.*
-
 import org.apache.kafka.common.header.Headers
+import scala.jdk.CollectionConverters.*
 
 /** The Kafka header vocabulary of the CloudEvents protocol binding, and the three primitive operations over
   * `org.apache.kafka.common.header.Headers` that everything else in this module is built from.
@@ -80,8 +78,8 @@ object CloudEventHeaders:
     * re-injects trace context would grow one `traceparent` header per attempt, and while readers take the last value,
     * the record still bloats and `kcat` output becomes unreadable.
     *
-    * Throws `IllegalStateException` on the read-only `Headers` of a `ConsumerRecord` — deliberately, because mutating
-    * a consumed record's headers and expecting the change to be visible anywhere is always a bug.
+    * Throws `IllegalStateException` on the read-only `Headers` of a `ConsumerRecord` — deliberately, because mutating a
+    * consumed record's headers and expecting the change to be visible anywhere is always a bug.
     */
   def put(carrier: Headers, key: String, value: String): Headers =
     val _ = carrier.remove(key)

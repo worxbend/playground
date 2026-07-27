@@ -1,0 +1,63 @@
+@*
+ * The results region: everything an htmx filter change swaps.
+ *
+ * This is the INNER content of #results, not the region element itself. The container — with its landmark role,
+ * aria-live and aria-busy — lives in the page template and persists across swaps: recreating a live region on every
+ * update is how a screen reader ends up announcing nothing at all, because the element it was watching is gone.
+ *
+ * A real <table> with <th scope="col"> and a <caption>, because this is tabular data. The sortable Time header is a
+ * <button> inside a <th aria-sort>, which is the only construction that is both keyboard-operable and announced.
+ *@
+@import io.kzonix.ferrite.web.view.Results
+
+@(results: Results)
+
+@fragments.histogram(results.histogram)
+
+<p class="results-status" id="results-status">
+  @results.statusLabel
+  @if(!results.totalIsExact) { <span class="results-approx" title="Counted up to a cap, not scanned in full">approximate</span> }
+</p>
+
+@if(results.rows.isEmpty) {
+  @for(emptiness <- results.emptiness) {
+    @fragments.empty(emptiness)
+  }
+} else {
+  <div class="results-layout">
+    <div class="results-table-wrap">
+      <table class="event-table">
+        <caption class="sr-only">Events matching the current filter, newest first</caption>
+        <thead>
+          <tr>
+            <th scope="col" aria-sort="@results.sortAria" class="cell-time">
+              @* A <button> inside the <th>, not a clickable <th>: only the button is focusable and announced, and
+                 aria-sort on the header is what tells a screen reader which way the column is ordered. *@
+              <button type="button"
+                      class="sort-button"
+                      hx-get="@results.sortUrl"
+                      hx-target="#results"
+                      hx-swap="innerHTML"
+                      hx-push-url="true"
+                      hx-indicator="#busy"
+                      title="@results.sortLabel">Time</button>
+            </th>
+            <th scope="col" class="cell-severity">Severity</th>
+            <th scope="col" class="cell-type">Type</th>
+            <th scope="col" class="cell-source">Source</th>
+            <th scope="col" class="cell-subject">Subject</th>
+            <th scope="col" class="cell-device">Device</th>
+            <th scope="col" class="cell-room">Room</th>
+            <th scope="col" class="cell-person">Person</th>
+            <th scope="col" class="cell-metric">Value</th>
+          </tr>
+        </thead>
+        <tbody id="event-rows">
+          @fragments.rows(results.rows, results.moreUrl)
+        </tbody>
+      </table>
+    </div>
+
+    @fragments.facets(results.facets, results.facetsCapped)
+  </div>
+}

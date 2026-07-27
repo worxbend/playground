@@ -21,17 +21,15 @@
 
 package io.kzonix.eventing
 
-import java.nio.charset.StandardCharsets.UTF_8
-import java.util.Locale
-
-import scala.util.control.NonFatal
-
 import io.cloudevents.SpecVersion
 import io.cloudevents.kafka.impl.KafkaBinaryMessageReaderImpl
 import io.kzonix.kernel.Rfc3339
 import io.kzonix.kernel.event.ContentType
 import io.kzonix.kernel.event.Envelope
+import java.nio.charset.StandardCharsets.UTF_8
+import java.util.Locale
 import org.apache.kafka.common.header.Headers
+import scala.util.control.NonFatal
 
 /** The two ways the CloudEvents Kafka binding can lay an event onto a record, and the encode/decode pair for each.
   *
@@ -46,12 +44,12 @@ import org.apache.kafka.common.header.Headers
   *     discovered later.
   *   - *Structured on the DLQ* puts the entire event, attributes and all, into the value as one self-contained
   *     `application/cloudevents+json` blob. A poison record is read by a human under time pressure with `kcat`, and
-  *     reassembling an event from a dozen headers at that moment is exactly the wrong task. Self-containment also
-  *     makes replay a copy rather than a reconstruction.
+  *     reassembling an event from a dozen headers at that moment is exactly the wrong task. Self-containment also makes
+  *     replay a copy rather than a reconstruction.
   *
-  * A single [[read]] handles both, because the consumer that drains the DLQ and the consumer that drains the main
-  * topic are the same code, and because a producer misconfigured into the other mode should be read rather than
-  * silently dead-lettered.
+  * A single [[read]] handles both, because the consumer that drains the DLQ and the consumer that drains the main topic
+  * are the same code, and because a producer misconfigured into the other mode should be read rather than silently
+  * dead-lettered.
   */
 enum ContentMode:
   case Binary
@@ -93,9 +91,9 @@ object ContentMode:
     * `headers` is mutated, because that is the shape Kafka's own `Serializer.serialize(topic, headers, data)` imposes;
     * matching it makes [[KafkaCodecs.envelopeSerializer]] a thin wrapper rather than a second implementation.
     *
-    * `None` means the record value must be `null` — the event carries no `data`. That is the binding's encoding of
-    * "no data"; an empty value instead would be indistinguishable from a genuinely zero-byte payload, and this build
-    * keeps that distinction because kernel's `Payload` does.
+    * `None` means the record value must be `null` — the event carries no `data`. That is the binding's encoding of "no
+    * data"; an empty value instead would be indistinguishable from a genuinely zero-byte payload, and this build keeps
+    * that distinction because kernel's `Payload` does.
     */
   def write(mode: ContentMode, envelope: Envelope, headers: Headers): Either[String, Option[Array[Byte]]] =
     mode match
@@ -105,7 +103,7 @@ object ContentMode:
   /** Reads a record back, choosing the mode from the headers. Total: every failure is a [[DecodeFailure]] value. */
   def read(headers: Headers, value: Option[Array[Byte]]): Either[DecodeFailure, Envelope] =
     of(headers) match
-      case None             =>
+      case None =>
         Left(
           DecodeFailure.UnknownEncoding(
             s"record carries neither a '${CloudEventHeaders.ContentType}: $StructuredMediaType' header " +
@@ -124,9 +122,9 @@ object ContentMode:
 
   /** Binary decode goes through the SDK's header reader rather than a hand-written header parser.
     *
-    * The asymmetry with [[writeBinary]] is intentional. Writing is where this build is the author and must get
-    * RFC 3339 right; reading is where it must accept whatever a conformant third-party producer emits, and the SDK is
-    * the conformance oracle for that. It also makes the round-trip property prove interoperability rather than merely
+    * The asymmetry with [[writeBinary]] is intentional. Writing is where this build is the author and must get RFC 3339
+    * right; reading is where it must accept whatever a conformant third-party producer emits, and the SDK is the
+    * conformance oracle for that. It also makes the round-trip property prove interoperability rather than merely
     * proving two functions in this file are inverses.
     *
     * **The reader is constructed directly instead of through `KafkaMessageFactory.createReader`,** because the factory
@@ -140,8 +138,8 @@ object ContentMode:
     * **The payload is taken from the record value, not from the SDK's `CloudEventData`,** for a second reason of the
     * same kind: the SDK's Kafka reader treats a zero-length value as *no data at all*, collapsing an event whose data
     * is genuinely zero bytes into an event with none. Kernel's `Payload` distinguishes the two and structured mode
-    * preserves the distinction, so letting binary mode lose it would mean an event changed shape merely by being
-    * copied from the main topic to the DLQ.
+    * preserves the distinction, so letting binary mode lose it would mean an event changed shape merely by being copied
+    * from the main topic to the DLQ.
     */
   private def readBinary(headers: Headers, value: Option[Array[Byte]]): Either[DecodeFailure, Envelope] =
     val event =
@@ -161,8 +159,8 @@ object ContentMode:
     * when it is zero — `2024-01-01T17:31Z` — and that is not RFC 3339. It parses back fine, so the defect is invisible
     * in any Java-only round trip and surfaces only against a stricter consumer in someone else's stack.
     * `io.kzonix.kernel.Rfc3339` exists precisely so this build does not emit that, and reintroducing it two modules
-    * later would throw the effort away. Everything else about the layout is the binding's, and [[readBinary]] proves
-    * it by reading these records back with the SDK.
+    * later would throw the effort away. Everything else about the layout is the binding's, and [[readBinary]] proves it
+    * by reading these records back with the SDK.
     */
   private def writeBinary(envelope: Envelope, headers: Headers): Either[String, Option[Array[Byte]]] =
     val event = CloudEventAdapter.binaryCanonical(envelope)
@@ -170,10 +168,10 @@ object ContentMode:
     if invalid.nonEmpty then Left(CloudEventAdapter.invalidExtensionMessage(invalid))
     else
       val required = Vector(
-        CloudEventHeaders.SpecVersion         -> Envelope.SpecVersion,
-        CloudEventHeaders.attribute("id")     -> (event.id: String),
+        CloudEventHeaders.SpecVersion -> Envelope.SpecVersion,
+        CloudEventHeaders.attribute("id") -> (event.id: String),
         CloudEventHeaders.attribute("source") -> (event.source: String),
-        CloudEventHeaders.attribute("type")   -> (event.eventType: String)
+        CloudEventHeaders.attribute("type") -> (event.eventType: String)
       )
       val optional = Vector(
         event.subject.map(v => CloudEventHeaders.attribute("subject") -> (v: String)),

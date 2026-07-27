@@ -1,0 +1,81 @@
+@*
+ * One event: the decoded observation AND the raw CloudEvent, never one without the other.
+ *
+ * The refinement is lossy by construction (ADR section 4.2) — an `Unrecognised` keeps the payload but not the
+ * attributes — so showing only the decoded panel would hide exactly what someone opens this page to find. The raw
+ * JSON is the authority; the decoded panel is the convenience.
+ *
+ * The JSON goes through Twirl's escaping like everything else. It is database content, it can contain anything a
+ * producer sent, and `@@Html` on it would be a stored-XSS hole with a nice name.
+ *@
+@import io.kzonix.ferrite.web.view.Detail
+
+@(detail: Detail)
+
+<article class="detail" aria-labelledby="detail-heading">
+  <header class="detail-header">
+    <h1 id="detail-heading" class="detail-title">
+      <span class="mono">@detail.row.eventType</span>
+    </h1>
+    <p class="detail-subtitle severity-@detail.row.severityTone">
+      <span class="severity-badge">@detail.row.severity</span>
+      <time datetime="@detail.row.occurredAt">@detail.row.occurredAtLabel</time>
+      <span class="detail-relative">@detail.row.relative</span>
+    </p>
+    <a class="button" href="@detail.backUrl">Back to results</a>
+  </header>
+
+  <section class="detail-panel" aria-labelledby="observation-heading">
+    <h2 id="observation-heading">Observation</h2>
+    <p class="observation-kind @if(detail.observation.unrecognised){is-unrecognised}">@detail.observation.kind</p>
+    @if(detail.observation.unrecognised) {
+      <p class="observation-reason" role="note">
+        This event was stored and indexed but not refined into a known reading: @detail.observation.reason.
+        That is by design — an unheard-of firmware event still lands in Postgres and still appears in search.
+      </p>
+    }
+    @if(detail.observation.fields.nonEmpty) {
+      <dl class="field-list">
+        @for(field <- detail.observation.fields) {
+          <dt>@field.label</dt>
+          <dd class="mono">@field.value</dd>
+        }
+      </dl>
+    }
+  </section>
+
+  <section class="detail-panel" aria-labelledby="attributes-heading">
+    <h2 id="attributes-heading">CloudEvents attributes</h2>
+    <dl class="field-list">
+      @for(field <- detail.attributes) {
+        <dt>@field.label</dt>
+        <dd class="mono">@field.value</dd>
+      }
+    </dl>
+  </section>
+
+  <section class="detail-panel" aria-labelledby="extensions-heading">
+    <h2 id="extensions-heading">Extensions</h2>
+    @if(detail.extensions.isEmpty) {
+      <p class="detail-empty">This event carries no extension attributes.</p>
+    } else {
+      <dl class="field-list">
+        @for(field <- detail.extensions) {
+          <dt>@field.label</dt>
+          <dd class="mono">@field.value</dd>
+        }
+      </dl>
+    }
+  </section>
+
+  <section class="detail-panel" aria-labelledby="raw-heading" x-data="{ copied: false }">
+    <h2 id="raw-heading">Raw CloudEvent</h2>
+    <p class="detail-note">Stored verbatim as <code>jsonb</code>. Every queryable column is generated from this value,
+      so a projection cannot drift from the payload.</p>
+    <button type="button"
+            class="button"
+            x-on:click="navigator.clipboard.writeText($refs.raw.textContent); copied = true; setTimeout(() =&gt; copied = false, 1500)"
+            x-text="copied ? 'Copied' : 'Copy JSON'">Copy JSON</button>
+    <pre class="raw-json"><code x-ref="raw">@detail.raw</code></pre>
+  </section>
+</article>

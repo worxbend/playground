@@ -21,16 +21,15 @@
 
 package io.kzonix.eventing
 
-import java.net.URI
-import java.time.OffsetDateTime
-import java.time.ZoneOffset
-
 import io.circe.Json
 import io.kzonix.kernel.event.AttrValue
 import io.kzonix.kernel.event.Binary
 import io.kzonix.kernel.event.ContentType
 import io.kzonix.kernel.event.Envelope
 import io.kzonix.kernel.event.Payload
+import java.net.URI
+import java.time.OffsetDateTime
+import java.time.ZoneOffset
 import munit.ScalaCheckSuite
 import org.scalacheck.Prop.forAll
 
@@ -66,12 +65,12 @@ class CloudEventAdapterSuite extends ScalaCheckSuite:
     val when = OffsetDateTime.of(2024, 3, 1, 12, 0, 0, 0, ZoneOffset.ofHours(2))
     val envelope = base.copy(extensions =
       Map(
-        "sequence"    -> AttrValue.Num(42),
-        "sampled"     -> AttrValue.Flag(true),
-        "observedat"  -> AttrValue.Time(when),
-        "origin"      -> AttrValue.Ref(URI("https://gateway.example/1")),
-        "signature"   -> AttrValue.Bytes(Binary.copyOf(Array[Byte](1, 2, 3))),
-        "tenantid"    -> AttrValue.Text("acme")
+        "sequence" -> AttrValue.Num(42),
+        "sampled" -> AttrValue.Flag(true),
+        "observedat" -> AttrValue.Time(when),
+        "origin" -> AttrValue.Ref(URI("https://gateway.example/1")),
+        "signature" -> AttrValue.Bytes(Binary.copyOf(Array[Byte](1, 2, 3))),
+        "tenantid" -> AttrValue.Text("acme")
       )
     )
     val roundTripped = CloudEventAdapter.toCloudEvent(envelope).flatMap(CloudEventAdapter.toEnvelope)
@@ -105,10 +104,14 @@ class CloudEventAdapterSuite extends ScalaCheckSuite:
   test("an event with no data is distinguishable from an event with zero bytes of data"):
     val empty = base.copy(payload = Payload.Empty)
     val zero = base.copy(dataContentType = Some(octetType), payload = Payload.Opaque(Binary.empty, octetType))
-    assertEquals(CloudEventAdapter.toCloudEvent(empty).flatMap(CloudEventAdapter.toEnvelope).map(_.payload),
-      Right(Payload.Empty))
-    assertEquals(CloudEventAdapter.toCloudEvent(zero).flatMap(CloudEventAdapter.toEnvelope).map(_.payload),
-      Right(Payload.Opaque(Binary.empty, octetType)))
+    assertEquals(
+      CloudEventAdapter.toCloudEvent(empty).flatMap(CloudEventAdapter.toEnvelope).map(_.payload),
+      Right(Payload.Empty)
+    )
+    assertEquals(
+      CloudEventAdapter.toCloudEvent(zero).flatMap(CloudEventAdapter.toEnvelope).map(_.payload),
+      Right(Payload.Opaque(Binary.empty, octetType))
+    )
 
   test("a CloudEvent whose specversion is not 1.0 is rejected as a value"):
     val v03 = io.cloudevents.core.builder.CloudEventBuilder

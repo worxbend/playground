@@ -21,15 +21,14 @@
 
 package io.kzonix.eventing
 
-import java.nio.charset.StandardCharsets.UTF_8
-import java.util.Optional
-
 import io.circe.Json
 import io.kzonix.kernel.event.AttrValue
 import io.kzonix.kernel.event.ContentType
 import io.kzonix.kernel.event.Envelope
 import io.kzonix.kernel.event.Payload
 import io.kzonix.kernel.event.Topics
+import java.nio.charset.StandardCharsets.UTF_8
+import java.util.Optional
 import munit.ScalaCheckSuite
 import org.apache.kafka.clients.consumer.ConsumerRecord
 import org.apache.kafka.common.header.Headers
@@ -41,9 +40,9 @@ import org.scalacheck.Prop.propBoolean
 /** Round trips through both Kafka content modes, and the guarantee that a malformed record is a value.
   *
   * Binary is asserted against `CloudEventAdapter.binaryCanonical` rather than against the envelope itself, because a
-  * header is bytes and extension *types* genuinely do not survive it. Naming that loss in a function keeps the
-  * property an equation; asserting the envelope directly would only be achievable by weakening the comparison, which
-  * is how a real encoding bug hides.
+  * header is bytes and extension *types* genuinely do not survive it. Naming that loss in a function keeps the property
+  * an equation; asserting the envelope directly would only be achievable by weakening the comparison, which is how a
+  * real encoding bug hides.
   */
 class ContentModeSuite extends ScalaCheckSuite:
 

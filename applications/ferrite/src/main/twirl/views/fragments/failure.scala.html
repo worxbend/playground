@@ -1,0 +1,35 @@
+@*
+ * The error state. A search UI that answers a broken link with a status code leaves the user holding a URL they
+ * cannot fix, so this names every parameter that was rejected and offers a search that works.
+ *
+ * It renders into the same #results region an ordinary result set does, which is why an htmx swap of a bad filter
+ * shows the problem in place rather than replacing the whole page.
+ *@
+@import io.kzonix.ferrite.web.view.Failure
+
+@(failure: Failure)
+
+<div class="failure" role="alert">
+  <p class="failure-status">@failure.status</p>
+  <h2 class="failure-title">@failure.title</h2>
+  <p class="failure-message">@failure.message</p>
+
+  @if(failure.problems.nonEmpty) {
+    <ul class="failure-problems">
+      @for(problem <- failure.problems) {
+        <li>
+          @if(problem.parameter.nonEmpty) { <code>@problem.parameter</code> }
+          @problem.message
+        </li>
+      }
+    </ul>
+  }
+
+  @if(failure.suggestions.nonEmpty) {
+    <ul class="failure-suggestions">
+      @for(suggestion <- failure.suggestions) {
+        <li><a class="button" href="@suggestion.url">@suggestion.label</a></li>
+      }
+    </ul>
+  }
+</div>

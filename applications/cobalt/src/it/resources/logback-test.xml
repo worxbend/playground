@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  Integration-test logging (ADR-0000 section 7.3).
+
+  The Kafka clients narrate every configuration key, every metadata refresh and every
+  coordinator discovery at INFO, and cobalt's suites open a producer, a consumer and an
+  AdminClient each. Left alone, several hundred lines of client chatter surround every
+  assertion and a failure becomes impossible to find. WARN still surfaces retries,
+  disconnects and authentication problems - the messages that actually explain a broken
+  broker test.
+
+  Pekko's stream and connector internals are pinned for the same reason: a rebalance
+  logs at INFO on every partition, and a consumer test provokes several.
+
+  The Testcontainers loggers are listed in advance of the switch documented in
+  CobaltIngestIT: docker-java logs every wire frame at DEBUG, and adding those lines
+  after the fact is invariably done in the middle of debugging something else.
+-->
+<configuration>
+  <appender name="STDOUT" class="ch.qos.logback.core.ConsoleAppender">
+    <encoder>
+      <pattern>%d{HH:mm:ss.SSS} %-5level %logger{24} - %msg%n</pattern>
+    </encoder>
+  </appender>
+
+  <logger name="org.apache.kafka" level="WARN"/>
+  <logger name="org.apache.kafka.clients.consumer.ConsumerConfig" level="ERROR"/>
+  <logger name="org.apache.kafka.clients.producer.ProducerConfig" level="ERROR"/>
+  <logger name="org.apache.kafka.clients.admin.AdminClientConfig" level="ERROR"/>
+  <logger name="org.apache.pekko" level="WARN"/>
+  <logger name="org.testcontainers" level="WARN"/>
+  <logger name="com.github.dockerjava" level="WARN"/>
+  <logger name="tc" level="WARN"/>
+
+  <root level="INFO">
+    <appender-ref ref="STDOUT"/>
+  </root>
+</configuration>
