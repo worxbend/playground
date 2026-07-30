@@ -35,6 +35,7 @@ sbt fmt         # scalafmt, build sources included
 sbt fmtCheck    # scalafmtSbtCheck + scalafmtCheckAll
 sbt headerCreate  # stamp licence headers — NEVER hand-write one
 sbt doc         # Scaladoc; -Werror applies, so a broken doc link fails the build
+sbt scaladocSite  # doc for every module, collected under target/site/api/<module>
 
 sbt cobalt/run    # :8080 (HTTP_PORT)
 sbt wolfram/run   # :8080 (HTTP_PORT)
@@ -168,6 +169,10 @@ Two traps already resolved there: pureconfig publishes no `pureconfig_3` aggrega
   and every multi-assertion test would otherwise fail. Do not re-add it there.
 - 120 columns, enforced by scalafmt.
 - Scaladoc is compiled with the same flags: a broken `[[link]]` fails `sbt doc`.
+- **Never hard-code an sbt output path.** sbt 2 writes to one shared root — `target/out/jvm/scala-<v>/<project>/`
+  — not to `<module>/target/scala-<v>/`. The Pages workflow used to copy Scaladoc from the sbt 1 location behind
+  an `[ -d "$src" ] &&` guard, so all seven modules were skipped in silence for as long as it existed. Ask sbt for
+  the path (`sbt scaladocSite`, `sbt "show <project>/Compile/doc"`) rather than reconstructing it.
 
 Other toolchain facts worth knowing:
 

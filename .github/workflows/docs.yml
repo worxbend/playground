@@ -39,26 +39,33 @@ jobs:
       - name: Install MkDocs
         run: pip install "mkdocs==1.6.1" "mkdocs-material==9.7.7"
 
-      # Scaladoc per module, published under stable /api/<module> URLs.
+      # Scaladoc per module, staged under target/site/api/<module>.
+      #
+      # An sbt task and not a shell copy. This step used to read
+      # `modules/<name>/target/scala-3.8.4/api`, which is the sbt *1* layout — sbt 2
+      # writes to one shared root, `target/out/jvm/scala-<v>/<project>/api`. The copy
+      # was guarded with `[ -d "$src" ] &&`, so all seven modules were skipped in
+      # silence and the published /api index linked to directories that did not exist.
+      # `scaladocSite` asks sbt for the path instead of guessing it, so it cannot
+      # drift with the sbt version, the Scala version or the output layout.
       - name: Build Scaladoc
-        run: sbt -batch doc
+        run: sbt -batch scaladocSite
 
       - name: Assemble site
         run: |
+          set -euo pipefail
           mkdocs build --strict --site-dir _site
-          mkdir -p _site/api
-          for m in kernel eventing persistence observability; do
-            src="modules/$m/target/scala-3.8.4/api"
-            [ -d "$src" ] && cp -r "$src" "_site/api/$m"
-          done
-          for a in ferrite cobalt wolfram; do
-            src="applications/$a/target/scala-3.8.4/api"
-            [ -d "$src" ] && cp -r "$src" "_site/api/$a"
-          done
           # The /api landing page is docs/api/index.html, copied through by MkDocs
           # above. It is NOT generated here: `mkdocs build --strict` runs first and
           # would fail on the nav entry for a file that did not exist yet.
           test -f _site/api/index.html
+          cp -r target/site/api/. _site/api/
+          # Every module the landing page links to must have arrived. Asserted rather
+          # than assumed: a missing tree is a 404 on a page that still renders, which
+          # is the failure nobody reports.
+          for m in kernel eventing persistence observability ferrite cobalt wolfram; do
+            test -f "_site/api/$m/index.html" || { echo "missing scaladoc: $m" >&2; exit 1; }
+          done
 
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3

@@ -608,19 +608,17 @@ Ordered by operational blast radius.
 7. **Traces go to the collector's `debug` exporter only** — they are logged and dropped. The pipeline is live (a
    single smoke event produces `resource spans: 2, spans: 3`, so HTTP → Kafka → consumer is one trace), but point
    `otel-collector.yaml` at Tempo or Jaeger before you need to *read* one.
-8. **ferrite ships `logback.xml` twice** — once inside `io.kzonix.ferrite-*.jar` and once at `conf/logback.xml`,
-   because Play's packaging maps `src/main/resources` into both. Verified in the staged image. Logback logs a
-   `Resource [logback.xml] occurs multiple times` WARN on boot and uses the `conf/` copy. Both copies are the same
-   file, so the outcome is deterministic; it is noise, not a defect, but it will confuse the first person who
-   greps for it.
-9. **ferrite's stylesheet is committed output and the build does not verify it.** `sbt ferrite/tailwindCheck`
+8. **ferrite's stylesheet is committed output and the build does not verify it.** `sbt ferrite/tailwindCheck`
    exists and catches drift, but it needs the Tailwind CLI binary and is therefore not part of `verify`, which
    must stay runnable with nothing but a JDK. A template that gains a utility class in a change where nobody ran
    the task ships a page that renders without it. See `docs/development.md` §8.
 
 Fixed, and no longer listed: `deploy/.env.example` (present), ferrite's `DockerPlugin` (enabled, so
 `ferrite:latest` builds), compose's database variables (`DATABASE_URL`/`DATABASE_USER`/`DATABASE_PASSWORD`,
-matching what the services read), and the absence of a partition-maintenance job (cobalt runs one — §7.3).
+matching what the services read), the absence of a partition-maintenance job (cobalt runs one — §7.3), the three
+un-emitted meters and Hikari's missing pool binding (all wired — §5), timers without histogram buckets (six meter
+families have them — §5.1), and ferrite's duplicated `logback.xml` (excluded from the module jar, so the image
+carries exactly the `conf/` copy an operator can override).
 
 ---
 

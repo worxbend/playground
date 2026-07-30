@@ -102,7 +102,24 @@ lazy val kzonix = (project in file("."))
   .settings(itSettings *)
   .settings(
     name := "kzonix",
-    publish / skip := true
+    publish / skip := true,
+    // Two sbt 2 constraints shape how this is written, and both fail loudly:
+    //   - Settings written bare at the top level of build.sbt are NOT added to an explicitly declared root project,
+    //     so the body has to live inside `kzonix` rather than beside its key.
+    //   - The task returns Unit and not the directory. sbt 2 caches task outputs and rejects `File` as an output
+    //     type, since a path is not a value it can hash. The destination is a constant anyway.
+    scaladocSite := {
+      val destination = (ThisBuild / baseDirectory).value / "target" / "site" / "api"
+      IO.delete(destination)
+      val log = streams.value.log
+      // `.value` inside a `map` over projects is not expressible — task dependencies are resolved statically — so the
+      // sources are joined first and paired with their names afterwards.
+      val generated = documentedProjects.map(_._2 / Compile / doc).join.value
+      documentedProjects.map(_._1).zip(generated).foreach { case (module, source) =>
+        IO.copyDirectory(source, destination / module, overwrite = true)
+        log.info(s"scaladoc: $module -> ${destination / module}")
+      }
+    }
   )
   .aggregate(kernel, eventing, persistence, observability, ferrite, cobalt, wolfram)
 
@@ -204,6 +221,15 @@ lazy val ferrite = (project in file("applications/ferrite"))
     // outright with "Cannot write to /opt/docker/RUNNING_PID". /dev/null is the documented escape: the container
     // runtime, not a pid file, is what tracks whether this process is alive.
     Universal / javaOptions += "-Dpidfile.path=/dev/null",
+    // Play's packaging maps `src/main/resources` into the image's `conf/` *and* into the module jar, so the staged
+    // image carried two `logback.xml` files. The start script puts `conf/` at the head of the classpath, so the
+    // outcome was never ambiguous — but logback prints `Resource [logback.xml] occurs multiple times` on every boot,
+    // and a WARN nobody can act on is a WARN people learn to scroll past.
+    //
+    // Dropped from the jar rather than from `conf/`, because `conf/` is the copy an operator can bind-mount over.
+    // `sbt ferrite/run` is unaffected: a dev run reads `target/…/classes/logback.xml` from the compile classpath and
+    // never opens this jar.
+    Compile / packageBin / mappings ~= (_.filterNot((_, path) => path == "logback.xml")),
     // Twirl generates code this build's -Wunused and indentation rules do not govern.
     Compile / scalacOptions ~= (_.filterNot(_ == "-new-syntax")),
     Compile / routes / sources := Nil,
@@ -240,6 +266,39 @@ lazy val wolfram = (project in file("applications/wolfram"))
     libraryDependencies ++= testContainers.map(_ % IT)
   )
 
+// ---------------------------------------------------------------------------------------------------------------
+// Documentation site
+// ---------------------------------------------------------------------------------------------------------------
+
+/** Every project whose Scaladoc is published, and the URL segment it appears under.
+  *
+  * A list rather than `kzonix.aggregate`'s members, because the order is the order of `docs/api/index.html` and a
+  * documentation index that reshuffles itself when someone adds a module is worse than one that has to be edited.
+  */
+lazy val documentedProjects: Seq[(String, Project)] =
+  Seq(
+    "kernel" -> kernel,
+    "eventing" -> eventing,
+    "persistence" -> persistence,
+    "observability" -> observability,
+    "ferrite" -> ferrite,
+    "cobalt" -> cobalt,
+    "wolfram" -> wolfram
+  )
+
+lazy val scaladocSite = taskKey[Unit]("Collect every module's Scaladoc under target/site/api/<module>")
+
+/** Collects the per-project Scaladoc into one directory tree, and returns it.
+  *
+  * **This exists because the output path is not guessable, and guessing it failed silently.** The GitHub Pages workflow
+  * used to copy from `modules/<name>/target/scala-3.8.4/api`, which is the sbt *1* layout; sbt 2 writes to
+  * `target/out/jvm/scala-3.8.4/<project>/api`, one shared output root for the whole build. The copy loop was written as
+  * `[ -d "$src" ] && cp …`, so every module was skipped without a word and the published `/api` index linked to seven
+  * directories that did not exist.
+  *
+  * Asking sbt for `Compile / doc` and copying what it returns cannot drift: the path moves with the sbt version, the
+  * Scala version and the output-layout setting, and this task follows all three for free.
+  */
 // ---------------------------------------------------------------------------------------------------------------
 // Aliases
 // ---------------------------------------------------------------------------------------------------------------
