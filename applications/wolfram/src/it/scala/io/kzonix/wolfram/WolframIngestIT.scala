@@ -21,6 +21,7 @@
 
 package io.kzonix.wolfram
 
+import com.dimafeng.testcontainers.KafkaContainer
 import io.kzonix.eventing.CloudEventHeaders
 import io.kzonix.eventing.ContentMode
 import io.kzonix.eventing.KafkaTrace
@@ -47,8 +48,10 @@ import org.apache.kafka.clients.consumer.ConsumerRecord
 import org.apache.kafka.clients.consumer.KafkaConsumer
 import org.apache.kafka.common.serialization.ByteArrayDeserializer
 import org.apache.kafka.common.serialization.StringDeserializer
+import org.testcontainers.utility.DockerImageName
 import scala.concurrent.duration.DurationInt
 import scala.jdk.CollectionConverters.*
+import scala.util.Try
 import sttp.client3.*
 import sttp.model.StatusCode
 
@@ -60,23 +63,18 @@ import sttp.model.StatusCode
   * function chose, and above all whether the `traceparent` a client sent arrives in the consumer's headers on the same
   * trace. None of those is observable without both ends running.
   *
-  * **Broker discovery — and a standing build gap.** ADR §9.2 asks for a Testcontainers `KafkaContainer` behind a shared
-  * lazy singleton, which is what `modules/eventing`'s `KafkaWireIT` now does. This module cannot: `build.sbt` adds
-  * `testContainers.map(_ % IT)` to `eventing` and `persistence` only, so `com.dimafeng.testcontainers` is not on
-  * wolfram's IT classpath and the import would not compile. Until that one line is added, the address comes from
-  * `KAFKA_BOOTSTRAP_SERVERS` and the tests **skip** without it.
+  * **Broker discovery.** ADR §9.2's shape: a Testcontainers `KafkaContainer` behind a lazy singleton in the companion
+  * object, started once per forked JVM and reaped by Ryuk. `KAFKA_BOOTSTRAP_SERVERS` still wins when it is set — that
+  * is how a CI job points every module's slow tier at one broker rather than starting three.
   *
-  * Skip, emphatically not pass. This method previously returned unit when the variable was absent, so all three tests
-  * below reported success having executed no assertion and having contacted no broker — the suite had never once run
-  * when it was written, and nothing said so. Every test below already takes the broker address as a parameter, so
-  * wiring the container in is a change to [[bootstrapServers]] and nothing else.
+  * The suite is skipped only when Docker itself is unreachable. It is worth saying what this replaced: `withApp`
+  * previously returned unit when the environment variable was absent, so all three tests reported **success** having
+  * executed no assertion and contacted no broker. Green is the one result nobody investigates, and the suite had never
+  * run once since it was written.
   */
 final class WolframIngestIT extends FunSuite:
 
-  /** The single point a Testcontainers `KafkaContainer` replaces. */
-  private val BootstrapEnv: String = "KAFKA_BOOTSTRAP_SERVERS"
-
-  private def bootstrapServers: Option[String] = sys.env.get(BootstrapEnv).filter(_.trim.nonEmpty)
+  override def munitIgnore: Boolean = WolframIngestIT.bootstrapServers.isEmpty
 
   private val incomingTraceParent = "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01"
   private val incomingTraceId = "0af7651916cd43dd8448eb211c80319c"
@@ -150,20 +148,54 @@ final class WolframIngestIT extends FunSuite:
       val openApi = basicRequest.get(uri"http://localhost:${app.port}/openapi.json").send(backend)
       assert(openApi.body.exists(_.contains("\"/events\"")), openApi.body.toString)
 
+  test("a real request produces histogram buckets in the real exposition"):
+    withApp: (app, _, _) =>
+      val backend = HttpClientSyncBackend()
+      // One request through the running server, so `http.server.requests` exists with the interceptor's real tags —
+      // the bucket filter in `Telemetry` is keyed on the meter *name*, and a unit test that registers the timer by
+      // hand cannot prove the name the interceptor actually uses is the one the filter matches.
+      val posted = basicRequest
+        .post(uri"http://localhost:${app.port}/events")
+        .header("ce-specversion", "1.0")
+        .header("ce-id", "it-buckets")
+        .header("ce-source", "/gateway/it")
+        .header("ce-type", "io.kzonix.iot.telemetry")
+        // `ce-subject` is not decoration here: refinement resolves the device from `subject` first, and without either
+        // it or a `data.deviceId` the event is Unrecognised for lack of an identity, not for its payload.
+        .header("ce-subject", "kitchen-thermostat")
+        .header("ce-time", eventTime)
+        .header("content-type", "application/json")
+        .body("""{"metric":"temperature","value":21.5,"unit":"C"}""".getBytes(UTF_8))
+        .send(backend)
+      assertEquals(posted.code, StatusCode.Accepted)
+
+      val exposition = basicRequest
+        .get(uri"http://localhost:${app.port}/metrics")
+        .send(backend)
+        .body
+        .getOrElse(fail("no exposition"))
+
+      assert(
+        exposition.contains("http_server_requests_seconds_bucket"),
+        "the HTTP timer reached Prometheus without buckets, so no latency percentile panel can work"
+      )
+      assert(
+        exposition.contains("kafka_produce_latency_seconds_bucket"),
+        "the produce timer reached Prometheus without buckets"
+      )
+      // A well-formed telemetry payload: refinement succeeded, so nothing was counted as unrecognised.
+      assert(!exposition.contains("event_unrecognised_total"), "a decodable event was counted as unrecognised")
+
   /** Boots the real service on an ephemeral port against a freshly created topic. */
   private def withApp(body: (WolframApp, String, String) => Unit): Unit =
-    bootstrapServers match
-      case None =>
-        // `assume`, not `()`. Returning unit reported three PASSING tests that had executed no assertion at all — the
-        // suite was green for months without ever having reached a broker, and green is the one result nobody
-        // investigates. `assume` marks them SKIPPED, which is the only honest word for what is happening.
-        assume(false, s"$BootstrapEnv is not set; wolfram's IT tier has no broker to publish to")
-      case Some(servers) =>
-        val topic = newTopic(servers)
-        val telemetry = Telemetry.start(TelemetryConfig("wolfram", "it", "it-0"), recordingTracing)
-        val app = WolframApp.start(config(servers, topic), telemetry)
-        try body(app, topic, servers)
-        finally app.close()
+    val servers = WolframIngestIT.bootstrapServers.getOrElse(fail("no broker"))
+    val topic = newTopic(servers)
+    val telemetry = Telemetry.start(TelemetryConfig("wolfram", "it", "it-0"), recordingTracing)
+    val app = WolframApp.start(config(servers, topic), telemetry)
+    // `app.close()` closes telemetry too — a second close here would be the JFR-stream leak Telemetry.close guards
+    // against, from the other direction.
+    try body(app, topic, servers)
+    finally app.close()
 
   /** A real SDK tracer: [[Tracing.noop]] would produce an invalid span context, which the W3C propagator declines to
     * inject — the traceparent assertion would then pass or fail for the wrong reason.
@@ -223,3 +255,25 @@ final class WolframIngestIT extends FunSuite:
     val settings = Properties()
     settings.put("bootstrap.servers", servers)
     settings
+
+/** The broker, started once per forked JVM.
+  *
+  * A companion object rather than a field: munit constructs a fresh suite instance per test, so a `lazy val` on the
+  * suite would start one broker per test rather than one per run. The image is the one ADR §3.10 pins — `apache/kafka`,
+  * KRaft, no ZooKeeper and no Confluent image.
+  */
+object WolframIngestIT:
+
+  val BootstrapEnv: String = "KAFKA_BOOTSTRAP_SERVERS"
+
+  val Image: String = "apache/kafka:4.3.1"
+
+  /** `Try`, so an unreachable Docker daemon skips the suite instead of failing every test in it with the same stack
+    * trace. A missing *broker* is a defect; a missing Docker is a laptop.
+    */
+  private lazy val container: Option[KafkaContainer] =
+    Option.when(sys.env.get(BootstrapEnv).forall(_.trim.isEmpty))(KafkaContainer(DockerImageName.parse(Image)))
+      .flatMap(started => Try(started.start()).toOption.map(_ => started))
+
+  lazy val bootstrapServers: Option[String] =
+    sys.env.get(BootstrapEnv).filter(_.trim.nonEmpty).orElse(container.map(_.bootstrapServers))

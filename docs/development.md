@@ -314,16 +314,20 @@ it must not start against a schema older than its own inserts. ferrite never mig
   (ferrite). New logic goes there, not inline in an annotated method or an `Action` body.
 - `src/it/resources/logback-test.xml` sets `org.testcontainers`, `com.github.dockerjava` and `tc-java` to WARN.
   Without it, docker-java's wire logger buries every integration-test result.
-- **Two different fixture styles, deliberately.** `modules/persistence` and `modules/eventing` start a
-  Testcontainers container themselves (one shared lazy container per forked JVM; Ryuk reaps it). The
-  application-module suites (`CobaltIT`, `CobaltIngestIT`, `WolframIngestIT`, `EventsPageIT`) have no
-  Testcontainers on their IT classpath and **skip** unless they are pointed at a server — a red suite on a laptop
-  with no Docker teaches people to ignore red suites.
-- Environment variables the IT tier reads: `IT_POSTGRES_URL`, `IT_POSTGRES_USER`, `IT_POSTGRES_PASSWORD` (set
-  them to reuse a database you already provisioned instead of starting a container) and
-  `KAFKA_BOOTSTRAP_SERVERS`. Set them to a database and broker you already run to exercise the
-  application-module suites (note that `deploy/docker-compose.yml` publishes neither Postgres nor Kafka to the
-  host, so a compose stack needs a temporary port mapping first):
+- **Every IT suite provisions its own dependencies.** One shared lazy Testcontainers singleton per forked JVM,
+  in a companion object rather than a field — munit builds a fresh suite instance per test, so a `lazy val` on the
+  suite would start one container per *test*. Ryuk reaps them at JVM exit, so there is no teardown hook to forget.
+  `PostgresSuite`, `KafkaWireIT`, `CobaltIT`, `WolframIngestIT` and `EventsPageIT` each own one.
+- **A suite skips only when Docker is unreachable**, via `munitIgnore`. A red suite on a laptop with no Docker
+  teaches people to ignore red suites. What this is *not* is the old behaviour: these suites used to skip on the
+  absence of an environment variable nobody set, and `WolframIngestIT` did not even skip — it returned unit and
+  reported three passing tests that had contacted no broker. If you add a fixture, make the no-dependency case
+  loudly skipped, never quietly green.
+- Environment variables the IT tier reads: `IT_POSTGRES_URL`, `IT_POSTGRES_USER`, `IT_POSTGRES_PASSWORD` and
+  `KAFKA_BOOTSTRAP_SERVERS`. These **override** the containers rather than gating the suites — that is how CI
+  points every module at one database and one broker instead of starting five of each, and it is why the fixtures
+  `TRUNCATE` before they seed. Note that `deploy/docker-compose.yml` publishes neither Postgres nor Kafka to the
+  host, so pointing the suites at a compose stack needs a temporary port mapping first:
 
   ```bash
   IT_POSTGRES_URL=jdbc:postgresql://localhost:5432/observatory \

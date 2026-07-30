@@ -86,12 +86,12 @@ object SearchShape:
     if tokens.isEmpty then Unfiltered else tokens.mkString("+")
 
   private def matches(token: String, leaf: Filter): Boolean = (token, leaf) match
-    case (Time, _: Filter.Occurred)                                => true
-    case (Text, _: Filter.FullText)                                => true
-    case (Payload, _: (Filter.PayloadContains | Filter.PayloadCmp)) => true
+    case (Time, _: Filter.Occurred)                                                                   => true
+    case (Text, _: Filter.FullText)                                                                   => true
+    case (Payload, _: (Filter.PayloadContains | Filter.PayloadCmp))                                   => true
     case (Attrs, _: (Filter.Occurred | Filter.FullText | Filter.PayloadContains | Filter.PayloadCmp)) => false
-    case (Attrs, _)                                                => true
-    case _                                                         => false
+    case (Attrs, _)                                                                                   => true
+    case _                                                                                            => false
 
 /** ferrite's search metrics, in the shared vocabulary of `modules/observability`.
   *

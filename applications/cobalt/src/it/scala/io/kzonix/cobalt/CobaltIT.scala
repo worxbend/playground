@@ -21,6 +21,8 @@
 
 package io.kzonix.cobalt
 
+import com.dimafeng.testcontainers.KafkaContainer
+import com.dimafeng.testcontainers.PostgreSQLContainer
 import io.kzonix.persistence.Database
 import io.kzonix.persistence.DatabaseConfig
 import io.kzonix.persistence.MigrationReport
@@ -34,6 +36,7 @@ import org.apache.kafka.clients.producer.KafkaProducer
 import org.apache.kafka.clients.producer.ProducerRecord
 import org.apache.kafka.common.serialization.ByteArraySerializer
 import org.apache.kafka.common.serialization.StringSerializer
+import org.testcontainers.utility.DockerImageName
 import scala.concurrent.Await
 import scala.concurrent.ExecutionContext
 import scala.concurrent.Future
@@ -45,15 +48,19 @@ import scala.util.Using
 
 /** The shared slow-tier fixture: one broker, one database, one JVM.
   *
-  * **Why environment variables and not Testcontainers.** ADR §9.2 asks for a shared lazy Testcontainers singleton per
-  * forked JVM, and that is the intended end state — but `testcontainers-scala` is wired to `eventing` and `persistence`
-  * only, and `applications/cobalt` has no `testContainers.map(_ % IT)` line in `build.sbt`. Adding one is a build
-  * change this work is not permitted to make, so it is reported rather than smuggled in. Every test below already takes
-  * its addresses from this object, so the switch is a change to [[bootstrapServers]] and [[jdbcUrl]] and nothing else.
+  * **Containers, started once and only when nobody supplied a server.** ADR §9.2's shape: `IT / fork := true` gives
+  * this module its own JVM, `IT / parallelExecution := false` means nothing races for the handles, and the `lazy val`s
+  * mean a run that never reaches these suites never pays for a container. Ryuk reaps both when the JVM exits, so there
+  * is no teardown hook to forget.
   *
-  * **Absent dependencies ignore the suite rather than failing it**, matching `modules/persistence`'s `PostgresSuite`: a
-  * red suite on a laptop with no Docker teaches people to ignore red suites, which is a worse outcome than a skipped
-  * one.
+  * **The environment variables still win.** `KAFKA_BOOTSTRAP_SERVERS` and `IT_POSTGRES_URL` are not a fallback for a
+  * missing Docker — they are how a CI job points every module's slow tier at infrastructure it provisioned once, and
+  * how this suite shares a Postgres with `modules/persistence` instead of starting a second one.
+  *
+  * **What is left of the skip.** [[available]] is now false only when Docker itself is unreachable, and the suite
+  * ignores itself in that case rather than failing — a red suite on a laptop with no Docker teaches people to ignore
+  * red suites. It is emphatically not the old behaviour, where the absence of an environment variable nobody set made
+  * the whole tier silently decorative.
   */
 object CobaltIT:
 
@@ -62,19 +69,29 @@ object CobaltIT:
   val UserEnv: String = "IT_POSTGRES_USER"
   val PasswordEnv: String = "IT_POSTGRES_PASSWORD"
 
-  /** The images ADR §3.10 pins. Recorded here so the values move with the fixture when containers are wired up. */
+  /** The images ADR §3.10 pins — the same ones `deploy/docker-compose.yml` runs. */
   val KafkaImage: String = "apache/kafka:4.3.1"
   val PostgresImage: String = "postgres:18.4-alpine"
 
   private def env(name: String): Option[String] = sys.env.get(name).filter(_.trim.nonEmpty)
 
-  def bootstrapServers: Option[String] = env(BootstrapEnv)
+  private lazy val kafkaContainer: Option[KafkaContainer] =
+    Option.when(env(BootstrapEnv).isEmpty)(KafkaContainer(DockerImageName.parse(KafkaImage))).flatMap: started =>
+      Try(started.start()).toOption.map(_ => started)
 
-  def jdbcUrl: Option[String] = env(UrlEnv)
+  private lazy val postgresContainer: Option[PostgreSQLContainer] =
+    Option
+      .when(env(UrlEnv).isEmpty)(PostgreSQLContainer(dockerImageNameOverride = DockerImageName.parse(PostgresImage)))
+      .flatMap: started =>
+        Try(started.start()).toOption.map(_ => started)
 
-  def username: String = env(UserEnv).getOrElse("postgres")
+  def bootstrapServers: Option[String] = env(BootstrapEnv).orElse(kafkaContainer.map(_.bootstrapServers))
 
-  def password: String = env(PasswordEnv).getOrElse("postgres")
+  def jdbcUrl: Option[String] = env(UrlEnv).orElse(postgresContainer.map(_.jdbcUrl))
+
+  def username: String = env(UserEnv).orElse(postgresContainer.map(_.username)).getOrElse("postgres")
+
+  def password: String = env(PasswordEnv).orElse(postgresContainer.map(_.password)).getOrElse("postgres")
 
   /** The production pool with its sizes cut down. A fixture with a hand-rolled `DataSource` would exercise a code path
     * nothing ships.

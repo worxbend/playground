@@ -21,6 +21,7 @@
 
 package io.kzonix.ferrite
 
+import com.dimafeng.testcontainers.PostgreSQLContainer
 import io.circe.Json
 import io.kzonix.ferrite.web.Urls
 import io.kzonix.kernel.event.Envelope
@@ -38,6 +39,7 @@ import io.kzonix.persistence.repository.PostgresEventRepository
 import java.time.OffsetDateTime
 import munit.FunSuite
 import org.jsoup.Jsoup
+import org.testcontainers.utility.DockerImageName
 import play.api.Application
 import play.api.http.Status
 import play.api.inject.guice.GuiceApplicationBuilder
@@ -51,6 +53,7 @@ import play.api.test.Helpers.writeableOf_AnyContentAsEmpty
 import scala.concurrent.Await
 import scala.concurrent.ExecutionContext
 import scala.concurrent.duration.DurationInt
+import scala.util.Try
 import scala.util.Using
 
 /** The whole Play stack over a real PostgreSQL.
@@ -59,12 +62,10 @@ import scala.util.Using
   * bindings, the Hikari pools, the bounded search dispatcher and every template are exercised, and no socket is opened.
   * ADR §9.3 puts ferrite's integration tier here deliberately — `scalatestplus-play` is a standing rejection.
   *
-  * **The database is provisioned outside the suite**, exactly as `modules/persistence`'s integration suites do: the
-  * connection details arrive in `IT_POSTGRES_*` and the suite ignores itself when they are absent. That is the honest
-  * behaviour for a fixture that cannot provision its own dependency — a red suite on a laptop with no database teaches
-  * people to ignore red suites. Wiring Testcontainers here needs `testContainers.map(_ % IT)` on the ferrite project in
-  * the root `build.sbt`; the dimafeng and Testcontainers artifacts are **not** on this module's IT classpath today, so
-  * the import would not compile.
+  * **The database is a Testcontainer**, started once per forked JVM by the companion object and reaped by Ryuk.
+  * `IT_POSTGRES_URL` still wins when it is set — that is how a CI job points several modules at one server rather than
+  * starting one per module, and it is why [[seed]] truncates before it inserts. The suite ignores itself only when
+  * Docker is unreachable: a red suite on a laptop with no Docker teaches people to ignore red suites.
   *
   * **Migrations are run by the fixture, never by the application.** That is the arrangement under test rather than a
   * convenience: `io.kzonix.ferrite.wiring.Databases` applies no DDL, and if ferrite ever started migrating on boot this
@@ -72,16 +73,11 @@ import scala.util.Using
   */
 final class EventsPageIT extends FunSuite:
 
-  /** The image ADR §3.10 pins, recorded so the value travels with the fixture when a container is wired up. */
-  val Image: String = "postgres:18.4-alpine"
+  private def jdbcUrl: Option[String] = EventsPageIT.jdbcUrl
+  private def username: String = EventsPageIT.username
+  private def password: String = EventsPageIT.password
 
-  private def env(name: String): Option[String] = sys.env.get(name).filter(_.nonEmpty)
-
-  private val jdbcUrl: Option[String] = env("IT_POSTGRES_URL")
-  private val username: String = env("IT_POSTGRES_USER").getOrElse("postgres")
-  private val password: String = env("IT_POSTGRES_PASSWORD").getOrElse("postgres")
-
-  /** Skip rather than fail when there is no database. See the class comment. */
+  /** Skip rather than fail when Docker is unreachable and nobody supplied a server. See the class comment. */
   override def munitIgnore: Boolean = jdbcUrl.isEmpty
 
   private val fixturePool: PoolConfig = PoolConfig(
@@ -96,7 +92,7 @@ final class EventsPageIT extends FunSuite:
     connectionInitSql = None
   )
 
-  /** Applies the schema and seeds exactly the rows this suite asserts on, once per JVM, on a pool of its own.
+  /** Applies the schema and seeds exactly the rows this suite asserts on, on a pool of its own.
     *
     * **It seeds.** The page renders a results table when there are rows and an empty state when there are none, which
     * is correct and is also why a page assertion that does not control the row count is an assertion about whichever
@@ -213,3 +209,61 @@ final class EventsPageIT extends FunSuite:
       val metrics = route(app, FakeRequest("GET", Urls.Metrics)).getOrElse(fail("metrics"))
       assertEquals(status(metrics), Status.OK)
       assert(contentAsString(metrics).contains("jvm_"), "expected the JVM binders in the exposition")
+
+  test("the real Guice wiring publishes the pool meters and the search histogram"):
+    assert(migrated, "the schema could not be applied")
+    val app = application()
+    Helpers.running(app):
+      // A search first, so `search.query.duration` exists at all — the timer is registered on first record.
+      assertEquals(status(route(app, FakeRequest("GET", Urls.events(""))).getOrElse(fail("search"))), Status.OK)
+
+      val exposition = contentAsString(route(app, FakeRequest("GET", Urls.Metrics)).getOrElse(fail("metrics")))
+
+      // The pool meters only exist if `Databases` passed a MetricsTrackerFactory into `Database.open` *and* Guice
+      // resolved Telemetry before the pools opened. Neither is visible in a unit test: the wiring is the thing.
+      assert(
+        exposition.contains("hikaricp_connections"),
+        s"HikariCP published nothing — the MetricsTrackerFactory did not reach the pool"
+      )
+      assert(
+        exposition.contains("""pool="observatory-read""""),
+        "the read pool is not distinguishable from the write pool in the exposition"
+      )
+      assert(
+        exposition.contains("search_query_duration_seconds_bucket"),
+        "the search timer reached Prometheus without buckets, so no percentile panel can work"
+      )
+      assert(
+        exposition.contains(s"""shape="${io.kzonix.ferrite.search.SearchShape.Unfiltered}""""),
+        "the unfiltered landing query was not tagged with its shape"
+      )
+
+/** The database, started once per forked JVM.
+  *
+  * A companion object rather than a field: munit constructs a fresh suite instance for each test, so a `lazy val` on
+  * the suite would start one PostgreSQL per test rather than one per run. (The *migration* deliberately stays on the
+  * instance — it is idempotent, and re-seeding per test is what makes the "one row" and "no rows" assertions
+  * independent of execution order.)
+  */
+object EventsPageIT:
+
+  val UrlEnv: String = "IT_POSTGRES_URL"
+
+  /** The image ADR §3.10 pins — the same one `deploy/docker-compose.yml` runs. */
+  val Image: String = "postgres:18.4-alpine"
+
+  private def env(name: String): Option[String] = sys.env.get(name).filter(_.nonEmpty)
+
+  /** `Try`, so an unreachable Docker daemon skips the suite instead of failing every test with the same stack trace. A
+    * missing *schema* is a defect; a missing Docker is a laptop.
+    */
+  private lazy val container: Option[PostgreSQLContainer] =
+    Option
+      .when(env(UrlEnv).isEmpty)(PostgreSQLContainer(dockerImageNameOverride = DockerImageName.parse(Image)))
+      .flatMap(started => Try(started.start()).toOption.map(_ => started))
+
+  lazy val jdbcUrl: Option[String] = env(UrlEnv).orElse(container.map(_.jdbcUrl))
+
+  lazy val username: String = env("IT_POSTGRES_USER").orElse(container.map(_.username)).getOrElse("postgres")
+
+  lazy val password: String = env("IT_POSTGRES_PASSWORD").orElse(container.map(_.password)).getOrElse("postgres")
