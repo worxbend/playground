@@ -28,10 +28,10 @@ import java.util.concurrent.TimeUnit
 
 /** cobalt's domain metrics, expressed in the shared vocabulary of `modules/observability`.
   *
-  * **No meter name or tag key is invented here** except the one noted below: ADR §7.1 makes a single taxonomy across
-  * three services the enforceable rule, because one Grafana dashboard has to work everywhere. This class is a typed
-  * façade over [[Meters]] whose value is that each meter's tag set is fixed in exactly one place — Micrometer happily
-  * registers the same name twice with different tags, and Prometheus then renders two unrelated series.
+  * **No meter name or tag key is invented here.** ADR §7.1 makes a single taxonomy across three services the
+  * enforceable rule, because one Grafana dashboard has to work everywhere. This class is a typed façade over [[Meters]]
+  * whose value is that each meter's tag set is fixed in exactly one place — Micrometer happily registers the same name
+  * twice with different tags, and Prometheus then renders two unrelated series.
   *
   * **`persisted` and `duplicate` deliberately do not partition the batch.** The idempotent insert reports one number,
   * "rows the database actually wrote", and there is no way to attribute the shortfall to a particular `type` from a
@@ -74,17 +74,5 @@ final class ConsumerMetrics(registry: MeterRegistry):
     */
   def batchWrite(outcome: String, elapsedNanos: Long): Unit =
     registry
-      .timer(ConsumerMetrics.BatchWriteLatency, Tags.of(Meters.TagKeys.Outcome, outcome))
+      .timer(Meters.ConsumeBatchLatency, Tags.of(Meters.TagKeys.Outcome, outcome))
       .record(elapsedNanos, TimeUnit.NANOSECONDS)
-
-object ConsumerMetrics:
-
-  /** Batch-insert latency.
-    *
-    * **The one name in this service that is not already in [[Meters]].** ADR §7.1's minimum set names
-    * `consume.batch.size` but no companion timer, and `modules/observability` is a finished module this build does not
-    * edit. It is spelled here as a single constant, in the same `consume.` family and tagged only with
-    * [[Meters.TagKeys.Outcome]], so promoting it into `Meters` later is a move rather than a rename. Flagged as a
-    * deviation rather than left as a surprise.
-    */
-  val BatchWriteLatency: String = "consume.batch.latency"

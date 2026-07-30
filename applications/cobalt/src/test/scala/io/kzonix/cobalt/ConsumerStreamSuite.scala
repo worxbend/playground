@@ -120,7 +120,10 @@ final class ConsumerStreamSuite extends munit.FunSuite:
         .via(graph(processor(repository, Fixtures.RecordingDeadLetters(), telemetry), batchSize = 2, journal))
         .runWith(Sink.seq)
       val _ = Await.result(done, Timeout)
-      assertEquals(repository.batches.map(_.size), Vector(2, 2, 1))
+      // The *cap* and the order, not the exact grouping. `groupedWithin` also closes a batch when its 100 ms window
+      // elapses, so on a loaded CI box the same five records legitimately arrive as (2,2,1) or as (1,2,1,1) — and a
+      // test that pinned the shape would fail for a reason that has nothing to do with what it is checking.
+      assert(repository.batches.forall(_.sizeIs <= 2), s"a batch exceeded the cap: ${repository.batches.map(_.size)}")
       assertEquals(repository.batches.flatMap(_.map(idOf)), Vector("e0", "e1", "e2", "e3", "e4"))
     finally telemetry.close()
 
@@ -136,10 +139,25 @@ final class ConsumerStreamSuite extends munit.FunSuite:
         .via(graph(processor(repository, Fixtures.RecordingDeadLetters(), telemetry), batchSize = 2, journal))
         .runWith(Sink.seq)
       val _ = Await.result(done, Timeout)
+
+      // The invariant itself, stated as an invariant: for every commit, the write that made that offset durable
+      // appears earlier in the journal. Asserting the whole journal against one expected interleaving instead would
+      // couple this — the property that stops at-least-once from silently becoming at-most-once — to how
+      // `groupedWithin` happened to slice four records on the day it ran.
+      val entries = journal.asScala.toVector
+      val commits = entries.zipWithIndex.collect { case (entry, at) if entry.startsWith("commit:") => (entry, at) }
       assertEquals(
-        journal.asScala.toVector,
-        Vector("write:e0,e1", "commit:0", "commit:1", "write:e2,e3", "commit:2", "commit:3")
+        commits.map(_._1),
+        Vector("commit:0", "commit:1", "commit:2", "commit:3"),
+        "commits are out of order"
       )
+      commits.foreach: (entry, at) =>
+        val id = s"e${entry.stripPrefix("commit:")}"
+        val durable = entries
+          .take(at)
+          .filter(_.startsWith("write:"))
+          .exists(_.stripPrefix("write:").split(',').contains(id))
+        assert(durable, s"$entry was journalled before any write carrying $id:\n${entries.mkString("\n")}")
     finally telemetry.close()
 
   test("a malformed record goes to the DLQ and its offset is still committed"):

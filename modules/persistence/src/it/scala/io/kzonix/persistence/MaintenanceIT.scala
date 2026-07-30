@@ -27,12 +27,12 @@ import scala.util.Using
   *
   * **The clock is the real one.** These tests take `Instant.now()` rather than a fixed instant, because the specific
   * failure being guarded against is a deployment running months after `V1__events.sql` was written — and a test with a
-  * frozen 2026-07 clock is a test that keeps passing forever while the production job silently has nothing to do.
-  * Every assertion is therefore relative to whatever month it is when the suite runs.
+  * frozen 2026-07 clock is a test that keeps passing forever while the production job silently has nothing to do. Every
+  * assertion is therefore relative to whatever month it is when the suite runs.
   *
   * Each test cleans up what it left, in particular anything it put in `cloud_event_default` and anything it detached:
-  * `MigrationIT` asserts that the default partition is empty and that every hand-written index carries a comment, and
-  * a detached partition's indexes stop being partitions of the parent's and would start failing that check.
+  * `MigrationIT` asserts that the default partition is empty and that every hand-written index carries a comment, and a
+  * detached partition's indexes stop being partitions of the parent's and would start failing that check.
   */
 final class MaintenanceIT extends PostgresSuite:
 

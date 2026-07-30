@@ -60,6 +60,11 @@ final class IngestionServiceSuite extends FunSuite:
         .map(_.count())
         .getOrElse(0.0)
 
+    def unrecognisedCount(reason: String): Double =
+      Option(registry.find(Meters.EventUnrecognised).tag(Meters.TagKeys.Reason, reason).counter())
+        .map(_.count())
+        .getOrElse(0.0)
+
   private def harness(publisher: Fixtures.StubPublisher = Fixtures.StubPublisher()): Harness =
     val registry = SimpleMeterRegistry()
     val service =
@@ -181,3 +186,43 @@ final class IngestionServiceSuite extends FunSuite:
     val result = Await.result(h.service.ingestBatch(bytes(body)), 5.seconds)
     assert(result.left.exists(_.reason == Meters.Reasons.TooLarge), result.toString)
     assertEquals(h.publisher.published.size, 0)
+
+  // --- event.unrecognised ---------------------------------------------------------------------------------------
+  //
+  // ADR §4.2 makes refinement total, so none of these change what wolfram *does* with the event — it is published
+  // either way. The counter is the only trace a producer running ahead of its consumers leaves anywhere.
+
+  test("a type no decoder is registered for is published and counted as unknown-type"):
+    val h = harness()
+    val body = Fixtures.structuredBody(eventType = "io.kzonix.iot.invented-last-tuesday")
+    val result = ingest(h, Fixtures.structuredHeaders, body)
+    assert(result.isRight, result.toString)
+    assertEquals(h.publisher.published.size, 1, "an unrecognised type must still be published")
+    assertEquals(h.unrecognisedCount(Meters.Reasons.UnknownType), 1.0)
+    assertEquals(h.unrecognisedCount(Meters.Reasons.InvalidPayload), 0.0)
+
+  test("a known type whose payload does not fit its decoder is counted as invalid-payload"):
+    val h = harness()
+    // The fixture's `data` is `{"celsius": …}`; the registered 1.x telemetry decoder wants metric/value/unit.
+    val result = ingest(h, Fixtures.structuredHeaders, Fixtures.structuredBody())
+    assert(result.isRight, result.toString)
+    assertEquals(h.unrecognisedCount(Meters.Reasons.InvalidPayload), 1.0)
+    assertEquals(h.unrecognisedCount(Meters.Reasons.UnknownType), 0.0)
+
+  test("a well-formed telemetry event is not counted"):
+    val h = harness()
+    val body = Fixtures.structuredBody().replace(
+      """"data":{"celsius":21.5}""",
+      """"data":{"metric":"temperature","value":21.5,"unit":"C"}"""
+    )
+    val result = ingest(h, Fixtures.structuredHeaders, body)
+    assert(result.isRight, result.toString)
+    assertEquals(h.unrecognisedCount(Meters.Reasons.InvalidPayload), 0.0)
+    assertEquals(h.unrecognisedCount(Meters.Reasons.UnknownType), 0.0)
+
+  test("an event the broker refused is not counted — the meter reports producers, not broker outages"):
+    val h = harness(Fixtures.unavailable)
+    val body = Fixtures.structuredBody(eventType = "io.kzonix.iot.invented-last-tuesday")
+    val result = ingest(h, Fixtures.structuredHeaders, body)
+    assert(result.isLeft, result.toString)
+    assertEquals(h.unrecognisedCount(Meters.Reasons.UnknownType), 0.0)

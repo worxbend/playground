@@ -79,7 +79,9 @@ final case class TimeWindow(from: OffsetDateTime, until: OffsetDateTime)
   *   that depends on wall-clock time makes every assertion about the histogram flaky.
   */
 @Singleton
-final class SearchService @Inject() (repository: EventRepository, clock: Clock)(using ec: SearchExecutionContext):
+final class SearchService @Inject() (repository: EventRepository, metrics: SearchMetrics, clock: Clock)(using
+  ec: SearchExecutionContext
+):
 
   import SearchService.*
 
@@ -92,18 +94,31 @@ final class SearchService @Inject() (repository: EventRepository, clock: Clock)(
         val facetRequest = FacetRequest.of(query.filter)
         val histogramRequest = HistogramRequest.of(query.filter, window.from, window.until)
 
+        // The clock starts here rather than at the top of the method: everything above is pure and everything below
+        // waits on the database, and a timer that included the parse would flatter the number that matters.
+        val startedAt = System.nanoTime()
+        val shape = SearchShape.of(query.filter)
+
         val pageF = repository.search(request)
         val facetsF = facetRequest.fold(_ => Future.successful(EmptyFacets), repository.facets)
         val histogramF = histogramRequest.fold(_ => Future.successful(Vector.empty), repository.histogram)
         val totalF = repository.countAtMost(query.filter, TotalCap)
         val width = histogramRequest.map(_.width).getOrElse(DefaultBucketWidth)
 
-        for
-          page <- pageF
-          facets <- facetsF
-          histogram <- histogramF
-          total <- totalF
-        yield Right(SearchOutcome(page, facets, histogram, total, window, width))
+        val outcome =
+          for
+            page <- pageF
+            facets <- facetsF
+            histogram <- histogramF
+            total <- totalF
+          yield SearchOutcome(page, facets, histogram, total, window, width)
+
+        // `andThen` and not `map`: the timer must record the failed search too. A search that times out is the slowest
+        // search there is, and dropping it would make the p99 improve as the service got worse.
+        outcome.andThen { case attempt =>
+          metrics.searched(shape, System.nanoTime() - startedAt)
+          attempt.foreach(result => if result.facets.capped then metrics.facetsCapped())
+        }.map(Right.apply)
 
   /** A continuation page only. No facets, no histogram, no count: the filter has not changed, so neither have they, and
     * re-running them on every scroll would triple the cost of paging for markup that is thrown away.

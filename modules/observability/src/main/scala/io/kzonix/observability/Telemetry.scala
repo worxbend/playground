@@ -22,6 +22,7 @@
 package io.kzonix.observability
 
 import io.micrometer.core.instrument.Clock
+import io.micrometer.core.instrument.Meter
 import io.micrometer.core.instrument.Tag
 import io.micrometer.core.instrument.Tags
 import io.micrometer.core.instrument.binder.MeterBinder
@@ -36,10 +37,12 @@ import io.micrometer.core.instrument.binder.system.FileDescriptorMetrics
 import io.micrometer.core.instrument.binder.system.ProcessorMetrics
 import io.micrometer.core.instrument.binder.system.UptimeMetrics
 import io.micrometer.core.instrument.config.MeterFilter
+import io.micrometer.core.instrument.distribution.DistributionStatisticConfig
 import io.micrometer.java21.instrument.binder.jdk.VirtualThreadMetrics
 import io.micrometer.prometheusmetrics.PrometheusConfig
 import io.micrometer.prometheusmetrics.PrometheusMeterRegistry
 import io.prometheus.metrics.model.registry.PrometheusRegistry
+import scala.concurrent.duration.FiniteDuration
 
 /** The observability composition root: one registry, one tracer, one identity, per process.
   *
@@ -118,6 +121,64 @@ object Telemetry:
     */
   val MaxUriTagValues: Int = 100
 
+  /** Cap on distinct values of the `type` tag, after which further values are dropped.
+    *
+    * [[Meters.TagKeys.EventType]] is documented as bounded by the event taxonomy, and it is — right up until a producer
+    * is deployed that derives its CloudEvents `type` from something per-device or per-firmware-build. That is not a
+    * hypothetical: `event.unrecognised` exists specifically to count types this deployment has never seen, so the one
+    * meter that reports "a producer is emitting something unexpected" is also the one a misbehaving producer can use to
+    * mint unbounded timeseries. The taxonomy has single digits of entries; a cap an order of magnitude above it costs
+    * nothing in the healthy case and turns an incident into a flat line.
+    */
+  val MaxEventTypeTagValues: Int = 50
+
+  /** The meters tagged with [[Meters.TagKeys.EventType]], and therefore the ones [[MaxEventTypeTagValues]] applies to.
+    *
+    * Listed rather than applied to every meter, because `MeterFilter.maximumAllowableTags` is per meter name and a
+    * blanket filter would need a name predicate — which then silently covers meters added later that may have chosen
+    * that tag precisely because their value set is closed.
+    */
+  private val eventTypeTagged: List[String] =
+    List(Meters.IngestReceived, Meters.ConsumePersisted, Meters.EventUnrecognised)
+
+  /** A filter that gives one meter family a fixed set of histogram buckets.
+    *
+    * `MeterFilter#configure` is the only way to attach a distribution config to a meter that is created by a
+    * `registry.timer(name, tags)` call — which is how every timer in this system is created, deliberately, so that call
+    * sites deal in names and tags and nothing else. Configuring the buckets at the builder instead would mean every
+    * service repeating the same ladder, which is the drift [[Meters]] exists to prevent.
+    *
+    * Built config on the left of `merge` so these boundaries win over the registry defaults, matching how Micrometer's
+    * own `MeterFilter.maxExpected` and friends are written. Anything not named in [[Meters.Buckets]] passes through
+    * untouched and keeps publishing count/sum/max only — that is the right default for a meter nobody has decided a
+    * range for, since a wrong ladder is worse than none.
+    */
+  private def bucketFilter(name: String, boundaries: Seq[Double]): MeterFilter =
+    new MeterFilter:
+      override def configure(id: Meter.Id, config: DistributionStatisticConfig): DistributionStatisticConfig =
+        if id.getName != name then config
+        else
+          DistributionStatisticConfig
+            .builder()
+            .serviceLevelObjectives(boundaries*)
+            .build()
+            .merge(config)
+
+  /** All bucket filters from [[Meters.Buckets]].
+    *
+    * Timer boundaries are converted to nanoseconds because that is a `Timer`'s base unit inside Micrometer; the
+    * Prometheus exposition then renders them back as seconds. Getting this unit wrong does not fail — it produces a
+    * histogram whose every observation lands in `+Inf`, which looks like a working panel reporting nonsense.
+    */
+  private def bucketFilters(): List[MeterFilter] =
+    val timers =
+      Meters.Buckets.timers.toList.map: (name, ladder) =>
+        bucketFilter(name, ladder.map((boundary: FiniteDuration) => boundary.toNanos.toDouble))
+    val summaries =
+      Meters.Buckets.summaries.toList.map: (name, ladder) =>
+        bucketFilter(name, ladder)
+    timers ++ summaries
+
   /** The tags stamped onto every meter.
     *
     * `service` and `version` only, per ADR §7.1. `instance` is deliberately **not** here: Prometheus attaches its own
@@ -186,6 +247,14 @@ object Telemetry:
         MeterFilter.deny()
       )
     )
+    eventTypeTagged.foreach: name =>
+      val _ = registry.config.meterFilter(
+        MeterFilter.maximumAllowableTags(name, Meters.TagKeys.EventType, MaxEventTypeTagValues, MeterFilter.deny())
+      )
+    // Registered after the cardinality cap so the reading order matches the causal one: the cap decides how many tag
+    // combinations exist, and each of those is then multiplied by the bucket count of whichever ladder applies.
+    bucketFilters().foreach: filter =>
+      val _ = registry.config.meterFilter(filter)
 
     val binders = newBinders()
     binders.foreach(_.bindTo(registry))

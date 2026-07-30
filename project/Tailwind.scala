@@ -1,5 +1,4 @@
 import sbt.*
-
 import scala.sys.process.Process
 
 /** Locating and running the standalone Tailwind CSS CLI (ADR §8.3).
@@ -12,8 +11,8 @@ import scala.sys.process.Process
   * The CLI is a 112 MB self-contained binary published on GitHub releases, **not** on Maven. That rules out resolving
   * it the way every other tool in this build is resolved, and it is why this object only ever *locates* a binary and
   * never downloads one: a build that reaches out to github.com is a build that fails differently on an air-gapped
-  * machine, in CI behind a proxy, and on a laptop on a train. Absence is reported as an explanation, never as an
-  * error and never as a rewrite — see [[resolve]].
+  * machine, in CI behind a proxy, and on a laptop on a train. Absence is reported as an explanation, never as an error
+  * and never as a rewrite — see [[resolve]].
   */
 object Tailwind:
 
@@ -34,9 +33,9 @@ object Tailwind:
     * detect musl from the JVM, so that case is left to `TAILWIND_BIN`.
     */
   def assetName: String =
-    val os   = sys.props.getOrElse("os.name", "").toLowerCase
+    val os = sys.props.getOrElse("os.name", "").toLowerCase
     val arch = sys.props.getOrElse("os.arch", "").toLowerCase
-    val cpu  = if arch == "aarch64" || arch == "arm64" then "arm64" else "x64"
+    val cpu = if arch == "aarch64" || arch == "arm64" then "arm64" else "x64"
     if os.contains("mac") || os.contains("darwin") then s"tailwindcss-macos-$cpu"
     else if os.contains("win") then s"tailwindcss-windows-$cpu.exe"
     else s"tailwindcss-linux-$cpu"
@@ -98,8 +97,8 @@ object Tailwind:
       case Right(cli)        =>
         IO.withTemporaryDirectory: tmp =>
           val rendered = tmp / "app.css"
-          val rc       = build(cli, base, entryPoint(base), rendered)
-          val intact   = s"${committed(base)} was left untouched"
+          val rc = build(cli, base, entryPoint(base), rendered)
+          val intact = s"${committed(base)} was left untouched"
           if rc != 0 then throw new MessageOnlyException(s"tailwindcss exited $rc; $intact")
           else if !rendered.isFile || rendered.length == 0L then
             throw new MessageOnlyException(s"tailwindcss produced no output; $intact")

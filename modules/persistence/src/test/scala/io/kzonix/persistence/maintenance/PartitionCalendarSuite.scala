@@ -29,10 +29,10 @@ import scala.concurrent.duration.DurationInt
 
 /** The month arithmetic, which is the half of partition maintenance that can be wrong without anything failing.
   *
-  * A partition created for the wrong month does not raise: it is a perfectly valid table that simply does not cover
-  * the rows arriving, so those rows go to `cloud_event_default` and the failure surfaces weeks later as a slow query
-  * and a non-zero `partition.default.rows`. Every case below is one of the ways that arithmetic goes wrong quietly —
-  * a year boundary, a month index off by one, or a timezone leaking in from the machine.
+  * A partition created for the wrong month does not raise: it is a perfectly valid table that simply does not cover the
+  * rows arriving, so those rows go to `cloud_event_default` and the failure surfaces weeks later as a slow query and a
+  * non-zero `partition.default.rows`. Every case below is one of the ways that arithmetic goes wrong quietly — a year
+  * boundary, a month index off by one, or a timezone leaking in from the machine.
   */
 final class PartitionCalendarSuite extends munit.FunSuite:
 

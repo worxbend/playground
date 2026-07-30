@@ -33,14 +33,14 @@ import scala.util.Try
   * one.** That is the whole reason this type exists as a value instead of the job computing bounds inline.
   * `V1__events.sql` says it in the DDL and ADR §12.4 lists it as a standing trap: a partition bound literal is parsed
   * in the *session* timezone, so a bare date on a server running `Europe/Warsaw` shifts every partition by an hour and
-  * files the first hour of each month into the neighbouring partition. The symptom appears only at month ends, only
-  * for a handful of rows, and looks exactly like a producer with a wrong clock.
+  * files the first hour of each month into the neighbouring partition. The symptom appears only at month ends, only for
+  * a handful of rows, and looks exactly like a producer with a wrong clock.
   *
   * The same trap has a JVM-side half, which is what [[MonthPartition.Zone]] closes: `YearMonth.now()` and
-  * `instant.atZone(ZoneId.systemDefault)` both consult the machine's timezone, so a container deployed without
-  * `TZ=UTC` would decide it is still September while the database has already moved to October. Every conversion below
-  * goes through `Zone`, and a unit test pins `Zone` to UTC — which is the only assertion that stays honest on a CI
-  * machine that is itself UTC.
+  * `instant.atZone(ZoneId.systemDefault)` both consult the machine's timezone, so a container deployed without `TZ=UTC`
+  * would decide it is still September while the database has already moved to October. Every conversion below goes
+  * through `Zone`, and a unit test pins `Zone` to UTC — which is the only assertion that stays honest on a CI machine
+  * that is itself UTC.
   *
   * DST never enters into it. UTC has no offset transitions, so "the first instant of month M" is a total function of
   * `(year, month)` and month arithmetic is exact addition on a 12-month cycle. That is a property of choosing UTC, not
@@ -116,9 +116,9 @@ object MonthPartition:
     */
   val Zone: ZoneOffset = ZoneOffset.UTC
 
-  /** Matches `V1__events.sql`'s hand-written bounds — `2026-08-01 00:00:00+00`. Lower-case `x` renders a zero offset
-    * as `+00`; upper-case `X` would render it as `Z`, which PostgreSQL also accepts but which would make the generated
-    * DDL stop matching the migration it extends.
+  /** Matches `V1__events.sql`'s hand-written bounds — `2026-08-01 00:00:00+00`. Lower-case `x` renders a zero offset as
+    * `+00`; upper-case `X` would render it as `Z`, which PostgreSQL also accepts but which would make the generated DDL
+    * stop matching the migration it extends.
     */
   private val Bound: DateTimeFormatter =
     DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ssx").withZone(Zone)
@@ -137,9 +137,9 @@ object MonthPartition:
 
   /** Reads a leaf table name back into a month.
     *
-    * `None` for anything that is not a monthly partition — most importantly for `cloud_event_default`, which is how
-    * the retention path is structurally incapable of detaching the clock-skew safety net: the catch-all never parses,
-    * so it is never a candidate.
+    * `None` for anything that is not a monthly partition — most importantly for `cloud_event_default`, which is how the
+    * retention path is structurally incapable of detaching the clock-skew safety net: the catch-all never parses, so it
+    * is never a candidate.
     */
   def parse(name: String): Option[MonthPartition] =
     name match
@@ -148,9 +148,9 @@ object MonthPartition:
 
 /** Which months should exist, and which have outlived the retention window.
   *
-  * Pure, and separated from the job that executes the DDL for the usual reason: month arithmetic across a year
-  * boundary is the part that is easy to get subtly wrong and cheap to test exhaustively, while `CREATE TABLE` needs a
-  * database and a Docker daemon.
+  * Pure, and separated from the job that executes the DDL for the usual reason: month arithmetic across a year boundary
+  * is the part that is easy to get subtly wrong and cheap to test exhaustively, while `CREATE TABLE` needs a database
+  * and a Docker daemon.
   */
 object PartitionCalendar:
 
@@ -199,7 +199,7 @@ object PartitionCalendar:
       .take(PartitionCalendar.MaxHeadroom)
       .size
 
-  /** Bound on [[headroom]]'s scan so a database with a decade of pre-created partitions cannot turn a gauge into a
-    * long loop. Well above any sane `monthsAhead`.
+  /** Bound on [[headroom]]'s scan so a database with a decade of pre-created partitions cannot turn a gauge into a long
+    * loop. Well above any sane `monthsAhead`.
     */
   val MaxHeadroom: Int = 240

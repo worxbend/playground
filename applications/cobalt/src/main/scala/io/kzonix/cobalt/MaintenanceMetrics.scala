@@ -36,19 +36,19 @@ import java.util.concurrent.atomic.AtomicLong
   * relation "cloud_event" found for row` and ingest stops completely. The rollup refresh stops running and the
   * dashboards keep answering, correctly formatted and increasingly wrong. Neither produces a request error, a failed
   * health probe, or a Kafka symptom. A log line exists in both cases and is read by nobody, because nothing prompts
-  * anyone to look. Metrics are the only channel through which either failure reaches an operator before its
-  * consequence does.
+  * anyone to look. Metrics are the only channel through which either failure reaches an operator before its consequence
+  * does.
   *
   * **Why the gauges are separate `AtomicLong`s rather than a callback into the job.** Micrometer polls a gauge at
   * scrape time on the scrape thread; a gauge whose supplier ran a query would put a database round trip — with the
   * pool's timeout, and no `statement_timeout` of its own — on the path of every Prometheus scrape, and a slow database
   * would then also break the metrics that were supposed to tell you the database is slow. Publishing last-known values
-  * into an `AtomicLong` decouples the two: the scrape is a field read, and the value is as fresh as the last job run.
-  * A stale gauge is exactly the right reading when the job has stopped, and `maintenance.job.duration`'s count is
-  * what says so.
+  * into an `AtomicLong` decouples the two: the scrape is a field read, and the value is as fresh as the last job run. A
+  * stale gauge is exactly the right reading when the job has stopped, and `maintenance.job.duration`'s count is what
+  * says so.
   *
-  * **`-Werror` trap (ADR §7.4).** Micrometer's builders return `this` and its registration methods return the meter,
-  * so every registration below is bound with `val _ =` or is part of an expression.
+  * **`-Werror` trap (ADR §7.4).** Micrometer's builders return `this` and its registration methods return the meter, so
+  * every registration below is bound with `val _ =` or is part of an expression.
   */
 final class MaintenanceMetrics(registry: MeterRegistry):
 

@@ -49,10 +49,10 @@ final case class LockKey(namespace: Int, job: Int)
   *
   * **Try-and-skip, never wait.** `pg_try_advisory_lock` returns immediately with a boolean; the blocking
   * `pg_advisory_lock` would queue. With N replicas and a fixed schedule, queueing is the wrong shape: the replica that
-  * loses the race would sit on a pooled connection until the winner finished, and if the job ever takes longer than
-  * the interval, the losers accumulate one waiter per tick until the pool is exhausted and the *ingest* path — which
-  * shares that pool — starts timing out in `getConnection`. Skipping costs nothing: the work was done by somebody, and
-  * the next tick is a few minutes away.
+  * loses the race would sit on a pooled connection until the winner finished, and if the job ever takes longer than the
+  * interval, the losers accumulate one waiter per tick until the pool is exhausted and the *ingest* path — which shares
+  * that pool — starts timing out in `getConnection`. Skipping costs nothing: the work was done by somebody, and the
+  * next tick is a few minutes away.
   *
   * **Session-scoped and not transaction-scoped.** `pg_try_advisory_xact_lock` releases at `COMMIT`, which would be
   * ideal, but the partition job deliberately runs its statements in autocommit — each `CREATE TABLE` is its own
@@ -83,8 +83,8 @@ final class AdvisoryLock(dataSource: DataSource, val key: LockKey) extends Stric
     *
     * A throwing release inside a `finally` would replace whatever exception the job was already failing with — the
     * useful one — with a connection error. And the fallback is sound: the server drops every session-level advisory
-    * lock when the session ends, so the worst case of a failed release is that the lock survives until the pool
-    * retires that connection.
+    * lock when the session ends, so the worst case of a failed release is that the lock survives until the pool retires
+    * that connection.
     */
   private def release(connection: Connection): Unit =
     try

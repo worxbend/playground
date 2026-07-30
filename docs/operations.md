@@ -246,30 +246,48 @@ not from the exposition.
 | `consume_records_duplicate_total` | cobalt | Idempotent-insert no-ops. Non-zero is **normal** for an at-least-once pipeline; spikes mean redelivery. |
 | `consume_records_poison_total{reason}` | cobalt | Records sent to the DLQ. Any sustained non-zero rate is a page. |
 | `consume_batch_latency_seconds{outcome}` | cobalt | Batch-insert wall clock. Rising = database or GIN-index pressure. |
+| `search_query_duration_seconds{shape}` | ferrite | End-to-end search latency, tagged by which access paths the filter uses: `time`, `text`, `payload`, `attrs`, `none`, or a `+`-joined combination. Never by filter values. |
+| `search_facets_capped_total` | ferrite | A facet result hit the candidate cap and its counts are lower bounds. A product signal, not an error. |
+| `event_unrecognised_total{type,reason}` | wolfram | An accepted event this deployment has no decoder for (`unknown-type`) or whose payload did not fit the decoder its type selected (`invalid-payload`). Benign during a rolling deploy; sustained means a producer shipped ahead of its consumer. |
+| `hikaricp_connections_*{pool}` | cobalt, ferrite | HikariCP's own binding. `pool` is `observatory-read` or `observatory-write`; the two services are told apart by the `service` common tag, not by the pool name. `pending` and `acquire_seconds` are what distinguish a slow query from a queued connection. |
 | `http_server_requests_seconds{uri,outcome,…}` | all three | The one HTTP timer. Tagged by matched route template, never raw path; the `uri` tag is capped at 100 distinct values. |
 | `jvm_*`, `process_*`, `system_*` | all three | The standard binders, including `VirtualThreadMetrics` on JDK 25. |
 
-### 5.1 There are no histogram buckets — do not write `histogram_quantile`
+### 5.1 Histogram buckets, and which meters have them
 
-Micrometer publishes a timer to Prometheus as a **summary**: `_count`, `_sum` and a decaying `_max`. Nothing in
-`modules/observability` enables `publishPercentileHistogram`, so there is not a single `_bucket` series in the
-exposition and `histogram_quantile(…_bucket)` silently returns nothing — an empty panel, not an error. Verified by
-scraping `/metrics`.
+Five timer families and one distribution summary publish `_bucket` series, so `histogram_quantile` works against
+them. Everything else reaches Prometheus as `_count`/`_sum`/`_max` only.
 
-What these meters can answer is the mean over an interval and the interval max:
+| Meter | Bucket range |
+| --- | --- |
+| `http_server_requests_seconds` | 5 ms → 10 s (11 boundaries) |
+| `search_query_duration_seconds` | 10 ms → 10 s (10) |
+| `kafka_produce_latency_seconds` | 1 ms → 2.5 s (11) |
+| `consume_batch_latency_seconds` | 5 ms → 5 s (10) |
+| `maintenance_job_duration_seconds` | 100 ms → 15 min (9) |
+| `consume_batch_size` | 1 → 1000 records (10) |
+
+The boundaries are **hand-written ladders**, declared in `Meters.Buckets` and installed as `MeterFilter`s by
+`Telemetry`. They are not Micrometer's `publishPercentileHistogram`, which generates ~70 buckets per timer and makes
+the fleet's cardinality a property of a library default rather than of a decision. Client-side percentiles
+(`publishPercentiles`) are also deliberately absent: those arrive as pre-aggregated `quantile` labels that cannot be
+summed across replicas, and this deployment scrapes per replica.
 
 ```promql
-# mean latency
-sum(rate(consume_batch_latency_seconds_sum[5m]))
-  / clamp_min(sum(rate(consume_batch_latency_seconds_count[5m])), 0.001)
+# p99 latency of the batch insert, by outcome
+histogram_quantile(0.99, sum by (le, outcome) (rate(consume_batch_latency_seconds_bucket[5m])))
 
-# worst observation Micrometer is still carrying (a ~2-minute decaying window)
-max(consume_batch_latency_seconds_max)
+# the fraction of searches served under 250 ms — an SLO, not a percentile
+sum(rate(search_query_duration_seconds_bucket{le="0.25"}[5m]))
+  / clamp_min(sum(rate(search_query_duration_seconds_count[5m])), 0.001)
 ```
 
 `clamp_min` is not decoration: without it the ratio is `0/0` whenever traffic stops, and the panel goes to `NaN`
-rather than to zero. Adding real quantiles means enabling percentile histograms in `Telemetry`, which multiplies
-the series count for every timer in the fleet — a decision, not an omission.
+rather than to zero.
+
+Adding a ladder to a timer is one entry in `Meters.Buckets.timers`. Adding one to a **new tag combination** is the
+expensive direction: bucket count multiplies by surviving tag cardinality, which is why the `uri` cap
+(`Telemetry.MaxUriTagValues`) and the `type` cap (`MaxEventTypeTagValues`) are registered before the bucket filters.
 
 Useful expressions:
 
@@ -308,14 +326,15 @@ on any service for 5 minutes; `up{job="observatory"} == 0`; and — see §7 — 
 *Event observatory*, by `deploy/observability/grafana-dashboards.yml`. It is a file in this repository, not an
 object in Grafana's database: the `grafana-data` volume can be destroyed without losing it.
 
-Five rows, in the order an incident is actually worked:
+Six rows, in the order an incident is actually worked:
 
 | Row | Panels |
 | --- | --- |
 | **Fleet** | Ingest rate, rejection rate, total consumer lag, dead-letter rate, partition headroom, targets up. |
-| **Ingest — wolfram** | Accepted events by `type`, rejections by `reason`, produce latency (mean and max) and produce outcomes. |
-| **Consume — cobalt** | Lag per partition, batch write latency, persisted vs de-duplicated rows, dead letters by reason, batch size against the cap, and the scheduled-maintenance job outcomes. |
-| **Search and HTTP** | ferrite's `/events` latency, and request rate by service and outcome. |
+| **Ingest — wolfram** | Accepted events by `type`, rejections by `reason`, produce latency (p50/p95/p99) and produce outcomes. |
+| **Consume — cobalt** | Lag per partition, batch write latency percentiles, persisted vs de-duplicated rows, dead letters by reason, batch-size percentiles against the cap, and the scheduled-maintenance job outcomes with the rollup-refresh p99 on its own axis. |
+| **Search and HTTP** | ferrite's search latency by query `shape`, and request rate by service and outcome. |
+| **Connection pools** | Active/idle against max, and the waiting side: `pending`, mean acquire wait and connection timeouts. This row is what separates "the query is slow" from "there was no connection to run it on". |
 | **JVM health** | Heap used vs max, GC pause and overhead, CPU, threads (platform and virtual), allocation rate and uptime — all grouped by `service`, so one row covers all three. |
 
 Every panel is written against the shared meter names in `modules/observability`'s `Meters`, so a panel that is
@@ -420,8 +439,10 @@ Symptom: `rate(consume_records_poison_total[15m]) > 0`.
 
 ### 6.4 Search is slow
 
-1. **Confirm it is the database.** The mean-latency expression in §5.1 for `{service="ferrite",uri="/events"}`,
-   or the *Search latency* panel. The read pool
+1. **Confirm it is the database.** `histogram_quantile(0.99, sum by (le, shape)
+   (rate(search_query_duration_seconds_bucket[5m])))`, or the *Search latency* panel. The `shape` tag names which
+   access paths the query used — `time`, `text`, `payload`, `attrs` — so the slow bucket points at an index rather
+   than at a guess. The read pool
    sets `statement_timeout = '2s'` server-side, so a genuinely runaway query surfaces as a failed page within two
    seconds rather than as a hang — if pages hang longer than that, the wait is for a *connection*, not a query.
 2. **Pool saturation.** Read pool: 8 connections, `connection-timeout` 3 s, fronted by an 8-thread dispatcher.
@@ -438,8 +459,9 @@ Symptom: `rate(consume_records_poison_total[15m]) > 0`.
    on the hot partition flushes it.
 5. **Statistics.** `ce_type` and `device_id` carry `SET STATISTICS 1000`. After a large backfill, `ANALYZE
    events.cloud_event` before concluding the plan is wrong.
-6. **Note:** `search.query.duration` and `search.facets.capped` are declared in `Meters` but are **not emitted**
-   today — use `http_server_requests` until they are wired (see Known limitations).
+6. **Pool versus query.** `hikaricp_connections_pending` distinguishes the two cases in point 2 from the ones in
+   point 3: a non-zero pending count means requests are queueing for a connection, and no amount of index work
+   will help. `hikaricp_connections_acquire_seconds` is how long that wait costs.
 
 ---
 
@@ -570,16 +592,11 @@ Ordered by operational blast radius.
    3.0.x line ships an sbt 1 plugin only. Test-kit and server APIs can shift between milestones, and there is no
    security-support commitment for a milestone. Pin every Play artifact to one version and bump them together;
    do not "fix" the version without accepting the loss of sbt 2.
-3. **Timers have no percentile histograms, so no quantiles exist.** `publishPercentileHistogram` is not enabled
-   anywhere in `modules/observability`, so every Micrometer timer reaches Prometheus as a summary and there is not
-   one `_bucket` series in the exposition. `histogram_quantile` returns nothing, quietly. §5.1 has the expressions
-   that do work, and the provisioned dashboard uses them. Enabling buckets is a real decision — it multiplies the
-   series count for every timer in the fleet — not an oversight to be corrected in passing.
-4. **Three declared metrics are never emitted:** `search.query.duration`, `search.facets.capped` and
-   `event.unrecognised`; so is Hikari's `db.pool.*` binding, because the pools are built without a
-   `MetricsTrackerFactory`. Confirmed by scraping `/metrics`. Use `http_server_requests` for search latency
-   (§5.1). Everything else in the vocabulary **is** emitted, including `partition.default.rows`,
-   `maintenance.partitions.headroom` and `maintenance.partitions.blocked`.
+3. **Only six meters have histogram buckets** — the ones tabulated in §5.1. `histogram_quantile` against any
+   other timer returns nothing, quietly, because a timer with no declared ladder publishes `_count`/`_sum`/`_max`
+   only. That is the deliberate default: a wrong bucket range is worse than none, since every observation lands in
+   `+Inf` and the panel reports a confident, meaningless number. Give a timer a ladder by adding it to
+   `Meters.Buckets.timers`.
 5. **The hourly rollup is created, refreshed, and read by nothing.** `events.event_rollup_hourly` is populated by
    the migration and kept current by `RollupRefresh` on cobalt's maintenance schedule
    (`maintenance_job_duration_seconds{job="rollup-refresh"}` increments), but ferrite's histogram queries the fact

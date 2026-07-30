@@ -26,18 +26,18 @@ import scala.collection.mutable.ListBuffer
 /** The contention rule, without a database.
   *
   * `AdvisoryLock.guarded` is three lines and every one of them is a way to take the whole fleet down quietly. A body
-  * that runs anyway makes the lock decorative — N replicas issue the same DDL and the losers fail on SQLSTATEs the
-  * job then has to interpret. A lock that is not released when the body throws is worse: it survives on a *pooled*
-  * connection until that connection is retired (25 minutes, here), during which every replica skips every cycle,
-  * every metric reads `skipped`, and nothing anywhere reads as broken. A release without an acquire is worse again,
-  * because in a reentrant nesting it drops a lock somebody else still believes they hold.
+  * that runs anyway makes the lock decorative — N replicas issue the same DDL and the losers fail on SQLSTATEs the job
+  * then has to interpret. A lock that is not released when the body throws is worse: it survives on a *pooled*
+  * connection until that connection is retired (25 minutes, here), during which every replica skips every cycle, every
+  * metric reads `skipped`, and nothing anywhere reads as broken. A release without an acquire is worse again, because
+  * in a reentrant nesting it drops a lock somebody else still believes they hold.
   *
   * All four are asserted below with recording fakes, because none of them can be observed from the outside of a real
   * database without two threads and a sleep.
   */
 final class AdvisoryLockSuite extends munit.FunSuite:
 
-  private final class Recorder(granted: Boolean):
+  final private class Recorder(granted: Boolean):
     val events: ListBuffer[String] = ListBuffer.empty
     def acquire(): Boolean =
       events += "acquire"

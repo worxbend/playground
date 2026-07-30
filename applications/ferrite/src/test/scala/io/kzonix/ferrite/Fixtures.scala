@@ -25,6 +25,7 @@ import com.typesafe.config.ConfigFactory
 import io.circe.Json
 import io.kzonix.ferrite.controllers.EventsController
 import io.kzonix.ferrite.search.SearchExecutionContext
+import io.kzonix.ferrite.search.SearchMetrics
 import io.kzonix.ferrite.search.SearchService
 import io.kzonix.kernel.search.Filter
 import io.kzonix.persistence.repository.EventDetail
@@ -40,6 +41,8 @@ import io.kzonix.persistence.repository.HistogramRequest
 import io.kzonix.persistence.repository.NewEvent
 import io.kzonix.persistence.repository.SearchPage
 import io.kzonix.persistence.repository.SearchRequest
+import io.micrometer.core.instrument.MeterRegistry
+import io.micrometer.core.instrument.simple.SimpleMeterRegistry
 import java.time.Clock
 import java.time.OffsetDateTime
 import java.time.ZoneOffset
@@ -135,7 +138,8 @@ object Fixtures:
     rows: Vector[EventSummary] = Vector(summary()),
     nextCursor: Option[String] = None,
     detail: Option[EventDetail] = None,
-    total: Long = 12L
+    total: Long = 12L,
+    facetResult: Facets = Fixtures.facets
   ) extends EventRepository:
 
     val lastSearch: AtomicReference[Option[SearchRequest]] = AtomicReference(None)
@@ -150,7 +154,7 @@ object Fixtures:
 
     def facets(request: FacetRequest): Future[Facets] =
       lastFacets.set(Some(request))
-      Future.successful(Fixtures.facets)
+      Future.successful(facetResult)
 
     def histogram(request: HistogramRequest): Future[Vector[HistogramBucket]] =
       lastHistogram.set(Some(request))
@@ -178,8 +182,11 @@ object Fixtures:
 
   lazy val searchExecutionContext: SearchExecutionContext = SearchExecutionContext(system)
 
-  def service(repository: EventRepository): SearchService =
-    SearchService(repository, clock)(using searchExecutionContext)
+  /** A throwaway registry per service, so a suite can assert on the meters one search emitted without another test's
+    * searches already being counted in it.
+    */
+  def service(repository: EventRepository, registry: MeterRegistry = SimpleMeterRegistry()): SearchService =
+    SearchService(repository, SearchMetrics(registry), clock)(using searchExecutionContext)
 
   def controller(repository: EventRepository): EventsController =
     EventsController(Helpers.stubControllerComponents(), service(repository), clock)(using

@@ -23,6 +23,7 @@ package io.kzonix.wolfram
 
 import io.kzonix.eventing.ContentMode
 import io.kzonix.kernel.event.Envelope
+import io.kzonix.kernel.event.Observation
 import io.kzonix.observability.Meters
 import io.micrometer.core.instrument.MeterRegistry
 import io.micrometer.core.instrument.Tags
@@ -63,6 +64,32 @@ final class IngestMetrics(registry: MeterRegistry):
     */
   def rejected(rejection: Rejection): Unit =
     registry.counter(Meters.IngestRejected, Tags.of(Meters.TagKeys.Reason, rejection.reason)).increment()
+
+  /** Counts an accepted event whose `type` this deployment has no decoder for, or whose payload did not fit the decoder
+    * its `type` selected.
+    *
+    * **Why the front door and not the consumer.** ADR §4.2 makes refinement a separate, total step from envelope
+    * decoding precisely so an unheard-of event still reaches Postgres — which means nothing downstream *fails*, and the
+    * only trace a producer-ahead-of-its-consumer deploy leaves is this counter. Counting it here rather than in cobalt
+    * puts the signal at the earliest point the event exists and attributes it to the producer's request, minutes before
+    * the same event would have shown up on the consume side.
+    *
+    * **Why it does not reject.** A non-zero rate during a rolling deploy is expected and benign; a *sustained* one
+    * means a producer shipped before its consumer. Both are operational readings, not client errors, so this is a
+    * counter and not a [[Rejection]] — refusing the event would lose data that ADR §4.2 exists to keep.
+    *
+    * The `reason` distinguishes the two cases that need different responses: [[Meters.Reasons.UnknownType]] is "deploy
+    * the consumer", [[Meters.Reasons.InvalidPayload]] is "the schema changed under a decoder that is still registered",
+    * which is the more alarming of the two.
+    */
+  def observed(envelope: Envelope): Unit =
+    Observation.from(envelope) match
+      case Observation.Unrecognised(eventType, _, reason) =>
+        val why = reason.fold(Meters.Reasons.UnknownType)(_ => Meters.Reasons.InvalidPayload)
+        registry
+          .counter(Meters.EventUnrecognised, Tags.of(Meters.TagKeys.EventType, eventType, Meters.TagKeys.Reason, why))
+          .increment()
+      case _ => ()
 
   /** Broker acknowledgement latency for one produce. The p99 is the signal this exists for (see [[Meters]]): a rising
     * median is broker pressure, a rising p99 over a flat median is one slow partition leader.

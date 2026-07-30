@@ -33,8 +33,8 @@ import scala.util.Using
 import scala.util.control.NonFatal
 
 /** What one `CREATE TABLE ... PARTITION OF` attempt achieved. Three cases and not a `Boolean`, because "it was already
-  * there" and "the DEFAULT partition is holding rows for that month" are the same non-event to a `Boolean` and
-  * opposite events to an operator.
+  * there" and "the DEFAULT partition is holding rows for that month" are the same non-event to a `Boolean` and opposite
+  * events to an operator.
   */
 private enum CreateOutcome:
   case Created, AlreadyPresent, Blocked
@@ -42,12 +42,12 @@ private enum CreateOutcome:
 /** How far ahead to create partitions and how far back to keep them.
   *
   * @param monthsAhead
-  *   months *beyond* the current one that must have a partition. `3` — ADR §5's figure — means four partitions exist
-  *   at any time and the job may miss three consecutive monthly runs before an event has nowhere to go.
+  *   months *beyond* the current one that must have a partition. `3` — ADR §5's figure — means four partitions exist at
+  *   any time and the job may miss three consecutive monthly runs before an event has nowhere to go.
   * @param retainMonths
   *   how many months, counting back from and including the current one, stay attached. `None` disables retention
-  *   entirely, which is the default: detaching is the only operation here that makes data disappear from queries, so
-  *   it happens when somebody configures it and not because a default said so.
+  *   entirely, which is the default: detaching is the only operation here that makes data disappear from queries, so it
+  *   happens when somebody configures it and not because a default said so.
   * @param detachLockTimeout
   *   bound on how long a detach may wait for `ACCESS EXCLUSIVE` on the parent. See [[PartitionDdl.detach]] for why
   *   waiting is the dangerous part.
@@ -103,15 +103,15 @@ final case class PartitionReport(
   * **Why this cannot be a migration.** Flyway migrations are versioned and immutable — that immutability is what
   * `validateOnMigrate` enforces and what makes a schema reproducible. Partitions are the opposite kind of object: the
   * set that must exist is a function of *today's date*, so a `V1` that creates July and August 2026 is correct when it
-  * is written and wrong from September onwards. A deployment of this build in 2027 would apply a migration that
-  * creates nothing usable, and every event would land in `cloud_event_default`, where it is invisible to partition
-  * pruning and expensive to get back out of. ADR §5 makes the same call in one line; this class is that line.
+  * is written and wrong from September onwards. A deployment of this build in 2027 would apply a migration that creates
+  * nothing usable, and every event would land in `cloud_event_default`, where it is invisible to partition pruning and
+  * expensive to get back out of. ADR §5 makes the same call in one line; this class is that line.
   *
   * **Create and detach are deliberately asymmetric, and the asymmetry is the design.** Creation is automatic,
-  * unattended and scheduled, because the failure it prevents — `no partition of relation "cloud_event" found for row`
-  * — is a total ingest outage that arrives on a calendar boundary at whatever hour that boundary falls. Retirement
-  * only ever *detaches*: the table keeps existing, keeps its rows and keeps its indexes, and it simply stops being
-  * part of the parent. `DROP TABLE` is never issued by anything in this codebase. The reasoning is not symmetry but
+  * unattended and scheduled, because the failure it prevents — `no partition of relation "cloud_event" found for row` —
+  * is a total ingest outage that arrives on a calendar boundary at whatever hour that boundary falls. Retirement only
+  * ever *detaches*: the table keeps existing, keeps its rows and keeps its indexes, and it simply stops being part of
+  * the parent. `DROP TABLE` is never issued by anything in this codebase. The reasoning is not symmetry but
   * reversibility — a detach taken in error is undone with one `ATTACH PARTITION`, a drop taken in error is undone from
   * a backup if there is one — and the question "may this event data be destroyed" usually has a legal answer that a
   * scheduled job is not entitled to give. What the operator then does with the detached table (archive it, export it,
@@ -120,8 +120,8 @@ final case class PartitionReport(
   * **The `DEFAULT` partition is the trap this class is mostly about.** See [[PartitionDdl.adoptDefaultRows]]: once a
   * row for month M sits in `cloud_event_default`, PostgreSQL refuses to create a partition covering M, and refuses it
   * expensively — the attempt takes `ACCESS EXCLUSIVE` on the parent and scans the default partition before failing.
-  * Detecting that up front, skipping the month, and reporting it with the remedy is strictly better than discovering
-  * it as a stack trace: the job keeps making progress on every *other* month, the ingest path is never locked, and the
+  * Detecting that up front, skipping the month, and reporting it with the remedy is strictly better than discovering it
+  * as a stack trace: the job keeps making progress on every *other* month, the ingest path is never locked, and the
   * operator gets a statement to run rather than an error to interpret.
   */
 final class PartitionMaintenance(dataSource: DataSource, policy: PartitionPolicy) extends StrictLogging:
@@ -138,9 +138,9 @@ final class PartitionMaintenance(dataSource: DataSource, policy: PartitionPolicy
 
   /** The pass itself, on a caller-supplied connection and without the lock.
     *
-    * Package-visible so integration tests can drive it deterministically — in particular so a test can hold the lock
-    * on one connection and prove that [[run]] on another declines, which is the property that would otherwise need
-    * two threads and a sleep to observe.
+    * Package-visible so integration tests can drive it deterministically — in particular so a test can hold the lock on
+    * one connection and prove that [[run]] on another declines, which is the property that would otherwise need two
+    * threads and a sleep to observe.
     */
   private[persistence] def runOn(connection: Connection, now: Instant): PartitionReport =
     val attached = attachedPartitions(connection)
@@ -149,16 +149,16 @@ final class PartitionMaintenance(dataSource: DataSource, policy: PartitionPolicy
 
     // Split before touching the database: a month whose rows are already in DEFAULT must not even be attempted, or
     // the attempt itself takes ACCESS EXCLUSIVE on the parent and blocks ingest while it scans its way to failing.
-    val (occupied, creatable) = wanted.filterNot(attached.contains).partition(month => defaultRows.contains(month.month))
+    val (occupied, creatable) =
+      wanted.filterNot(attached.contains).partition(month => defaultRows.contains(month.month))
 
     val attempted = creatable.map(month => month -> create(connection, month))
     val created = attempted.collect { case (month, CreateOutcome.Created) => month }
     // A month that became blocked between the survey and the CREATE is reported exactly like one the survey caught,
     // so the two paths cannot tell the operator different stories about the same situation.
     val lateBlocked = attempted.collect { case (month, CreateOutcome.Blocked) => BlockedMonth(month, 0L) }
-    val allBlocked =
-      (occupied.map(month => BlockedMonth(month, defaultRows.getOrElse(month.month, 0L))) ++ lateBlocked)
-        .sortBy(_.partition.month)
+    val allBlocked = (occupied.map(month => BlockedMonth(month, defaultRows.getOrElse(month.month, 0L))) ++ lateBlocked)
+      .sortBy(_.partition.month)
 
     allBlocked.foreach: month =>
       logger.error(
@@ -188,9 +188,9 @@ final class PartitionMaintenance(dataSource: DataSource, policy: PartitionPolicy
     *
     * Two SQLSTATEs are outcomes rather than defects, and they are distinguished because they mean opposite things:
     *
-    *   - `42P07 duplicate_table` — somebody else created it between the catalog survey and here, so the job got what
-    *     it wanted and there is nothing to report. The advisory lock rules that out between replicas of this job but
-    *     not against an operator with a `psql` session open.
+    *   - `42P07 duplicate_table` — somebody else created it between the catalog survey and here, so the job got what it
+    *     wanted and there is nothing to report. The advisory lock rules that out between replicas of this job but not
+    *     against an operator with a `psql` session open.
     *   - `23514 check_violation` — the `DEFAULT` partition acquired a row for this month inside the same window. That
     *     is the blocking case the survey exists to catch, arrived a few milliseconds later, and it must reach the
     *     operator with the same remedy.

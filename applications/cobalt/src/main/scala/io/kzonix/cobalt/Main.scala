@@ -22,6 +22,7 @@
 package io.kzonix.cobalt
 
 import com.typesafe.scalalogging.StrictLogging
+import com.zaxxer.hikari.metrics.micrometer.MicrometerMetricsTrackerFactory
 import io.kzonix.kernel.event.Source
 import io.kzonix.observability.Telemetry
 import io.kzonix.persistence.Database
@@ -90,7 +91,10 @@ object CobaltApp extends StrictLogging:
     * opening the pools, running the migrations, and binding the listener.
     */
   def start(config: CobaltConfig, database: DatabaseConfig, telemetry: Telemetry): CobaltApp =
-    val pools = Database.open(database)
+    // `hikaricp.connections.*` on the same registry every other cobalt meter uses. On the write side the reading that
+    // matters is `pending`: a consumer whose batch inserts are queueing for a connection has a lag problem the Kafka
+    // meters will report and the database meters will explain.
+    val pools = Database.open(database, Some(MicrometerMetricsTrackerFactory(telemetry.registry)))
 
     // Migrations run here, before anything reads or writes. cobalt is the write side of this system, so it is the
     // service that must not start against a schema older than its own inserts. `Migrations.migrate` is idempotent, so

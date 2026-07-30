@@ -128,6 +128,10 @@ final class IngestionService(
       .map:
         case Right(ack) =>
           metrics.accepted(candidate.envelope, candidate.mode)
+          // After the ack, not before: refinement is an observation about events that are now durable, and counting a
+          // type the fleet does not understand for an event the broker then refused would report a producer problem
+          // that did not happen.
+          metrics.observed(candidate.envelope)
           Right(Receipt(candidate, ack))
         case Left(rejection) =>
           Left(record(rejection))

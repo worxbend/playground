@@ -32,21 +32,21 @@ import play.filters.hosts.AllowedHostsConfig
   * **Why this exists at all.** Play declares `play.filters.hosts.allowed` as a *list*, and a HOCON environment
   * substitution can only ever produce a string. `play.filters.hosts.allowed = ${?ALLOWED_HOSTS}` therefore looks
   * correct, validates with `docker compose config`, and then kills the boot with
-  * `play.filters.hosts.allowed has type STRING rather than LIST` the first time the variable is actually set — which
-  * is every deployment and no development run, the worst possible place for a failure to hide.
+  * `play.filters.hosts.allowed has type STRING rather than LIST` the first time the variable is actually set — which is
+  * every deployment and no development run, the worst possible place for a failure to hide.
   *
-  * The alternative Play offers is indexed system properties
-  * (`-Dplay.filters.hosts.allowed.0=… -Dplay.filters.hosts.allowed.1=…`), which Lightbend Config does reassemble into
-  * a list. That is rejected: it makes the operator hand-maintain array indices in a `JAVA_OPTS` string, and a skipped
-  * index silently truncates the list, which fails as a 403 on one hostname rather than as an error.
+  * The alternative Play offers is indexed system properties (`-Dplay.filters.hosts.allowed.0=…
+  * -Dplay.filters.hosts.allowed.1=…`), which Lightbend Config does reassemble into a list. That is rejected: it makes
+  * the operator hand-maintain array indices in a `JAVA_OPTS` string, and a skipped index silently truncates the list,
+  * which fails as a 403 on one hostname rather than as an error.
   *
   * So the string stays a string, under a key of ferrite's own, and this is the one place that splits it.
   */
 object AllowedHosts:
 
-  /** The configuration key holding the raw comma-separated form. Not `play.filters.hosts.allowed`: that key is typed
-    * as a list by Play's own `reference.conf`, and giving it a string here would break `Configuration`'s type checking
-    * for anything else that reads it.
+  /** The configuration key holding the raw comma-separated form. Not `play.filters.hosts.allowed`: that key is typed as
+    * a list by Play's own `reference.conf`, and giving it a string here would break `Configuration`'s type checking for
+    * anything else that reads it.
     */
   val ConfigKey: String = "ferrite.allowed-hosts"
 

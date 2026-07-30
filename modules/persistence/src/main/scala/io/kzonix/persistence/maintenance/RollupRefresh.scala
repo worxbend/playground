@@ -29,8 +29,8 @@ import scala.util.Using
 /** What one refresh of the hourly rollup did.
   *
   * @param rows
-  *   rows in the materialized view afterwards. The number a dashboard is reading from, and the cheap way to notice
-  *   that a refresh "succeeded" against a fact table somebody truncated.
+  *   rows in the materialized view afterwards. The number a dashboard is reading from, and the cheap way to notice that
+  *   a refresh "succeeded" against a fact table somebody truncated.
   * @param concurrent
   *   whether `CONCURRENTLY` was used. `false` means the view was unpopulated and had to be built blocking — see
   *   [[RollupRefresh]] for when that can happen and why it is once.
@@ -41,19 +41,19 @@ final case class RefreshReport(rows: Long, concurrent: Boolean)
   *
   * **What goes wrong without this.** `V1__events.sql` creates the view, indexes it, and refreshes it once — against an
   * empty table, because the migration is the thing that just created that table. PostgreSQL materialized views are not
-  * self-maintaining: nothing in the database updates one, ever. So every facet count, every dashboard aggregate and
-  * the landing-page histogram read a permanently empty relation, and they do it *successfully* — no error, no empty
-  * result set that looks wrong, just numbers that are stale by however long the deployment has been running. ADR §0
-  * decision 7 chose a materialized view over consumer-maintained counters precisely because the view is idempotent and
+  * self-maintaining: nothing in the database updates one, ever. So every facet count, every dashboard aggregate and the
+  * landing-page histogram read a permanently empty relation, and they do it *successfully* — no error, no empty result
+  * set that looks wrong, just numbers that are stale by however long the deployment has been running. ADR §0 decision 7
+  * chose a materialized view over consumer-maintained counters precisely because the view is idempotent and
   * authoritative; both of those are properties of a view that is refreshed.
   *
-  * **Why `CONCURRENTLY`, and what it costs.** A plain `REFRESH MATERIALIZED VIEW` takes `ACCESS EXCLUSIVE` on the
-  * view: every dashboard query blocks for the whole rebuild, which on this view is a 90-day aggregate over the fact
-  * table. `CONCURRENTLY` instead builds the new contents into a temporary relation and then merges the difference,
-  * holding only `EXCLUSIVE` — readers keep reading the old contents throughout and see the new ones atomically at the
-  * end. That is only legal because `V1__events.sql` creates `event_rollup_hourly_uk`; a unique index over every
-  * grouping column is the precondition, and the day that index is dropped this statement stops being a no-op for
-  * readers and silently becomes a global stall.
+  * **Why `CONCURRENTLY`, and what it costs.** A plain `REFRESH MATERIALIZED VIEW` takes `ACCESS EXCLUSIVE` on the view:
+  * every dashboard query blocks for the whole rebuild, which on this view is a 90-day aggregate over the fact table.
+  * `CONCURRENTLY` instead builds the new contents into a temporary relation and then merges the difference, holding
+  * only `EXCLUSIVE` — readers keep reading the old contents throughout and see the new ones atomically at the end. That
+  * is only legal because `V1__events.sql` creates `event_rollup_hourly_uk`; a unique index over every grouping column
+  * is the precondition, and the day that index is dropped this statement stops being a no-op for readers and silently
+  * becomes a global stall.
   *
   * The cost is real and worth stating plainly: **`CONCURRENTLY` is not incremental.** It recomputes the entire view
   * from the fact table every time, then diffs. It is *more* expensive than a blocking refresh, not less — it trades
@@ -70,8 +70,8 @@ final class RollupRefresh(dataSource: DataSource) extends StrictLogging:
   /** One refresh, under the advisory lock. `None` means another replica is already refreshing.
     *
     * Skipping is exactly right here and not merely acceptable: two concurrent refreshes would each do the full
-    * recompute and the second would produce the same answer the first is about to install. The refresh is
-    * idempotent, so the loser has nothing to catch up on.
+    * recompute and the second would produce the same answer the first is about to install. The refresh is idempotent,
+    * so the loser has nothing to catch up on.
     */
   def run(): Option[RefreshReport] = lock.tryRun(runOn)
 

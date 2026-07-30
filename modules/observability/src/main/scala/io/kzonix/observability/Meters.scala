@@ -21,6 +21,8 @@
 
 package io.kzonix.observability
 
+import scala.concurrent.duration.*
+
 /** The shared metric vocabulary (ADR §7.1).
   *
   * Every meter name and tag key the three services have in common lives here as a constant, for one reason: a Grafana
@@ -183,6 +185,13 @@ object Meters:
     */
   val ConsumeDuplicate: String = "consume.records.duplicate"
 
+  /** Timer. Wall-clock latency of one batch insert, tagged [[TagKeys.Outcome]].
+    *
+    * A timer for the same reason [[KafkaProduceLatency]] is one: a rising median is database pressure, a rising p99
+    * over a flat median is one oversized payload or one hot partition.
+    */
+  val ConsumeBatchLatency: String = "consume.batch.latency"
+
   /** Counter. Records routed to the DLQ, tagged [[TagKeys.Reason]]. Any sustained non-zero rate is a page. */
   val ConsumePoison: String = "consume.records.poison"
 
@@ -296,3 +305,143 @@ object Meters:
     * describing itself.
     */
   val UninstrumentedPaths: Set[String] = Set(MetricsPath, HealthPath)
+
+  // --- shared: latency distributions -------------------------------------------------------------------------------
+
+  /** The bucket boundaries every timer and distribution summary in this system publishes.
+    *
+    * **Why this exists at all.** A Micrometer `Timer` with no distribution configuration reaches Prometheus as three
+    * series — `_count`, `_sum` and `_max` — and nothing else. `_sum / _count` is a mean, which for latency is the one
+    * statistic that reliably lies: it is dominated by the fast majority and moves barely at all when the slow tail
+    * doubles. `_max` is the opposite failure, a single unsmoothed sample. Neither can answer "what does the 99th
+    * percentile user see", and `histogram_quantile` cannot be asked without `_bucket` series to ask it of. Until these
+    * ladders were installed, every percentile panel in the Grafana dashboard was unwritable.
+    *
+    * **Why explicit ladders and not `publishPercentileHistogram`.** Micrometer's automatic percentile histogram emits a
+    * generated ladder — on the order of 70 buckets for a timer left unbounded — and the count varies with the
+    * configured min/max. Bucket count multiplies by every tag combination on the meter, and the resulting cardinality
+    * is then a property of a library default rather than of a decision anyone made. A hand-written ladder is a fixed,
+    * auditable number: the entries below plus the implicit `+Inf`.
+    *
+    * **Why not client-side percentiles (`publishPercentiles`).** Those arrive as pre-aggregated `quantile` labels which
+    * cannot be summed across replicas — averaging p99s is meaningless — and this system scrapes per replica. Buckets
+    * aggregate correctly, which is the whole reason Prometheus prefers them.
+    *
+    * **Choosing boundaries.** Each ladder brackets the range where a decision changes: dense where the meter normally
+    * sits, so the median and p99 land in different buckets, and extended past the point where the operator would act,
+    * so a pathological tail is still visible rather than collapsed into `+Inf`. Boundaries are approximate by nature —
+    * `histogram_quantile` interpolates within a bucket — so the goal is bracketing, not precision.
+    */
+  object Buckets:
+
+    /** [[HttpServerRequests]], for all three services.
+      *
+      * The widest range here, because it covers a Vert.x endpoint that should answer in single-digit milliseconds and a
+      * server-rendered search page that legitimately takes a second. 5ms is below anything worth distinguishing; 10s is
+      * past every client timeout in the stack.
+      *
+      * This is also the ladder that costs the most: it multiplies whatever `uri` cardinality survives
+      * [[Telemetry.MaxUriTagValues]], times the distinct status codes. With the handful of route templates the three
+      * services actually serve that is a few hundred series each — the cap exists so that stays true after a mistake.
+      */
+    val HttpServerRequests: Seq[FiniteDuration] =
+      Seq(
+        5.millis,
+        10.millis,
+        25.millis,
+        50.millis,
+        100.millis,
+        250.millis,
+        500.millis,
+        1.second,
+        2500.millis,
+        5.seconds,
+        10.seconds
+      )
+
+    /** [[SearchQueryDuration]]. Starts at 10ms — a search that fast was served entirely from cache or matched nothing —
+      * and shares the HTTP ladder's ceiling, since a search is what makes an HTTP request slow.
+      */
+    val SearchQueryDuration: Seq[FiniteDuration] =
+      Seq(
+        10.millis,
+        25.millis,
+        50.millis,
+        100.millis,
+        250.millis,
+        500.millis,
+        1.second,
+        2500.millis,
+        5.seconds,
+        10.seconds
+      )
+
+    /** [[KafkaProduceLatency]]. An order of magnitude faster than HTTP: an in-datacentre `acks=all` produce is a
+      * single-digit millisecond operation, so the interesting resolution is at the bottom. The 2.5s ceiling is
+      * `delivery.timeout.ms` territory — past it the produce is failing, not slow.
+      */
+    val KafkaProduceLatency: Seq[FiniteDuration] =
+      Seq(
+        1.milli,
+        2500.micros,
+        5.millis,
+        10.millis,
+        25.millis,
+        50.millis,
+        100.millis,
+        250.millis,
+        500.millis,
+        1.second,
+        2500.millis
+      )
+
+    /** [[ConsumeBatchLatency]]. A batch insert of up to a few hundred rows; the 5s ceiling is where the batch is
+      * blocking the consumer long enough to threaten `max.poll.interval.ms` and provoke a rebalance.
+      */
+    val ConsumeBatchLatency: Seq[FiniteDuration] =
+      Seq(
+        5.millis,
+        10.millis,
+        25.millis,
+        50.millis,
+        100.millis,
+        250.millis,
+        500.millis,
+        1.second,
+        2500.millis,
+        5.seconds
+      )
+
+    /** [[MaintenanceDuration]]. Seconds to minutes, not milliseconds: creating a partition is instant, while
+      * `REFRESH MATERIALIZED VIEW CONCURRENTLY` scales with the table. The top boundaries are the ones that matter —
+      * ADR §12.4 retires the materialized view when the refresh p99 approaches the refresh interval, and that tripwire
+      * is only expressible because 5m and 15m are boundaries here.
+      */
+    val MaintenanceDuration: Seq[FiniteDuration] =
+      Seq(100.millis, 500.millis, 1.second, 5.seconds, 15.seconds, 30.seconds, 1.minute, 5.minutes, 15.minutes)
+
+    /** [[ConsumeBatchSize]] — a distribution summary, so these are record counts, not durations.
+      *
+      * Deliberately dense at the low end. The reading this meter exists for is "the consumer is starved, not
+      * saturated", which is a *shift* from large batches to batches of one or two; a ladder that started at 50 would
+      * show that as a flat line at the bottom bucket.
+      */
+    val ConsumeBatchSize: Seq[Double] = Seq(1, 2, 5, 10, 25, 50, 100, 250, 500, 1000)
+
+    /** Every timer family and its ladder. [[Telemetry]] installs one `MeterFilter` per entry.
+      *
+      * A map rather than a filter written per meter so that adding a timer to [[Meters]] and forgetting to give it
+      * buckets is visible as an absence from one list, rather than as a panel nobody can write six months later.
+      */
+    val timers: Map[String, Seq[FiniteDuration]] =
+      Map(
+        Meters.HttpServerRequests -> HttpServerRequests,
+        Meters.SearchQueryDuration -> SearchQueryDuration,
+        Meters.KafkaProduceLatency -> KafkaProduceLatency,
+        Meters.ConsumeBatchLatency -> ConsumeBatchLatency,
+        Meters.MaintenanceDuration -> MaintenanceDuration
+      )
+
+    /** Every distribution summary family and its ladder. */
+    val summaries: Map[String, Seq[Double]] =
+      Map(Meters.ConsumeBatchSize -> ConsumeBatchSize)

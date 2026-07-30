@@ -24,6 +24,7 @@ package io.kzonix.persistence
 import com.augustnagro.magnum.Transactor
 import com.zaxxer.hikari.HikariConfig
 import com.zaxxer.hikari.HikariDataSource
+import com.zaxxer.hikari.metrics.MetricsTrackerFactory
 import javax.sql.DataSource
 
 /** A source of a `DataSource`.
@@ -63,8 +64,22 @@ object HikariPool:
     * Hikari's default `initializationFailTimeout` is kept, so an unreachable or misconfigured database fails *here*,
     * during construction, rather than on the first user request. For a service whose entire job is reading and writing
     * this database, a boot that succeeds without a database is a service that reports itself healthy and serves errors.
+    *
+    * @param metrics
+    *   HikariCP's own metrics SPI, which its `hikaricp.connections.*` meters are published through.
+    *
+    * **Why the SPI type and not a `MeterRegistry`.** Pool saturation is the failure this system is most likely to hit
+    * and least likely to see: a request waiting for a connection looks exactly like a slow query, and the two are fixed
+    * in opposite directions. So these meters matter. But taking a `MeterRegistry` here would put Micrometer on this
+    * module's compile classpath for the sake of one adapter, and `modules/persistence` is used by cobalt, which has no
+    * Guice and no Play and should not inherit an observability stack from its data layer either. HikariCP already
+    * declares this interface and already ships the Micrometer implementation of it, so the composition root — which
+    * knows about both halves anyway — passes one in and this module stays unaware.
+    *
+    * `None` is a real option and not a degenerate default: `MigrationIT` and the repository suites open pools with no
+    * process-wide registry to publish into, and a pool that insisted on one would make them construct telemetry.
     */
-  def open(database: DatabaseConfig, pool: PoolConfig): HikariPool =
+  def open(database: DatabaseConfig, pool: PoolConfig, metrics: Option[MetricsTrackerFactory] = None): HikariPool =
     val config = HikariConfig()
     config.setJdbcUrl(database.jdbcUrl)
     config.setUsername(database.username)
@@ -80,6 +95,9 @@ object HikariPool:
     pool.connectionInitSql.foreach(config.setConnectionInitSql)
     // Magnum's `transact` manages transactions itself and `connect` wants each statement to stand alone.
     config.setAutoCommit(true)
+    // Must be set on the config, before the DataSource is constructed: HikariCP installs the tracker as the pool
+    // starts, and `HikariDataSource#setMetricsTrackerFactory` on an already-started pool throws.
+    metrics.foreach(config.setMetricsTrackerFactory)
     HikariPool(HikariDataSource(config))
 
 /** The two pools of ADR §5, opened and closed together.
@@ -97,10 +115,16 @@ final class Database private (val read: HikariPool, val write: HikariPool) exten
 
 object Database:
 
-  def open(config: DatabaseConfig): Database =
-    val read = HikariPool.open(config, config.read)
+  /** Opens both pools, closing the first if the second fails.
+    *
+    * The same [[com.zaxxer.hikari.metrics.MetricsTrackerFactory]] serves both: HikariCP tags its meters with the pool
+    * name, and [[PoolConfig.poolName]] differs between read and write, so one factory produces two distinguishable sets
+    * rather than two colliding ones.
+    */
+  def open(config: DatabaseConfig, metrics: Option[MetricsTrackerFactory] = None): Database =
+    val read = HikariPool.open(config, config.read, metrics)
     val write =
-      try HikariPool.open(config, config.write)
+      try HikariPool.open(config, config.write, metrics)
       catch
         case error: Throwable =>
           read.close()

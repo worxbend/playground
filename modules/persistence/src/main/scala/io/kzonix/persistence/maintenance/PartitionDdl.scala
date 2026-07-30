@@ -55,18 +55,18 @@ object PartitionDdl:
     *
     * Only these five can be written by an `INSERT`; the other twenty-odd are derived from `raw` by the database. Any
     * hand-written data movement — the DEFAULT-partition remedy below is the one this module emits — has to name them
-    * explicitly, because `INSERT INTO ... SELECT *` fails on a generated column with "cannot insert a non-DEFAULT
-    * value into column".
+    * explicitly, because `INSERT INTO ... SELECT *` fails on a generated column with "cannot insert a non-DEFAULT value
+    * into column".
     */
   val BaseColumns: String = "occurred_at, event_uid, ingested_at, raw, payload_sha256"
 
   /** `CREATE TABLE ... PARTITION OF ... FOR VALUES FROM ... TO ...`.
     *
     * Deliberately **not** `IF NOT EXISTS`. Idempotence is wanted, but `IF NOT EXISTS` buys it by turning "the table is
-    * already there" into a notice this code cannot see, so the job could never report what it actually created — and
-    * it would also silently accept a *non-partition* table that happened to occupy the name. Letting the duplicate
-    * raise `42P07` and catching that one SQLSTATE gives the same idempotence with an exact answer, and it is the
-    * behaviour a second concurrent creator needs anyway.
+    * already there" into a notice this code cannot see, so the job could never report what it actually created — and it
+    * would also silently accept a *non-partition* table that happened to occupy the name. Letting the duplicate raise
+    * `42P07` and catching that one SQLSTATE gives the same idempotence with an exact answer, and it is the behaviour a
+    * second concurrent creator needs anyway.
     */
   def create(partition: MonthPartition): String =
     s"CREATE TABLE ${partition.qualifiedName} PARTITION OF ${MonthPartition.QualifiedParent} " +
@@ -86,8 +86,8 @@ object PartitionDdl:
     * That lock is brief — detaching is a catalog update, not a scan — but "brief" is not "safe": `ACCESS EXCLUSIVE`
     * queues behind every open transaction on the parent and, while it waits, every *new* ingest insert queues behind
     * it. One long-running search is enough to convert a metadata operation into an ingest outage. Hence
-    * [[lockTimeout]], which is applied in the same transaction and is what makes a contended detach fail and be
-    * retried next cycle instead of stalling the write path.
+    * [[lockTimeout]], which is applied in the same transaction and is what makes a contended detach fail and be retried
+    * next cycle instead of stalling the write path.
     */
   def detach(partition: MonthPartition): String =
     s"ALTER TABLE ${MonthPartition.QualifiedParent} DETACH PARTITION ${partition.qualifiedName}"
@@ -95,9 +95,9 @@ object PartitionDdl:
   /** `SET LOCAL lock_timeout`, for the transaction that detaches.
     *
     * `LOCAL` and not a session `SET`: the connection comes from a pool and goes back to it, and a session-level
-    * `lock_timeout` left behind would silently apply to whatever borrows that connection next — an ingest batch
-    * failing with "canceling statement due to lock timeout" for reasons nothing in its own code path explains. `LOCAL`
-    * expires at `COMMIT` and cannot leak.
+    * `lock_timeout` left behind would silently apply to whatever borrows that connection next — an ingest batch failing
+    * with "canceling statement due to lock timeout" for reasons nothing in its own code path explains. `LOCAL` expires
+    * at `COMMIT` and cannot leak.
     *
     * Milliseconds, rendered from a `FiniteDuration`, so the value is digits and a unit and nothing else.
     */
@@ -107,9 +107,9 @@ object PartitionDdl:
   /** Rows already in `cloud_event_default` for this month, and the total, in one scan.
     *
     * `AT TIME ZONE 'UTC'` is not decoration: `date_trunc('month', occurred_at)` on a `timestamptz` truncates in the
-    * *session* timezone, so the same row groups into September or October depending on which server ran the query —
-    * the JVM-side twin of the bound-literal trap in [[MonthPartition]]. Rendering the key as `YYYY-MM` text keeps the
-    * JDBC driver's own timezone handling out of the answer as well.
+    * *session* timezone, so the same row groups into September or October depending on which server ran the query — the
+    * JVM-side twin of the bound-literal trap in [[MonthPartition]]. Rendering the key as `YYYY-MM` text keeps the JDBC
+    * driver's own timezone handling out of the answer as well.
     *
     * Grouped rather than probed per month: the normal case is an empty table, this is one scan of it, and the total it
     * yields is exactly the number `partition.default.rows` gauges.
@@ -133,24 +133,24 @@ object PartitionDdl:
     * and bounds so an operator can paste it rather than transcribe it.
     *
     * **The trap it answers.** PostgreSQL will not attach a partition whose range overlaps rows currently held by the
-    * `DEFAULT` partition. `CREATE TABLE ... PARTITION OF` on such a range takes `ACCESS EXCLUSIVE` on the parent,
-    * scans the default partition to check, finds a matching row and fails with "updated partition constraint for
-    * default partition would be violated by some row" — having blocked ingest for the length of the scan on its way to
-    * failing. There is no flag that makes it succeed. The rows must move first, and moving them is a decision with a
-    * cost (an exclusive lock, a rewrite of however many rows drifted in) that a background job must not take on an
-    * operator's behalf at 3am.
+    * `DEFAULT` partition. `CREATE TABLE ... PARTITION OF` on such a range takes `ACCESS EXCLUSIVE` on the parent, scans
+    * the default partition to check, finds a matching row and fails with "updated partition constraint for default
+    * partition would be violated by some row" — having blocked ingest for the length of the scan on its way to failing.
+    * There is no flag that makes it succeed. The rows must move first, and moving them is a decision with a cost (an
+    * exclusive lock, a rewrite of however many rows drifted in) that a background job must not take on an operator's
+    * behalf at 3am.
     *
     * So the job detects, reports, skips that month, and hands over this. The transaction:
     *
-    *   1. builds the new leaf standalone with `LIKE ... INCLUDING ALL`, which carries the generated columns, the
-    *      checks and the thirteen indexes — a partition attached without them would be a table scan for every query
-    *      that touches its month;
+    *   1. builds the new leaf standalone with `LIKE ... INCLUDING ALL`, which carries the generated columns, the checks
+    *      and the thirteen indexes — a partition attached without them would be a table scan for every query that
+    *      touches its month;
     *   2. adds a `CHECK` matching the partition bound *before* attaching, which is what lets `ATTACH PARTITION` skip
     *      its validation scan and take its lock for a catalog update instead of a full read;
     *   3. moves the rows with `DELETE ... RETURNING` feeding the `INSERT`, so they are removed from `DEFAULT` and
     *      inserted in one statement and cannot exist in both places or neither;
-    *   4. attaches, drops the now-redundant `CHECK` (the partition bound supersedes it), and restores the
-    *      insert-driven autovacuum settings.
+    *   4. attaches, drops the now-redundant `CHECK` (the partition bound supersedes it), and restores the insert-driven
+    *      autovacuum settings.
     *
     * If the rows are what they usually are — clock-skew garbage from one misconfigured producer, which is exactly what
     * the `DEFAULT` partition is a net for — the cheaper remedy is to delete them and let the job create the partition

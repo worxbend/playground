@@ -23,7 +23,7 @@
       "type": "stat",
       "id": 2,
       "title": "Ingest rate",
-      "description": "Durable events per second \u2014 counted after the broker acknowledged, so this is throughput, not arrival rate.",
+      "description": "Durable events per second — counted after the broker acknowledged, so this is throughput, not arrival rate.",
       "datasource": {
         "type": "prometheus",
         "uid": "observatory-prometheus"
@@ -435,7 +435,7 @@
     {
       "type": "row",
       "id": 8,
-      "title": "Ingest \u2014 wolfram",
+      "title": "Ingest — wolfram",
       "collapsed": false,
       "gridPos": {
         "h": 1,
@@ -639,7 +639,7 @@
       "type": "timeseries",
       "id": 11,
       "title": "Kafka produce latency",
-      "description": "Broker acknowledgement latency. Mean and the registry's decaying max \u2014 there are no histogram buckets in this exposition. A rising mean is broker pressure; a rising max over a flat mean is one slow partition leader.",
+      "description": "Broker acknowledgement latency by percentile, from `kafka.produce.latency` buckets. A rising p50 is broker pressure across the board; a rising p99 over a flat p50 is one slow partition leader. Buckets run 1ms–2.5s — anything at the top of the range is failing, not slow.",
       "datasource": {
         "type": "prometheus",
         "uid": "observatory-prometheus"
@@ -730,8 +730,8 @@
             "uid": "observatory-prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (outcome) (rate(kafka_produce_latency_seconds_sum[$__rate_interval])) / clamp_min(sum by (outcome) (rate(kafka_produce_latency_seconds_count[$__rate_interval])), 0.001)",
-          "legendFormat": "mean {{outcome}}",
+          "expr": "histogram_quantile(0.5, sum by (le, outcome) (rate(kafka_produce_latency_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "p50 {{outcome}}",
           "range": true,
           "instant": false,
           "refId": "A"
@@ -742,11 +742,23 @@
             "uid": "observatory-prometheus"
           },
           "editorMode": "code",
-          "expr": "max by (outcome) (kafka_produce_latency_seconds_max)",
-          "legendFormat": "max {{outcome}}",
+          "expr": "histogram_quantile(0.95, sum by (le, outcome) (rate(kafka_produce_latency_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "p95 {{outcome}}",
           "range": true,
           "instant": false,
           "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "observatory-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.99, sum by (le, outcome) (rate(kafka_produce_latency_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "p99 {{outcome}}",
+          "range": true,
+          "instant": false,
+          "refId": "C"
         }
       ]
     },
@@ -871,7 +883,7 @@
     {
       "type": "row",
       "id": 13,
-      "title": "Consume \u2014 cobalt",
+      "title": "Consume — cobalt",
       "collapsed": false,
       "gridPos": {
         "h": 1,
@@ -885,7 +897,7 @@
       "type": "timeseries",
       "id": 14,
       "title": "Consumer lag by partition",
-      "description": "`consume.group.lag`, from an AdminClient comparing committed offsets against listOffsets(LATEST) \u2014 not the client's own records-lag-max, which reads zero during a rebalance and vanishes when the consumer is down. One partition diverging from the rest is a stuck assignment, not a throughput problem.",
+      "description": "`consume.group.lag`, from an AdminClient comparing committed offsets against listOffsets(LATEST) — not the client's own records-lag-max, which reads zero during a rebalance and vanishes when the consumer is down. One partition diverging from the rest is a stuck assignment, not a throughput problem.",
       "datasource": {
         "type": "prometheus",
         "uid": "observatory-prometheus"
@@ -972,7 +984,7 @@
       "type": "timeseries",
       "id": 15,
       "title": "Batch write latency",
-      "description": "`consume.batch.latency` \u2014 the batch INSERT's wall clock. Rising with batches at the cap means the write side is the bottleneck: check Postgres connections, locks, autovacuum on the hot partition and the four GIN indexes.",
+      "description": "`consume.batch.latency` percentiles — the batch INSERT's wall clock. Rising with batches at the cap means the write side is the bottleneck: check Postgres connections, locks, autovacuum on the hot partition and the four GIN indexes. The 5s top bucket is where a batch starts threatening `max.poll.interval.ms` and a rebalance.",
       "datasource": {
         "type": "prometheus",
         "uid": "observatory-prometheus"
@@ -1063,8 +1075,8 @@
             "uid": "observatory-prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (outcome) (rate(consume_batch_latency_seconds_sum[$__rate_interval])) / clamp_min(sum by (outcome) (rate(consume_batch_latency_seconds_count[$__rate_interval])), 0.001)",
-          "legendFormat": "mean {{outcome}}",
+          "expr": "histogram_quantile(0.5, sum by (le, outcome) (rate(consume_batch_latency_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "p50 {{outcome}}",
           "range": true,
           "instant": false,
           "refId": "A"
@@ -1075,11 +1087,23 @@
             "uid": "observatory-prometheus"
           },
           "editorMode": "code",
-          "expr": "max by (outcome) (consume_batch_latency_seconds_max)",
-          "legendFormat": "max {{outcome}}",
+          "expr": "histogram_quantile(0.95, sum by (le, outcome) (rate(consume_batch_latency_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "p95 {{outcome}}",
           "range": true,
           "instant": false,
           "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "observatory-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.99, sum by (le, outcome) (rate(consume_batch_latency_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "p99 {{outcome}}",
+          "range": true,
+          "instant": false,
+          "refId": "C"
         }
       ]
     },
@@ -1087,7 +1111,7 @@
       "type": "timeseries",
       "id": 16,
       "title": "Rows persisted and de-duplicated",
-      "description": "Duplicates are NORMAL for an at-least-once pipeline \u2014 the write deduplicates on the CloudEvents identity \u2014 so this is a rate to watch for spikes, never an error count. A duplicate spike with flat persisted means redelivery.",
+      "description": "Duplicates are NORMAL for an at-least-once pipeline — the write deduplicates on the CloudEvents identity — so this is a rate to watch for spikes, never an error count. A duplicate spike with flat persisted means redelivery.",
       "datasource": {
         "type": "prometheus",
         "uid": "observatory-prometheus"
@@ -1289,7 +1313,7 @@
       "type": "timeseries",
       "id": 18,
       "title": "Batch size",
-      "description": "Records per batch, mean and max against `CONSUMER_BATCH_SIZE` (500). Small batches while lag grows mean the consumer is starved, not saturated \u2014 that distinction is the whole reason this meter exists.",
+      "description": "Records per batch against `CONSUMER_BATCH_SIZE` (500). Small batches while lag grows mean the consumer is starved, not saturated — that distinction is the whole reason this meter exists, and it is a shift in the p50, which a mean hides.",
       "datasource": {
         "type": "prometheus",
         "uid": "observatory-prometheus"
@@ -1364,8 +1388,8 @@
             "uid": "observatory-prometheus"
           },
           "editorMode": "code",
-          "expr": "sum(rate(consume_batch_size_sum[$__rate_interval])) / clamp_min(sum(rate(consume_batch_size_count[$__rate_interval])), 0.001)",
-          "legendFormat": "mean",
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(consume_batch_size_bucket[$__rate_interval])))",
+          "legendFormat": "p50",
           "range": true,
           "instant": false,
           "refId": "A"
@@ -1376,11 +1400,23 @@
             "uid": "observatory-prometheus"
           },
           "editorMode": "code",
-          "expr": "max(consume_batch_size_max)",
-          "legendFormat": "max",
+          "expr": "histogram_quantile(0.95, sum by (le) (rate(consume_batch_size_bucket[$__rate_interval])))",
+          "legendFormat": "p95",
           "range": true,
           "instant": false,
           "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "observatory-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(consume_batch_size_bucket[$__rate_interval])))",
+          "legendFormat": "p99",
+          "range": true,
+          "instant": false,
+          "refId": "C"
         }
       ]
     },
@@ -1388,7 +1424,7 @@
       "type": "timeseries",
       "id": 19,
       "title": "Scheduled maintenance",
-      "description": "`maintenance.job.duration` counts by outcome. With N replicas the healthy steady state is one success and N-1 skipped per tick \u2014 that ratio is the advisory lock working. No run of any outcome means the job thread is dead, and nothing else will say so.",
+      "description": "`maintenance.job.duration` counts by outcome. With N replicas the healthy steady state is one success and N-1 skipped per tick — that ratio is the advisory lock working. No run of any outcome means the job thread is dead, and nothing else will say so. The p99 duration is ADR §12.4's tripwire: when the rollup refresh approaches its own interval, the materialized view has outgrown full refresh and wants incremental merge tables instead.",
       "datasource": {
         "type": "prometheus",
         "uid": "observatory-prometheus"
@@ -1469,6 +1505,36 @@
                 }
               }
             ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "p99 .*"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "custom.axisPlacement",
+                "value": "right"
+              },
+              {
+                "id": "custom.axisLabel",
+                "value": "p99 duration"
+              },
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    8,
+                    4
+                  ]
+                }
+              }
+            ]
           }
         ]
       },
@@ -1511,6 +1577,18 @@
           "range": true,
           "instant": false,
           "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "observatory-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.99, sum by (le, job) (rate(maintenance_job_duration_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "p99 {{job}}",
+          "range": true,
+          "instant": false,
+          "refId": "Z"
         }
       ]
     },
@@ -1530,8 +1608,8 @@
     {
       "type": "timeseries",
       "id": 21,
-      "title": "Search latency \u2014 ferrite",
-      "description": "`search.query.duration` is declared but not emitted yet, so this is `http.server.requests` for the pages that run a search. The read pool sets statement_timeout = 2s server-side: anything slower than that was waiting for a connection, not for a query.",
+      "title": "Search latency — ferrite",
+      "description": "`search.query.duration` percentiles by query shape — which filter families the query used, never the filter values. The read pool sets statement_timeout = 2s server-side: anything slower than that was waiting for a connection, not for a query.",
       "datasource": {
         "type": "prometheus",
         "uid": "observatory-prometheus"
@@ -1606,8 +1684,8 @@
             "uid": "observatory-prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (uri) (rate(http_server_requests_seconds_sum{service=\"ferrite\", uri=~\"/events.*\"}[$__rate_interval])) / clamp_min(sum by (uri) (rate(http_server_requests_seconds_count{service=\"ferrite\", uri=~\"/events.*\"}[$__rate_interval])), 0.001)",
-          "legendFormat": "mean {{uri}}",
+          "expr": "histogram_quantile(0.5, sum by (le, shape) (rate(search_query_duration_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "p50 {{shape}}",
           "range": true,
           "instant": false,
           "refId": "A"
@@ -1618,11 +1696,23 @@
             "uid": "observatory-prometheus"
           },
           "editorMode": "code",
-          "expr": "max by (uri) (http_server_requests_seconds_max{service=\"ferrite\", uri=~\"/events.*\"})",
-          "legendFormat": "max {{uri}}",
+          "expr": "histogram_quantile(0.95, sum by (le, shape) (rate(search_query_duration_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "p95 {{shape}}",
           "range": true,
           "instant": false,
           "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "observatory-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.99, sum by (le, shape) (rate(search_query_duration_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "p99 {{shape}}",
+          "range": true,
+          "instant": false,
+          "refId": "C"
         }
       ]
     },
@@ -1746,14 +1836,311 @@
     },
     {
       "type": "row",
-      "id": 23,
-      "title": "JVM health \u2014 all three services",
+      "id": 30,
+      "title": "Connection pools — cobalt and ferrite",
       "collapsed": false,
       "gridPos": {
         "h": 1,
         "w": 24,
         "x": 0,
         "y": 55
+      },
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "id": 31,
+      "title": "Pool utilisation",
+      "description": "HikariCP's own binding. `active` against `max` is how full the pool is; a flat `active == max` with a non-zero `pending` is saturation, and no amount of index work fixes it.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "observatory-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 56
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "pointSize": 8,
+            "showPoints": "never",
+            "spanNulls": false,
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "mappings": [],
+          "min": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "max .*"
+            },
+            "properties": [
+              {
+                "id": "custom.lineStyle",
+                "value": {
+                  "fill": "dash",
+                  "dash": [
+                    8,
+                    4
+                  ]
+                }
+              },
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "text"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "observatory-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (service, pool) (hikaricp_connections_active)",
+          "legendFormat": "active {{service}}/{{pool}}",
+          "range": true,
+          "instant": false,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "observatory-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (service, pool) (hikaricp_connections_idle)",
+          "legendFormat": "idle {{service}}/{{pool}}",
+          "range": true,
+          "instant": false,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "observatory-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (service, pool) (hikaricp_connections_max)",
+          "legendFormat": "max {{service}}/{{pool}}",
+          "range": true,
+          "instant": false,
+          "refId": "C"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 32,
+      "title": "Waiting for a connection",
+      "description": "`pending` is the count of threads blocked in `getConnection`; `acquire` is how long that wait cost. Any sustained pending count means the queue moved out of the dispatcher you sized and into the pool, where `connection-timeout` is the only thing shedding load. Raise the pool and its dispatcher together — they must stay equal.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "observatory-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 56
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "pointSize": 8,
+            "showPoints": "never",
+            "spanNulls": false,
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "mappings": [],
+          "min": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "mean acquire .*"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "custom.axisPlacement",
+                "value": "right"
+              },
+              {
+                "id": "custom.axisLabel",
+                "value": "acquire wait"
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "timeouts/min .*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "observatory-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (service, pool) (hikaricp_connections_pending)",
+          "legendFormat": "pending {{service}}/{{pool}}",
+          "range": true,
+          "instant": false,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "observatory-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (service, pool) (rate(hikaricp_connections_acquire_seconds_sum[$__rate_interval])) / clamp_min(sum by (service, pool) (rate(hikaricp_connections_acquire_seconds_count[$__rate_interval])), 0.001)",
+          "legendFormat": "mean acquire {{service}}/{{pool}}",
+          "range": true,
+          "instant": false,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "observatory-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (service, pool) (rate(hikaricp_connections_timeout_total[$__rate_interval]) * 60)",
+          "legendFormat": "timeouts/min {{service}}/{{pool}}",
+          "range": true,
+          "instant": false,
+          "refId": "C"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "id": 23,
+      "title": "JVM health — all three services",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 64
       },
       "panels": []
     },
@@ -1770,7 +2157,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 56
+        "y": 65
       },
       "fieldConfig": {
         "defaults": {
@@ -1869,7 +2256,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 56
+        "y": 65
       },
       "fieldConfig": {
         "defaults": {
@@ -1968,7 +2355,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 56
+        "y": 65
       },
       "fieldConfig": {
         "defaults": {
@@ -2067,7 +2454,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 64
+        "y": 73
       },
       "fieldConfig": {
         "defaults": {
@@ -2166,7 +2553,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 64
+        "y": 73
       },
       "fieldConfig": {
         "defaults": {
@@ -2253,7 +2640,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 64
+        "y": 73
       },
       "fieldConfig": {
         "defaults": {

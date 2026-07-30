@@ -21,6 +21,7 @@
 
 package io.kzonix.ferrite.wiring
 
+import com.zaxxer.hikari.metrics.micrometer.MicrometerMetricsTrackerFactory
 import io.kzonix.ferrite.search.SearchExecutionContext
 import io.kzonix.observability.Telemetry
 import io.kzonix.observability.TelemetryConfig
@@ -62,7 +63,11 @@ trait Readiness:
   * `max_connections` for every *other* service too.
   */
 @Singleton
-final class Databases @Inject() (configuration: Configuration, lifecycle: ApplicationLifecycle):
+final class Databases @Inject() (
+  configuration: Configuration,
+  lifecycle: ApplicationLifecycle,
+  telemetry: Telemetry
+):
 
   /** The parsed configuration, or a boot failure naming every field that was wrong.
     *
@@ -78,7 +83,14 @@ final class Databases @Inject() (configuration: Configuration, lifecycle: Applic
         identity
       )
 
-  val database: Database = Database.open(config)
+  /** Both pools, publishing `hikaricp.connections.*` into the process registry.
+    *
+    * ferrite is the service where pool saturation is most likely and least visible: every page it serves is a fan-out
+    * of four queries onto a pool of eight, so a slow query and a queued connection wait look identical from the outside
+    * — `http.server.requests` climbs either way. `hikaricp.connections.pending` and `hikaricp.connections.acquire` are
+    * what tell the two apart, and they are the difference between tuning the pool and tuning an index.
+    */
+  val database: Database = Database.open(config, Some(MicrometerMetricsTrackerFactory(telemetry.registry)))
 
   private val _ = lifecycle.addStopHook(() => Future.successful(database.close()))
 

@@ -158,3 +158,62 @@ final class TelemetrySuite extends munit.FunSuite:
 
   test("the scrape content type is fixed and shared"):
     assertEquals(Telemetry.ContentType, "text/plain; version=0.0.4; charset=utf-8")
+
+  // --- histogram buckets ---------------------------------------------------------------------------------------------
+  //
+  // These assert on the *rendered text*, not on the DistributionStatisticConfig, for the same reason the rest of this
+  // suite does. A timer can be configured with service level objectives and still reach Prometheus as count/sum/max if
+  // the registry declines to publish them; the config would assert green either way, and the panel would be blank.
+
+  test("every timer family in the shared vocabulary publishes _bucket series"):
+    withTelemetry() { telemetry =>
+      Meters.Buckets.timers.keys.foreach: name =>
+        telemetry.registry.timer(name).record(7L, TimeUnit.MILLISECONDS)
+      val exposition = telemetry.scrape()
+      Meters.Buckets.timers.keys.foreach: name =>
+        val prometheus = name.replace('.', '_')
+        assert(
+          exposition.contains(s"${prometheus}_seconds_bucket"),
+          s"$name reached Prometheus without buckets — histogram_quantile cannot be written against it"
+        )
+    }
+
+  test("the batch-size summary publishes _bucket series"):
+    withTelemetry() { telemetry =>
+      telemetry.registry.summary(Meters.ConsumeBatchSize).record(12)
+      assert(telemetry.scrape().contains("consume_batch_size_bucket"))
+    }
+
+  test("timer boundaries are rendered in seconds — a nanosecond mix-up puts every sample in +Inf"):
+    withTelemetry() { telemetry =>
+      // 5ms is the first boundary of the HTTP ladder; a sample below it must be counted by that bucket. If the ladder
+      // were handed to Micrometer in milliseconds the boundary would render as le="0.005" seconds' worth of
+      // nanoseconds, i.e. 5e-12, and this count would be zero.
+      telemetry.registry.timer(Meters.HttpServerRequests).record(1L, TimeUnit.MILLISECONDS)
+      val exposition = telemetry.scrape()
+      val firstBucket = exposition.linesIterator
+        .filter(_.startsWith("http_server_requests_seconds_bucket"))
+        .find(_.contains("""le="0.005""""))
+      assert(firstBucket.isDefined, s"no le=0.005 bucket among:\n$exposition")
+      val counted = firstBucket.get.trim.split(' ').last.toDouble
+      assertEquals(counted, 1.0d, s"the 1ms sample did not land in the 5ms bucket: ${firstBucket.get}")
+    }
+
+  test("a timer with no declared ladder is left alone"):
+    withTelemetry() { telemetry =>
+      telemetry.registry.timer("probe.unladdered").record(1L, TimeUnit.MILLISECONDS)
+      val exposition = telemetry.scrape()
+      assert(exposition.contains("probe_unladdered_seconds_count"), "the timer is missing entirely")
+      assert(
+        !exposition.contains("probe_unladdered_seconds_bucket"),
+        "buckets were applied to a meter nobody chose a range for"
+      )
+    }
+
+  test("bucket count per timeseries is bounded by the declared ladder"):
+    withTelemetry() { telemetry =>
+      telemetry.registry.timer(Meters.HttpServerRequests).record(7L, TimeUnit.MILLISECONDS)
+      val buckets = telemetry.scrape().linesIterator.count(_.startsWith("http_server_requests_seconds_bucket"))
+      // The declared boundaries plus the implicit +Inf, and nothing generated on top of them.
+      assertEquals(buckets, Meters.Buckets.HttpServerRequests.size + 1)
+    }
