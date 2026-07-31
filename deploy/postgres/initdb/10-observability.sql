@@ -1,0 +1,13 @@
+-- Runs once, on an empty PGDATA, against POSTGRES_DB as POSTGRES_USER.
+--
+-- `shared_preload_libraries=pg_stat_statements` (see docker-compose.yml) loads the code; this statement creates
+-- the view over it. Neither half is any use alone, and both halves fail silently in their own way: preloaded but
+-- not created is `relation "pg_stat_statements" does not exist` at the moment somebody needs it; created but not
+-- preloaded is an extension whose every column stays empty.
+--
+-- On a volume that already holds data this file is never executed — Postgres runs docker-entrypoint-initdb.d only
+-- when it initialises the cluster. Apply it by hand there:
+--
+--   docker compose exec postgres psql -U observatory -d observatory \
+--     -c 'CREATE EXTENSION IF NOT EXISTS pg_stat_statements'
+CREATE EXTENSION IF NOT EXISTS pg_stat_statements;

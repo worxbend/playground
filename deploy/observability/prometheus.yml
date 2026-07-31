@@ -4,10 +4,27 @@ global:
   external_labels:
     cluster: homelab
 
+# Globbed, not listed: a new rules file is picked up by a reload rather than by a compose change. The directory is
+# bind-mounted read-only from deploy/observability/rules. Prometheus refuses to start on a rules file it cannot
+# parse, so run `promtool check rules` before deploying one — docs/operations.md §5.4.
+rule_files:
+  - /etc/prometheus/rules/*.yml
+
+# No `alerting.alertmanagers` block. There is no Alertmanager in this stack, so the rules in rule_files evaluate and
+# their state is visible at /alerts, in /api/v1/rules and as the `ALERTS` series — but nothing is delivered. That is
+# a deliberate stopping point, not an oversight: a homelab with no on-call rotation has nowhere to route a page, and
+# an Alertmanager wired to /dev/null is worse than none because it looks configured.
+
 scrape_configs:
   # All three services expose Micrometer's Prometheus exposition at /metrics,
   # with identical JVM meter names — that is the point of the shared
   # observability module, and it is why one dashboard works against all three.
+  #
+  # `honor_labels` is left at its default of false, which matters for one meter: Micrometer's
+  # `maintenance.job.duration` carries a tag named `job`, and `job` is also Prometheus's own target label. With
+  # honor_labels false the exposition's value is preserved under `exported_job` and the target label wins; with it
+  # true, the maintenance job's name would overwrite `job="observatory"` and those series would silently leave the
+  # target's label set. Rules and dashboards therefore say `exported_job="partition-maintenance"`.
   - job_name: observatory
     metrics_path: /metrics
     static_configs:
@@ -17,6 +34,14 @@ scrape_configs:
         labels: { service: cobalt }
       - targets: ["ferrite:9000"]
         labels: { service: ferrite }
+
+  # Postgres internals, from postgres-exporter. Its own job, because the exporter is a separate process with a
+  # separate failure mode: `up{job="postgres"} == 0` is the exporter being unreachable, `pg_up == 0` is the exporter
+  # reaching us and failing to reach the database. Conflating them costs the first ten minutes of an incident.
+  - job_name: postgres
+    static_configs:
+      - targets: ["postgres-exporter:9187"]
+        labels: { service: postgres }
 
   - job_name: prometheus
     static_configs:

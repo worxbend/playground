@@ -8,6 +8,14 @@
 # Every dependency is gated on a healthcheck rather than plain `depends_on`, because
 # Kafka and Postgres both accept TCP connections well before they can serve requests,
 # and a service that starts too early crash-loops instead of waiting.
+#
+# HARDENING (ADR §10.2). Every container here drops all capabilities and sets
+# `no-new-privileges`, and every one whose writes are enumerable runs on a read-only root
+# filesystem with a tmpfs for exactly the paths it does write. Two of them do not, and the
+# reason is on the service: `kafka` and `grafana` both write into their own image at boot,
+# and a hardening flag that turns a working container into a crash loop is worse than no
+# flag at all. Each `read_only:` and each `tmpfs:` line below was arrived at by running the
+# container with it and reading the failure, not by copying a checklist.
 
 name: observatory
 
@@ -16,6 +24,34 @@ x-service-defaults: &service-defaults
   logging:
     driver: json-file
     options: { max-size: "10m", max-file: "3" }
+  # --- hardening, applied to all three application containers -----------------------------
+  # `no-new-privileges` makes the setuid bit inert for this process tree: even if a future
+  # base image ships a setuid binary, exec'ing it cannot raise privilege.
+  security_opt: ["no-new-privileges:true"]
+  # A JVM serving HTTP needs no capability at all. It binds 8080/9000, both above 1024, so
+  # not even NET_BIND_SERVICE.
+  cap_drop: [ALL]
+  # sbt-native-packager already emits `USER daemon` (uid 2) — verify with
+  # `docker image inspect ferrite:latest --format '{{.Config.User}}'`. Pinned here as well
+  # because that is a `build.sbt` setting and this is the file an operator reads: if the
+  # packaging default ever changes, these containers still do not start as root.
+  user: "2:2"
+  # /opt/docker is copied into the image `u=rX,g=rX` and Play's RUNNING_PID is already
+  # redirected to /dev/null, so nothing in the application tree is written at runtime.
+  read_only: true
+  # The one path the JVM genuinely needs. It holds hsperfdata (jcmd/jstat attach) and, far
+  # more importantly, zstd-jni unpacks its native library into java.io.tmpdir and dlopen()s
+  # it from there.
+  #
+  # `exec` is therefore MANDATORY and must be written out: Docker mounts a tmpfs
+  # `noexec` by default and keeps doing so when you supply your own option list, so
+  # `rw,nosuid,size=64m` silently produces a noexec /tmp. What that costs is not a boot
+  # failure — the services start, pass their healthchecks and look healthy — it is every
+  # produce failing at runtime with
+  #   UnsatisfiedLinkError: /tmp/libzstd-jni-….so: … Operation not permitted
+  # surfaced to the client as a 503. `nosuid` and the 64 MiB cap are free.
+  tmpfs:
+    - /tmp:rw,exec,nosuid,size=64m
   environment: &otel-env
     OTEL_EXPORTER_OTLP_ENDPOINT: ${OTEL_EXPORTER_OTLP_ENDPOINT:-http://otel-collector:4317}
     OTEL_EXPORTER_OTLP_PROTOCOL: grpc
@@ -59,14 +95,72 @@ services:
       - random_page_cost=1.1
       - -c
       - max_connections=100
+      # --- observability ------------------------------------------------------
+      # pg_stat_statements is the only way to answer "which statement is slow"
+      # after the fact; without it the first slow-query investigation starts by
+      # restarting the database, which destroys the evidence. It is a shared
+      # library, so it must be preloaded at startup AND created as an extension
+      # in the database (deploy/postgres/initdb/10-observability.sql) — either
+      # half alone gives you nothing.
+      - -c
+      - shared_preload_libraries=pg_stat_statements
+      # 5000 normalised statements. The workload is a small, fixed set of
+      # prepared statements from Magnum plus the maintenance DDL, so this is
+      # ample; the counter to watch is pg_stat_statements_info.dealloc, which is
+      # non-zero exactly when the table is too small and entries are being
+      # evicted (and their timings lost).
+      - -c
+      - pg_stat_statements.max=5000
+      # `top` records the statement the client sent, not the statements inside
+      # PL/pgSQL bodies. This schema has one function (events.severity_rank) and
+      # tracking its internals would only dilute the table.
+      - -c
+      - pg_stat_statements.track=top
+      # Without track_io_timing, pg_stat_statements and EXPLAIN (ANALYZE, BUFFERS)
+      # report block counts but no time, so "the GIN index is slow" and "the page
+      # cache is cold" look identical. The cost is two clock reads per block I/O.
+      # Confirm it is affordable on a new host — `docker compose exec postgres
+      # pg_test_timing -d 2` measured 23.12 ns per loop on the machine this was
+      # written on; a host whose clocksource has fallen back to something slow
+      # reports hundreds of ns and is the one case for turning this off.
+      - -c
+      - track_io_timing=on
+      # 250 ms matches the search SLO in docs/operations.md §5.1 — a statement
+      # slower than that is, by definition, one a user waited for. Low enough to
+      # catch the interesting queries, high enough that the steady-state insert
+      # path logs nothing at all.
+      - -c
+      - log_min_duration_statement=250ms
     volumes:
       - postgres-data:/var/lib/postgresql/18/docker
+      # Runs only when PGDATA is empty. On an existing volume the extension has
+      # to be created by hand — see docs/operations.md §5.3.
+      - ./postgres/initdb:/docker-entrypoint-initdb.d:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-observatory} -d ${POSTGRES_DB:-observatory}"]
       interval: 10s
       timeout: 5s
       retries: 10
       start_period: 30s
+    # Hardening. The entrypoint starts as root to fix ownership of PGDATA and then execs
+    # into postgres, and these three capabilities are exactly what those two steps need —
+    # CHOWN for the data directory, SETGID/SETUID to drop to the postgres user. With
+    # `cap_drop: [ALL]` alone the container prints
+    #   chown: /var/lib/postgresql/18/docker: Operation not permitted
+    # and exits before initdb. Three, not the usual five: DAC_OVERRIDE and FOWNER were each
+    # removed and the cluster still initialises and starts, so they are not in the list.
+    # `ps` inside the running container shows every backend owned by `postgres`.
+    #
+    # The root filesystem is read-only: everything Postgres writes is either the data volume
+    # or one of the two tmpfs mounts — the unix socket directory, and the temp-file area a
+    # sort spilling past work_mem uses.
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    cap_add: [CHOWN, SETGID, SETUID]
+    read_only: true
+    tmpfs:
+      - /var/run/postgresql:rw,nosuid,nodev,size=16m
+      - /tmp:rw,nosuid,nodev,size=256m
     deploy:
       resources:
         limits: { memory: 2G }
@@ -103,6 +197,16 @@ services:
       timeout: 10s
       retries: 12
       start_period: 40s
+    # Hardening, minus the read-only root filesystem. The image's entrypoint renders
+    # server.properties into /opt/kafka/config at every boot and refuses to start without
+    # it — with `read_only: true` the container prints `/opt/kafka/config/ file not writable`
+    # and exits before the JVM is launched. The alternatives are both worse than the gap:
+    # a tmpfs over that directory hides the image's own config files, and a named volume
+    # over it pins the configuration of whichever image first created the volume, so a
+    # broker upgrade would silently keep the old one. The image already runs as
+    # uid 1000 (`appuser`) and the broker needs no capability.
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
     deploy:
       resources:
         limits: { memory: 1500M }
@@ -123,6 +227,14 @@ services:
         $$K --bootstrap-server kafka:9092 --create --if-not-exists \
             --topic events.cloudevents.v1.dlq --partitions 3 --replication-factor 1
         echo "topics ready"
+    # Unlike the broker, this container replaces the entrypoint, so it never renders a
+    # server.properties and the root filesystem can stay read-only. `kafka-topics.sh` is a
+    # short-lived JVM: /tmp is for hsperfdata, and nothing else is written.
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    read_only: true
+    tmpfs:
+      - /tmp:rw,nosuid,size=32m
 
   wolfram:
     <<: *service-defaults
@@ -205,12 +317,62 @@ services:
       resources:
         limits: { memory: 1G }
 
+  # Postgres internals as Prometheus metrics: connection counts and states, transaction and
+  # tuple rates, replication lag, database size, locks, and — the reason it is here rather
+  # than a nice-to-have — `pg_stat_database_blks_*`, which together with track_io_timing
+  # turns "search is slow" into "the buffer cache is missing".
+  #
+  # Gated on the database's healthcheck like everything else: the exporter's own first
+  # scrape happens seconds after start, and against a database still running recovery it
+  # publishes pg_up=0, which would fire PostgresDown on every boot of the stack.
+  postgres-exporter:
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.19.0
+    restart: unless-stopped
+    depends_on:
+      postgres: { condition: service_healthy }
+    environment:
+      # Split URI/user/pass rather than one DATA_SOURCE_NAME, so the password is not part
+      # of a URL that lands in `docker inspect`, logs and error messages verbatim.
+      DATA_SOURCE_URI: postgres:5432/${POSTGRES_DB:-observatory}?sslmode=disable
+      DATA_SOURCE_USER: ${POSTGRES_USER:-observatory}
+      DATA_SOURCE_PASS: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
+      # Drops 288 of the exporter's 957 series — one gauge per GUC, `pg_settings_*`. They
+      # are not free and no panel, rule or runbook here reads one: the running configuration
+      # of this database is the `command:` list above, and `pg_settings` answers the same
+      # question for anyone who asks it. What is kept, and what justifies the exporter at
+      # all, is the per-relation `pg_stat_user_tables_*` family — autovacuum and analyze
+      # counts per monthly partition, which is step 3 of the consumer-lag runbook. That set
+      # grows by roughly twenty series per partition created, so it is the number to watch
+      # if this database ever holds years of months.
+      PG_EXPORTER_DISABLE_SETTINGS_METRICS: "true"
+    volumes:
+      # Silences a WARN on every boot; the file itself is empty on purpose — read it.
+      - ./postgres/postgres_exporter.yml:/postgres_exporter.yml:ro
+    # Static binary, no writes, already `USER nobody` in the image.
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    read_only: true
+    healthcheck:
+      test: ["CMD", "/bin/postgres_exporter", "--version"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    deploy:
+      resources:
+        limits: { memory: 128M }
+
   otel-collector:
     image: otel/opentelemetry-collector-contrib:0.157.0
     restart: unless-stopped
     command: ["--config=/etc/otel/config.yaml"]
     volumes:
       - ./observability/otel-collector.yaml:/etc/otel/config.yaml:ro
+    # The collector writes nothing: the config is bind-mounted read-only and the only
+    # exporter is `debug`, which goes to stdout.
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    read_only: true
     deploy:
       resources:
         limits: { memory: 512M }
@@ -223,8 +385,17 @@ services:
       - --storage.tsdb.retention.time=30d
     volumes:
       - ./observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      # Alerting rules, mounted as a directory so adding a file needs no compose change:
+      # prometheus.yml globs it. Validate with `promtool check rules` before committing —
+      # docs/operations.md §5.4.
+      - ./observability/rules:/etc/prometheus/rules:ro
       - prometheus-data:/prometheus
     ports: ["9090:9090"]
+    # Everything Prometheus writes is under /prometheus, which is the volume. The image
+    # already runs as uid 65534 (`nobody`).
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    read_only: true
     deploy:
       resources:
         limits: { memory: 1G }
@@ -244,6 +415,16 @@ services:
       - ./observability/grafana-dashboards.yml:/etc/grafana/provisioning/dashboards/dashboards.yml:ro
       - ./observability/dashboards:/var/lib/grafana/dashboards:ro
     ports: ["3000:3000"]
+    # Hardening, minus the read-only root filesystem — the second of the two exceptions.
+    # Grafana boots and serves with `read_only: true`, but its background plugin installer
+    # unpacks the bundled plugins *inside the image* and logs
+    # `Failed to install plugin pluginId=elasticsearch … unlinkat
+    # /usr/share/grafana/data/plugins-bundled/elasticsearch: read-only file system`
+    # on every boot. A tmpfs over that directory hides the bundled plugins it is trying to
+    # read, so the choice is an error on every boot or a working root filesystem. The image
+    # already runs as uid 472 (`grafana`) and needs no capability.
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
     deploy:
       resources:
         limits: { memory: 512M }

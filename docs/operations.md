@@ -18,8 +18,9 @@ One `deploy/docker-compose.yml` brings up the whole stack on a single host.
 | `wolfram` | `wolfram:latest` | `8081 -> 8080` | CloudEvents ingestion API (Tapir on Vert.x). Owns no state. |
 | `cobalt` | `cobalt:latest` | `8082 -> 8080` | Kafka consumer, Postgres writer. **Runs the Flyway migrations.** |
 | `ferrite` | `ferrite:latest` | `9000 -> 9000` | Play 3 web UI and search. Reads Postgres. Never sees Kafka. |
+| `postgres-exporter` | `quay.io/prometheuscommunity/postgres-exporter:v0.19.0` | — | Postgres internals as `pg_*` metrics (§5.3). Gated on the database's healthcheck. |
 | `otel-collector` | `otel/opentelemetry-collector-contrib:0.157.0` | — | OTLP/gRPC on `:4317`, OTLP/HTTP on `:4318`. Traces only. |
-| `prometheus` | `prom/prometheus:v3.13.1` | `9090` | Scrapes `/metrics` off all three services every 15 s, 30 d retention. |
+| `prometheus` | `prom/prometheus:v3.13.1` | `9090` | Scrapes `/metrics` off all three services every 15 s, 30 d retention. Evaluates the alerting rules (§5.4). |
 | `grafana` | `grafana/grafana:13.1.1` | `3000` | Prometheus provisioned as the default datasource, plus the **Event observatory** dashboard (§5.2). |
 
 Topics (`kafka-init`, and `com.worxbend.kernel.event.Topics`):
@@ -78,7 +79,9 @@ curl -fsS -X POST localhost:8081/events \
 # 202 Accepted, then the event appears at http://localhost:9000/events within a second
 ```
 
-Prometheus targets: <http://localhost:9090/targets> — all three `observatory` targets must be `UP`.
+Prometheus targets: <http://localhost:9090/targets> — all five targets must be `UP`: the three `observatory`
+services, `postgres` (the exporter, §5.3) and `prometheus` itself. Alerting rules:
+`curl -s localhost:9090/api/v1/rules` must report four groups and thirteen rules, every one `"health":"ok"` (§5.4).
 
 JVM flags are baked into each image's `conf/application.ini` by `containerJvmOptions` in `build.sbt`: 70 % of the
 container memory limit as heap (the JVM's container default of 25 % left three quarters of the budget unusable) and
@@ -100,6 +103,71 @@ cd deploy && docker compose up -d cobalt wolfram
 producer, admin client, pools and telemetry. Give containers at least `pekko.coordinated-shutdown` +
 `CONSUMER_DRAIN_TIMEOUT` (40 s + 30 s defaults) before `docker compose` sends `SIGKILL` if you raise the batch size.
 
+### 2.1 Container hardening
+
+Every container in the stack drops all Linux capabilities and sets `no-new-privileges`, and every one whose writes
+could be enumerated runs on a read-only root filesystem. None of it is theoretical: each flag was applied, the
+container was started, and the failure — where there was one — was read and acted on rather than worked around.
+
+| Container | Runs as | Root FS | Capabilities |
+| --- | --- | --- | --- |
+| `wolfram`, `cobalt`, `ferrite` | `2:2` (`daemon`) | read-only, `tmpfs /tmp` | none |
+| `postgres` | `postgres` (entrypoint starts as root, then drops) | read-only, `tmpfs /var/run/postgresql` + `/tmp` | `CHOWN`, `SETGID`, `SETUID` |
+| `kafka` | `appuser` (1000) | **writable** — see below | none |
+| `kafka-init` | `appuser` (1000) | read-only, `tmpfs /tmp` | none |
+| `prometheus` | `nobody` | read-only (`/prometheus` is the volume) | none |
+| `postgres-exporter` | `nobody` | read-only | none |
+| `otel-collector` | `10001` | read-only | none |
+| `grafana` | `472` | **writable** — see below | none |
+
+Four things about this are worth knowing before changing any of it.
+
+**`/tmp` must be mounted `exec`, and it must be written out.** Docker mounts a `tmpfs` `noexec` by default and goes
+on doing so when you supply your own option list, so `- /tmp:rw,nosuid,size=64m` silently produces a `noexec` `/tmp`.
+zstd-jni — Kafka's compression codec, which the producer loads at startup — unpacks its native library into
+`java.io.tmpdir` and `dlopen()`s it from there. The result is not a boot failure: all three services start, pass
+their healthchecks and look perfectly healthy, and every single produce fails with
+
+```
+UnsatisfiedLinkError: /tmp/libzstd-jni-1.5.6-….so: … Operation not permitted
+```
+
+which the client sees as a `503` with `"reason":"unpersistable"`. This was found by breaking it. Do not remove the
+`exec`.
+
+**The application images already run as non-root.** `sbt-native-packager` emits `USER daemon` (uid 2) — confirm with
+`docker image inspect ferrite:latest --format '{{.Config.User}}'`. Compose pins `user: "2:2"` on top of that anyway,
+because that is a `build.sbt` setting and this is the file an operator reads.
+
+**Postgres needs three capabilities, not five.** The entrypoint chowns `PGDATA` as root and then execs into
+`postgres`. With `cap_drop: [ALL]` alone the container prints `chown: /var/lib/postgresql/18/docker: Operation not
+permitted` and exits before `initdb`. `DAC_OVERRIDE` and `FOWNER` were each removed and the cluster still
+initialises, so they are not in the list; `ps` inside the running container shows every backend owned by `postgres`.
+
+**Two containers keep a writable root filesystem, and the reason is on the service in the compose file.** `kafka`
+renders `server.properties` into `/opt/kafka/config` at every boot and dies with `/opt/kafka/config/ file not
+writable`; a `tmpfs` there hides the image's own config files and a named volume there pins the configuration of
+whichever image first created the volume, so a broker upgrade would silently keep the old one. `grafana` boots and
+serves read-only, but its background plugin installer writes inside the image and logs `Failed to install plugin
+pluginId=elasticsearch … read-only file system` on every boot. In both cases the hardening flag buys less than the
+crash loop or the permanent error costs. A hardening change that breaks a container is worse than no hardening.
+
+One thing that is not a container flag but belongs beside them: ferrite's `Content-Security-Policy` now comes from
+Play's `CSPFilter`, configured in `applications/ferrite/src/main/resources/application.conf`. It used to come from
+`play.filters.headers.contentSecurityPolicy`, deprecated since Play 2.7, which logged a WARN on every boot. The
+policy is unchanged; the header's *directive order* is not stable, because Play builds it from a config object.
+Check it on a running container rather than by reading the file:
+
+```bash
+curl -sS -D - -o /dev/null localhost:9000/events | grep -i content-security-policy
+# default-src 'self'; script-src 'self' 'unsafe-eval'; style-src 'self'; img-src 'self' data:;
+# base-uri 'self'; form-action 'self'; frame-ancestors 'none'      — in some order
+```
+
+`object-src` is explicitly set to `null` in that file. Play's own CSP defaults are Google's strict-CSP starter kit
+and they *merge* with the application's, key by key: leave it out and the deployed policy silently gains a directive
+this repository never chose.
+
 ---
 
 ## 3. Environment variables
@@ -110,7 +178,7 @@ Mandatory — compose refuses to start without them (`${VAR:?message}`):
 
 | Variable | Used by | Notes |
 | --- | --- | --- |
-| `POSTGRES_PASSWORD` | postgres, cobalt, ferrite | `openssl rand -base64 32`. |
+| `POSTGRES_PASSWORD` | postgres, cobalt, ferrite, postgres-exporter | `openssl rand -base64 32`. |
 | `APPLICATION_SECRET` | ferrite | Play refuses to start in prod mode without it. `openssl rand -base64 48`. |
 | `GRAFANA_ADMIN_PASSWORD` | grafana | Sign-up is disabled, so this is the only way in. |
 
@@ -233,6 +301,18 @@ translates them to Prometheus's underscores at scrape time, and counters gain `_
 Every meter carries the common tags `service` and `version`. `instance` comes from the Prometheus scrape target,
 not from the exposition.
 
+**Two tags arrive renamed, and queries that ignore this return nothing.** Prometheus reserves `job` and — because
+`prometheus.yml` sets one per target — `service` for the scrape target's own labels, and `honor_labels` is left
+`false`. Where the exposition carries a tag of the same name it is preserved under an `exported_` prefix instead:
+
+| Micrometer tag | Prometheus label | Why it matters |
+| --- | --- | --- |
+| `job` on `maintenance.job.duration` | **`exported_job`** | `job` is `observatory` on every series. `{job="partition-maintenance"}` matches nothing, and `sum by (job)` collapses both maintenance jobs into one line. |
+| `service` (common tag) | **`exported_service`** | Duplicate of the target's `service`, with the same value. Kept rather than dropped: if it ever *disagrees*, `OTEL_SERVICE_NAME` has been overridden and traces and metrics have stopped agreeing. |
+
+`honor_labels: true` would fix the spelling and break the target: the maintenance job's name would overwrite
+`job="observatory"` and those series would leave the scrape target's label set entirely.
+
 ### The ones that matter
 
 | Metric | Emitted by | Read it as |
@@ -316,9 +396,8 @@ min(maintenance_partitions_headroom)            # alert below 2
 sum(partition_default_rows)                     # alert above 0
 ```
 
-Suggested alerts: `consume_group_lag` above a threshold for 10 minutes; any `consume_records_poison_total`
-increase over 15 minutes; `kafka_produce_latency_seconds_count{outcome="failure"} > 0`; readiness probe failing
-on any service for 5 minutes; `up{job="observatory"} == 0`; and — see §7 — partition headroom.
+All but one of those conditions are now encoded as Prometheus rules and evaluated by the running stack — §5.4 has
+the list, and says which one is not and why.
 
 ### 5.2 The provisioned dashboard
 
@@ -351,6 +430,126 @@ Two things about it that are load-bearing:
 
 Provisioned dashboards are read-only in the UI (`allowUiUpdates: false`), deliberately: an edit saved in the
 browser is reverted by the next provisioning sweep and the person who made it gets no warning. Edit the JSON.
+
+### 5.3 Postgres internals
+
+Two independent things, both needed before the first slow-query investigation rather than during it.
+
+**`pg_stat_statements`** is enabled in `deploy/docker-compose.yml`. It has two halves and neither is any use alone:
+`shared_preload_libraries=pg_stat_statements` on the command line loads the code, and
+`deploy/postgres/initdb/10-observability.sql` creates the extension. Preloaded but not created is
+`relation "pg_stat_statements" does not exist` at the moment somebody needs it; created but not preloaded is an
+extension whose every column stays empty. **The init script runs only when Postgres initialises an empty `PGDATA`**,
+so on a volume that already holds data:
+
+```bash
+docker compose exec postgres psql -U observatory -d observatory \
+  -c 'CREATE EXTENSION IF NOT EXISTS pg_stat_statements'
+```
+
+Alongside it: `track_io_timing=on`, without which `pg_stat_statements` and `EXPLAIN (ANALYZE, BUFFERS)` report block
+counts but no time, and "the GIN index is slow" is indistinguishable from "the buffer cache is cold"; and
+`log_min_duration_statement=250ms`, which is the search SLO of §5.1 — a statement slower than that is by definition
+one a user waited for. `pg_stat_statements.max` is 5000 normalised statements; the counter that says it is too small
+is `pg_stat_statements_info.dealloc`, which is non-zero exactly when entries (and their timings) are being evicted.
+
+```sql
+-- the ten statements this database has spent the most total time in
+SELECT calls, round(total_exec_time::numeric, 1) AS ms, round(mean_exec_time::numeric, 2) AS mean_ms,
+       shared_blks_read, round(shared_blk_read_time::numeric, 1) AS read_ms, left(query, 90) AS query
+FROM pg_stat_statements ORDER BY total_exec_time DESC LIMIT 10;
+
+SELECT pg_stat_statements_reset();   -- before a reproduction, so the numbers are about the reproduction
+```
+
+**`postgres-exporter`** publishes the server's own statistics to Prometheus as its own scrape job. It has its own
+job name for a reason worth remembering at 3 a.m.: `up{job="postgres"} == 0` is *the exporter* being unreachable,
+`pg_up == 0` is the exporter reaching Prometheus and failing to reach the database. Conflating the two costs the
+first ten minutes of an incident, and both are alerted separately (§5.4).
+
+The useful families are `pg_stat_database_*` (commits, rollbacks, `blks_hit`/`blks_read`, deadlocks, conflicts),
+`pg_locks_count`, `pg_database_size_bytes`, `pg_stat_activity_*` (connection count and longest transaction, by state)
+and — the one that justifies the container — `pg_stat_user_tables_*`, which reports autovacuum and analyze counts
+**per monthly partition**. That is step 3 of §6.2 without an `exec` into `psql`.
+
+Two costs, stated because the exporter is otherwise easy to leave running and forget:
+
+- `PG_EXPORTER_DISABLE_SETTINGS_METRICS=true` is set, dropping 288 of the exporter's 957 series. They are one gauge
+  per GUC and no panel, rule or runbook here reads one; the running configuration is the `command:` list in the
+  compose file, and `SHOW`/`pg_settings` answers the same question for anyone who asks it.
+- What remains, ~670 series, grows by roughly twenty per monthly partition created. On a database that keeps years
+  of months that is the number to watch, and `--exclude-databases` / the collector flags are the levers.
+
+The exporter reads the same `POSTGRES_PASSWORD` as everything else, passed as `DATA_SOURCE_USER`/`DATA_SOURCE_PASS`
+rather than inside a `DATA_SOURCE_NAME` URL, so the password is not part of a string that lands verbatim in
+`docker inspect` and error messages. `deploy/postgres/postgres_exporter.yml` is empty on purpose: the exporter looks
+for that file whether or not it is used and logs a WARN on every boot when it is missing.
+
+### 5.4 Alerting rules
+
+`deploy/observability/rules/observatory.rules.yml` — thirteen rules in four groups, globbed into Prometheus by
+`rule_files: [/etc/prometheus/rules/*.yml]`, so adding a file needs a reload and not a compose change.
+
+Every rule encodes a condition this document already states in prose, every threshold is either quoted from here or
+derived from a configured interval with the derivation written out beside it, and every rule carries an
+`annotations.runbook` pointing at the section that says what to do. That last part is the point: an alert whose
+recipient has to work out what it means is an alert that gets silenced.
+
+| Group | Alert | Fires when | Runbook |
+| --- | --- | --- | --- |
+| availability | `ObservatoryTargetDown` | `up{job="observatory"} == 0` for 5 m | §6.1 |
+| availability | `PostgresDown` | `pg_up == 0` for 5 m | §6.2 |
+| storage | `PartitionHeadroomLow` | `min(maintenance_partitions_headroom) < 2` for 15 m | §7.3 |
+| storage | `PartitionHeadroomExhausted` | the same gauge `< 1` for 5 m | §7.3 |
+| storage | `DefaultPartitionNotEmpty` | `sum(partition_default_rows) > 0` for 5 m | §7.3 |
+| storage | `PartitionCreationBlocked` | `max(maintenance_partitions_blocked) > 0` for 15 m | §7.3 |
+| maintenance | `PartitionMaintenanceNotRunning` | no run in 24 h — four missed 6-hour intervals | §7.3 |
+| maintenance | `RollupRefreshNotRunning` | no run in 1 h — twelve missed 5-minute intervals | §7.3 |
+| maintenance | `MaintenanceJobFailing` | `outcome="failure"` rate non-zero for 30 m | §7.3 |
+| maintenance | `RollupRefreshApproachingInterval` | p99 duration over 150 s, half its interval | §7.3 |
+| pipeline | `DeadLetterRateSustained` | `rate(consume_records_poison_total[15m]) > 0` for 15 m | §6.3 |
+| pipeline | `ConsumerLagGrowing` | `deriv(sum(consume_group_lag)[15m:]) > 0` for 10 m | §6.2 |
+| pipeline | `IngestProduceFailing` | produce `outcome="failure"` rate non-zero for 5 m | §6.1 |
+
+Three decisions in there are worth reading before editing the file.
+
+**Nothing is delivered.** There is no Alertmanager in this stack, so rules evaluate and their state is visible at
+`/alerts`, in `/api/v1/rules` and as the synthetic `ALERTS` series that Grafana can graph — but nobody is paged.
+That is a stopping point, not an oversight: a homelab with no on-call rotation has nowhere to route a page, and an
+Alertmanager wired to nothing looks configured. Add `alerting.alertmanagers` to `prometheus.yml` when there is
+somebody to wake.
+
+**The two "job has stopped" rules carry an uptime guard**, `and on (instance) (process_uptime_seconds > 86400)`.
+Without it they fire on every fresh deployment: with exactly one run recorded at boot, `increase(…[24h])` is
+legitimately `0` until the second run six hours later, and a rule that cries wolf every time the stack starts is a
+rule somebody deletes. They also read `exported_job`, not `job` — see the label table at the head of §5.
+
+**Two of the conditions §5 suggests are deliberately absent.** *Readiness probe failing for 5 minutes* is not
+encoded because nothing in this stack probes `/health/ready`: Prometheus scrapes `/metrics`, and Docker's healthcheck
+result is not a metric. Encoding it needs a blackbox exporter, which is a container and a decision, not a rule.
+*Ingestion has stopped* is not encoded because a homelab with no devices reporting is legitimately flat, and an
+alert that fires whenever nothing happens is an alert that teaches people to ignore it.
+
+Validate any change before deploying it — Prometheus refuses to start on a rules file it cannot parse, and
+`promtool` is a PromQL type-checker as well as a YAML parser, so it catches a misspelled function or a bad label
+matcher:
+
+```bash
+# note --entrypoint: the image's own entrypoint is `prometheus`, which answers `unexpected check`
+docker run --rm --entrypoint promtool -v "$PWD/deploy/observability/rules:/rules:ro" \
+  prom/prometheus:v3.13.1 check rules /rules/observatory.rules.yml
+# → Checking /rules/observatory.rules.yml
+#     SUCCESS: 13 rules found
+
+# and the scrape config with them. The second mount is not optional: promtool resolves `rule_files`
+# against the container's filesystem, so without it `check config` reports success having checked no rules.
+docker run --rm --entrypoint promtool -v "$PWD/deploy/observability:/obs:ro" \
+  -v "$PWD/deploy/observability/rules:/etc/prometheus/rules:ro" \
+  prom/prometheus:v3.13.1 check config --lint-fatal /obs/prometheus.yml
+```
+
+Both commands run in CI on every push, in the `deploy-config` job of `.github/workflows/scala.yml`, alongside
+`docker compose config -q`.
 
 ---
 
@@ -535,8 +734,10 @@ past `MAINTENANCE_RETAIN_MONTHS` when — and only when — that is configured. 
 | `MAINTENANCE_DETACH_LOCK_TIMEOUT` | `5 seconds` | Bound on waiting for `ACCESS EXCLUSIVE` during a detach. Waiting is the dangerous part: every ingest insert queues behind the waiter, so the job gives up and retries next pass. |
 
 Watch `maintenance_partitions_headroom` (alert below **2**) and
-`maintenance_job_duration_seconds_count{job="partition-maintenance"}` (alert on *no* run, which is the only trace
-a dead job thread leaves). Doing it by hand is still the fallback if the job is disabled — the autovacuum settings
+`maintenance_job_duration_seconds_count{exported_job="partition-maintenance"}` (alert on *no* run, which is the only
+trace a dead job thread leaves — and note `exported_job`, not `job`; §5 explains why). Both are encoded, as
+`PartitionHeadroomLow` and `PartitionMaintenanceNotRunning` (§5.4). Doing it by hand is still the fallback if the
+job is disabled — the autovacuum settings
 are *not* inherited, and the newest partition is the only one being written to:
 
 ```sql
@@ -560,7 +761,8 @@ the empty-check is the cheap moment to act. cobalt emits `partition_default_rows
 `maintenance_partitions_blocked` counts the months whose partition it *could not* create for this reason — a
 non-zero value there is a request for a human, and the job has already logged the exact statements to run, with
 the actual bounds, for the actual table. Moving those rows is an exclusive-lock operation no unattended job
-should take on an operator's behalf.
+should take on an operator's behalf. Both are encoded: `DefaultPartitionNotEmpty` and `PartitionCreationBlocked`
+(§5.4).
 
 Kafka retention is `KAFKA_LOG_RETENTION_HOURS=168` (7 days) for both topics: the bus is a buffer, not an archive.
 Prometheus keeps 30 days (`--storage.tsdb.retention.time=30d`).

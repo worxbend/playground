@@ -1,0 +1,8 @@
+# Deliberately empty.
+#
+# postgres_exporter looks for this file at startup whether or not it is used, and logs
+# `Error loading config … open postgres_exporter.yml: no such file or directory` at WARN when it is missing. The
+# file only carries `auth_modules`, which is for multi-target scraping (`/probe?target=…`) — this deployment has one
+# database and passes it in DATA_SOURCE_URI. So the choice is an empty file or a WARN on every boot, and a warning
+# nobody can act on is one everybody learns to scroll past.
+auth_modules: {}
