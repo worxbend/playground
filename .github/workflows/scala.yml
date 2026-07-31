@@ -11,6 +11,10 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # The gate. Nothing here needs anything but a JDK, which is what keeps it fast and what
+  # keeps `sbt verify` runnable on a laptop, on an air-gapped box and in this job with the
+  # same result. Every other job below needs something extra — Docker, or a 112 MB binary
+  # that is not on Maven — and that is exactly why they are separate jobs.
   verify:
     runs-on: ubuntu-latest
     steps:
@@ -25,10 +29,115 @@ jobs:
 
       - uses: sbt/setup-sbt@v1
 
-      # `verify` is fmtCheck + headerCheck + test, so formatting drift or a
+      # `verify` is fmtCheck + headerCheck + Test/testFull, so formatting drift or a
       # missing licence header fails here rather than in review.
       - name: Verify
         run: sbt -batch verify
+
+  # The integration tier. It provisions its own containers (Postgres 18.4-alpine,
+  # apache/kafka:4.3.1) through Testcontainers, so all it needs from the runner is a Docker
+  # daemon — which GitHub's ubuntu images have, unconfigured and ready.
+  #
+  # Separate from `verify` and not `needs:`-chained to it: these suites test different
+  # things (wiring, not logic) and a formatting failure should not hide a broken migration.
+  # The 30-minute timeout is a guard against the one failure mode that is not a test
+  # failure — a container that never becomes healthy makes Testcontainers wait, not fail.
+  integration:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 25
+          cache: sbt
+
+      - uses: sbt/setup-sbt@v1
+
+      - name: Docker is available
+        run: docker version
+
+      # Pre-pulled so the first suite's container start is not also an image download:
+      # Testcontainers' default startup timeout is measured from the start of the pull, and
+      # a cold runner has been known to spend most of it there.
+      - name: Pre-pull test images
+        run: |
+          docker pull postgres:18.4-alpine
+          docker pull apache/kafka:4.3.1
+
+      # `verifyIt` is `IT/testFull` across every module. `testFull`, not `test`: sbt 2
+      # inverted sbt 1's naming and `IT/test` runs the *incremental* task, which on a clean
+      # CI checkout happens to run everything and on a warm cache runs nothing at all.
+      - name: Integration tests
+        run: sbt -batch verifyIt
+
+  # ferrite's stylesheet is committed output — src/main/resources/public/css/app.css is what
+  # the Tailwind CLI produced from the templates — and this is the only thing in the repo
+  # that catches it going stale. A template that gains a utility class in a change where
+  # nobody ran `sbt ferrite/tailwind` ships a page that renders without it, and no test
+  # fails, because the page is still valid HTML served with a still-valid stylesheet.
+  #
+  # It is its own job because the CLI is a 112 MB binary published on GitHub releases and
+  # not on Maven: `verify` must not acquire it, and `Tailwind.resolve` deliberately never
+  # downloads one. Note that a MISSING binary makes `tailwindCheck` log a warning and
+  # succeed — that is right for a developer and useless for CI, so the download is verified
+  # before sbt runs and the log is checked after. Without both, this job is decorative.
+  stylesheet:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 25
+          cache: sbt
+
+      - uses: sbt/setup-sbt@v1
+
+      # Read out of project/Tailwind.scala rather than pinned here, because two pins drift
+      # and the one that loses is this one — silently, by checking the stylesheet with the
+      # wrong compiler. The banner in the committed CSS names the version that produced it.
+      - name: Resolve the pinned Tailwind CLI version
+        id: tailwind
+        run: |
+          version="$(sed -n 's/.*val Version: String = "\([0-9.]*\)".*/\1/p' project/Tailwind.scala)"
+          test -n "$version" || { echo "::error::could not read Tailwind.Version from project/Tailwind.scala"; exit 1; }
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Install the Tailwind CLI
+        env:
+          VERSION: ${{ steps.tailwind.outputs.version }}
+        run: |
+          set -euo pipefail
+          url="https://github.com/tailwindlabs/tailwindcss/releases/download/v${VERSION}/tailwindcss-linux-x64"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/tailwindcss" "$url"
+          chmod +x "$RUNNER_TEMP/tailwindcss"
+          # The guard. `Tailwind.resolve` reports absence as an explanation and leaves the
+          # stylesheet alone, so a failed download would otherwise turn this whole job into
+          # a green tick that checked nothing.
+          test -x "$RUNNER_TEMP/tailwindcss"
+          "$RUNNER_TEMP/tailwindcss" --help >/dev/null
+
+      - name: Check the committed stylesheet
+        env:
+          # `TAILWIND_BIN` is first in Tailwind.resolve's search order, ahead of the cache
+          # and ahead of PATH, precisely so a host can supply its own.
+          TAILWIND_BIN: ${{ runner.temp }}/tailwindcss
+        run: |
+          set -euo pipefail
+          sbt -batch ferrite/tailwindCheck | tee tailwind.log
+          # Second half of the guard: if resolve fell through to its explanation despite
+          # the above, sbt exits 0 having done nothing. Catch that here rather than in
+          # production, which is where the alternative is caught.
+          if grep -q "was not found" tailwind.log; then
+            echo "::error::the Tailwind CLI was not resolved; tailwindCheck verified nothing"
+            exit 1
+          fi
 
   package:
     runs-on: ubuntu-latest
@@ -50,3 +159,38 @@ jobs:
       # every push without needing registry credentials.
       - name: Stage Docker images
         run: sbt -batch ferrite/Docker/stage cobalt/Docker/stage wolfram/Docker/stage
+
+  # The deployment artefacts are as capable of being broken as the Scala is, and nothing
+  # else validates them: a compose file that does not interpolate, or a rules file
+  # Prometheus refuses to parse, both fail at `docker compose up` on somebody's homelab.
+  # `promtool check rules` is a parser plus a PromQL type-checker, so it catches a
+  # misspelled function or a bad label matcher, not just bad YAML.
+  deploy-config:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate docker-compose.yml
+        working-directory: deploy
+        # The mandatory `${VAR:?…}` variables have no defaults, by design, so supply
+        # throwaway values: this validates the file's structure and interpolation, not the
+        # secrets.
+        run: |
+          POSTGRES_PASSWORD=ci APPLICATION_SECRET=ci GRAFANA_ADMIN_PASSWORD=ci \
+            docker compose config -q
+
+      - name: Validate Prometheus rules and scrape config
+        run: |
+          set -euo pipefail
+          docker run --rm --entrypoint promtool \
+            -v "$PWD/deploy/observability/rules:/rules:ro" \
+            prom/prometheus:v3.13.1 check rules /rules/observatory.rules.yml
+          # The rules directory is ALSO mounted at the path prometheus.yml globs. Without
+          # that second mount `check config` reports success having found no rule files —
+          # it resolves `rule_files` against the container's filesystem, not against the
+          # config file's directory — so a broken rules file passes CI and breaks the
+          # Prometheus that loads it. The `1 rule files found` line is the proof it looked.
+          docker run --rm --entrypoint promtool \
+            -v "$PWD/deploy/observability:/obs:ro" \
+            -v "$PWD/deploy/observability/rules:/etc/prometheus/rules:ro" \
+            prom/prometheus:v3.13.1 check config --lint-fatal /obs/prometheus.yml

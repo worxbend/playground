@@ -1560,8 +1560,8 @@
             "uid": "observatory-prometheus"
           },
           "editorMode": "code",
-          "expr": "sum by (job, outcome) (rate(maintenance_job_duration_seconds_count[$__rate_interval]) * 60)",
-          "legendFormat": "{{job}} {{outcome}}/min",
+          "expr": "sum by (exported_job, outcome) (rate(maintenance_job_duration_seconds_count[$__rate_interval]) * 60)",
+          "legendFormat": "{{exported_job}} {{outcome}}/min",
           "range": true,
           "instant": false,
           "refId": "A"
@@ -1584,8 +1584,8 @@
             "uid": "observatory-prometheus"
           },
           "editorMode": "code",
-          "expr": "histogram_quantile(0.99, sum by (le, job) (rate(maintenance_job_duration_seconds_bucket[$__rate_interval])))",
-          "legendFormat": "p99 {{job}}",
+          "expr": "histogram_quantile(0.99, sum by (le, exported_job) (rate(maintenance_job_duration_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "p99 {{exported_job}}",
           "range": true,
           "instant": false,
           "refId": "Z"

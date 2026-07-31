@@ -1,0 +1,253 @@
+# Alerting rules for the event observatory.
+#
+# Every rule here encodes a condition that docs/operations.md already states in prose, and every rule carries a
+# `runbook` annotation naming the section that says what to do about it. That link is the point: an alert whose
+# recipient has to work out what it means is an alert that gets silenced. No threshold below was invented — each
+# one is either quoted from the documentation or derived from a configured interval, and the derivation is written
+# out beside it.
+#
+# There is no Alertmanager in this stack, so nothing is *delivered*: these fire into Prometheus's own alert list
+# (`/alerts`, `/api/v1/rules`, and the synthetic `ALERTS` series that Grafana can graph and alert on). Point
+# `alerting.alertmanagers` at one when there is somebody to page — docs/operations.md §5.4.
+#
+# Validate before committing. Note `--entrypoint promtool`: the image's entrypoint is `prometheus`, which answers
+# `unexpected check` and looks like a broken rules file rather than a wrong command line.
+#   docker run --rm --entrypoint promtool -v "$PWD/deploy/observability/rules:/rules:ro" \
+#     prom/prometheus:v3.13.1 check rules /rules/observatory.rules.yml
+
+groups:
+  # ------------------------------------------------------------------------------------------------------------
+  # Availability. The cheapest alerts in the file and the ones that explain most of the others: a DOWN target
+  # makes every rule that reads that target's meters go stale rather than fire.
+  # ------------------------------------------------------------------------------------------------------------
+  - name: observatory-availability
+    interval: 30s
+    rules:
+      - alert: ObservatoryTargetDown
+        expr: up{job="observatory"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $labels.service }} has not been scrapeable for 5 minutes"
+          description: >-
+            Prometheus cannot reach {{ $labels.instance }}. Either the process is gone, or — for ferrite
+            specifically — ALLOWED_HOSTS no longer contains the compose service name, which answers 400 and looks
+            identical to a dead process from here.
+          runbook: "docs/operations.md#61-ingestion-has-stopped"
+
+      - alert: PostgresDown
+        expr: pg_up == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "postgres-exporter cannot connect to the database"
+          description: >-
+            The exporter is running and its connection attempt is failing, which is a different fact from the
+            exporter being down (that is ObservatoryTargetDown on job="postgres"). Every write path is affected.
+          runbook: "docs/operations.md#62-consumer-lag-is-growing"
+
+  # ------------------------------------------------------------------------------------------------------------
+  # Storage. The partitioned fact table's failure mode is slow, silent and then total: the maintenance job stops,
+  # headroom decays month by month with no user-visible symptom, and the day it reaches zero every insert is
+  # dead-lettered at full throughput (§6.2 step 4). Headroom is the leading indicator; default-partition rows are
+  # the lagging one. Both are alerted, because the first is the one you can still act on cheaply.
+  # ------------------------------------------------------------------------------------------------------------
+  - name: observatory-storage
+    interval: 1m
+    rules:
+      - alert: PartitionHeadroomLow
+        # §7.3: "Watch maintenance_partitions_headroom (alert below 2)" — and §5's meter note, "Alert below two,
+        # not below one — one means the fix has to happen this month." 15m is four evaluation intervals, long
+        # enough that a gauge briefly unset during a cobalt restart does not page.
+        expr: min(maintenance_partitions_headroom) < 2
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Fewer than 2 months of partition headroom ({{ $value }})"
+          description: >-
+            The partition-maintenance job creates MAINTENANCE_MONTHS_AHEAD (3) months ahead every 6 hours. Headroom
+            below 2 means it has missed runs or is failing; at 0 the next month's events land in the default
+            partition or are refused outright.
+          runbook: "docs/operations.md#73-retention-and-partition-maintenance"
+
+      - alert: PartitionHeadroomExhausted
+        # The same gauge one step further along. Separated rather than folded in, because the response differs:
+        # below 2 is "find out why the job stopped", below 1 is "create the partition by hand, now" — §7.3 ships
+        # the exact DDL for that.
+        expr: min(maintenance_partitions_headroom) < 1
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "No partition exists for the current month"
+          description: >-
+            Every event whose occurred_at has no partition is either rejected (SQLSTATE 23514, dead-lettered as
+            `unpersistable`) or absorbed by the default partition. Create the month by hand using the DDL in the
+            runbook; do not wait for the job.
+          runbook: "docs/operations.md#73-retention-and-partition-maintenance"
+
+      - alert: DefaultPartitionNotEmpty
+        # §5: "Must stay 0 … Alert on > 0, not on a rate." §7.3: the empty-check is the cheap moment to act,
+        # because creating an overlapping partition once rows are in there takes ACCESS EXCLUSIVE and scans.
+        expr: sum(partition_default_rows) > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $value }} rows in events.cloud_event_default"
+          description: >-
+            Rows have landed in the catch-all partition: invisible to partition pruning, and expensive to move back
+            out. They also block creation of the partitions that would have held them — see
+            maintenance_partitions_blocked.
+          runbook: "docs/operations.md#73-retention-and-partition-maintenance"
+
+      - alert: PartitionCreationBlocked
+        # §5 on the meter: "a non-zero value there is a request for a human", and the job has already logged the
+        # exact statements to run. 15m so a single blocked pass during a burst of skew does not page twice.
+        expr: max(maintenance_partitions_blocked) > 0
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: "{{ $value }} month(s) cannot be partitioned — default partition holds matching rows"
+          description: >-
+            PostgreSQL refuses an overlapping partition while matching rows sit in DEFAULT, and moving them is an
+            exclusive-lock operation the job will not take on an operator's behalf. cobalt's logs carry the
+            statements, with the actual bounds.
+          runbook: "docs/operations.md#73-retention-and-partition-maintenance"
+
+  # ------------------------------------------------------------------------------------------------------------
+  # Scheduled maintenance. §5's note on maintenance.job.duration names the three alerts this meter family makes
+  # expressible — a non-zero failure rate, no run of any outcome in the last N intervals, and a p99 duration
+  # approaching the interval. All three are below, and nothing else is.
+  #
+  # The `exported_job` label is not a typo. The Micrometer tag is `job`, which collides with Prometheus's own
+  # target label, so the scrape renames it (honor_labels is false, deliberately — see prometheus.yml).
+  # ------------------------------------------------------------------------------------------------------------
+  - name: observatory-maintenance
+    interval: 1m
+    rules:
+      - alert: PartitionMaintenanceNotRunning
+        # MAINTENANCE_PARTITION_INTERVAL is 6 hours, so 24h is four consecutive missed runs — unambiguous, and
+        # still three months of headroom short of an incident. The uptime guard is what stops this firing on
+        # every fresh deployment: with one run recorded at boot, `increase` over 24h is legitimately 0 until the
+        # second run, and a rule that cries wolf every time the stack starts is a rule that gets deleted.
+        expr: |
+          increase(maintenance_job_duration_seconds_count{exported_job="partition-maintenance"}[24h]) == 0
+            and on (instance) (process_uptime_seconds > 86400)
+        for: 30m
+        labels:
+          severity: critical
+        annotations:
+          summary: "No partition-maintenance run in 24 hours on {{ $labels.instance }}"
+          description: >-
+            A counter that stops incrementing is the only trace a dead job thread leaves; liveness stays UP and no
+            error is logged. Headroom will decay from here. Check cobalt's logs and MAINTENANCE_ENABLED.
+          runbook: "docs/operations.md#73-retention-and-partition-maintenance"
+
+      - alert: RollupRefreshNotRunning
+        # MAINTENANCE_REFRESH_INTERVAL is 5 minutes; 1h is twelve missed runs. Warning, not critical, because
+        # nothing reads events.event_rollup_hourly yet (Known limitations) — this alert is here so that stops
+        # being true silently rather than because stale rollups hurt a user today.
+        expr: |
+          increase(maintenance_job_duration_seconds_count{exported_job="rollup-refresh"}[1h]) == 0
+            and on (instance) (process_uptime_seconds > 3600)
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "No rollup-refresh run in an hour on {{ $labels.instance }}"
+          description: >-
+            REFRESH MATERIALIZED VIEW CONCURRENTLY has stopped running. Any reader of events.event_rollup_hourly is
+            being served numbers that are merely old, which no query error reveals.
+          runbook: "docs/operations.md#73-retention-and-partition-maintenance"
+
+      - alert: MaintenanceJobFailing
+        # "The failure rate is non-zero." Skipped runs are excluded by construction: with N replicas the healthy
+        # steady state is one success and N-1 `skipped` per tick, and skipped is neither success nor failure.
+        expr: sum by (exported_job) (rate(maintenance_job_duration_seconds_count{outcome="failure"}[30m])) > 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Maintenance job {{ $labels.exported_job }} is failing"
+          description: >-
+            Runs are completing with outcome=failure. For partition-maintenance the usual causes are a detach
+            waiting past MAINTENANCE_DETACH_LOCK_TIMEOUT and a blocked month; for rollup-refresh, a concurrent
+            refresh holding the lock.
+          runbook: "docs/operations.md#73-retention-and-partition-maintenance"
+
+      - alert: RollupRefreshApproachingInterval
+        # "The p99 duration is approaching the interval" — ADR §12.4's tripwire for retiring the materialized view
+        # in favour of incremental merge tables. Half of MAINTENANCE_REFRESH_INTERVAL (300s) is the point at which
+        # the next tick starts before the previous one has comfortably finished.
+        expr: |
+          histogram_quantile(
+            0.99,
+            sum by (le) (rate(maintenance_job_duration_seconds_bucket{exported_job="rollup-refresh"}[1h]))
+          ) > 150
+        for: 1h
+        labels:
+          severity: warning
+        annotations:
+          summary: "Rollup refresh p99 is {{ $value | humanizeDuration }}, over half its 5-minute interval"
+          description: >-
+            A full REFRESH MATERIALIZED VIEW rewrites the whole view every time, so this only grows. The documented
+            remedy is incremental merge tables, not a longer interval.
+          runbook: "docs/operations.md#73-retention-and-partition-maintenance"
+
+  # ------------------------------------------------------------------------------------------------------------
+  # The pipeline: ingest durability, the dead-letter path, and lag.
+  # ------------------------------------------------------------------------------------------------------------
+  - name: observatory-pipeline
+    interval: 30s
+    rules:
+      - alert: DeadLetterRateSustained
+        # §5's suggested alerts: "any consume_records_poison_total increase over 15 minutes"; §5's meter table:
+        # "Any sustained non-zero rate is a page." The `for` is what makes it *sustained* — a single poison record
+        # from one misbehaving producer is not an incident, fifteen minutes of them is.
+        expr: sum by (reason) (rate(consume_records_poison_total[15m])) > 0
+        for: 15m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Events are being dead-lettered ({{ $labels.reason }})"
+          description: >-
+            reason=unpersistable is the one to check first: it includes a missing partition, which dead-letters
+            perfectly good events at full throughput. Dead letters expire with the topic's 7-day retention.
+          runbook: "docs/operations.md#63-the-dlq-is-filling"
+
+      - alert: ConsumerLagGrowing
+        # §5: `deriv(sum(consume_group_lag)[15m:]) > 0` — "sustained = falling behind". A derivative rather than a
+        # level, because the level a homelab's backlog reaches after a restart is not knowable in advance and any
+        # constant would be the invented number this file does not contain. The 15m subquery window swallows the
+        # sawtooth of LAG_REFRESH_INTERVAL (20s) sampling; the 10m `for` is §5's suggested duration.
+        expr: deriv(sum(consume_group_lag)[15m:]) > 0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Consumer lag has been growing for 10 minutes"
+          description: >-
+            cobalt is not keeping up, or has stopped consuming while staying live — the stream's restart budget is
+            50 restarts in 10 minutes and, once exhausted, the process answers probes and consumes nothing.
+            consume_batch_size tells starved from saturated.
+          runbook: "docs/operations.md#62-consumer-lag-is-growing"
+
+      - alert: IngestProduceFailing
+        # §5's suggested alerts: `kafka_produce_latency_seconds_count{outcome="failure"} > 0`. There is no separate
+        # produce-error counter; the timer's failure-tagged count is it. Every one of these is a 503 the client
+        # saw, and an event that was NOT published.
+        expr: sum(rate(kafka_produce_latency_seconds_count{outcome="failure"}[5m])) > 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "wolfram is failing to publish to Kafka"
+          description: >-
+            Either the broker did not acknowledge within KAFKA_DELIVERY_TIMEOUT, or ingestion shed load past
+            KAFKA_QUEUE_CAPACITY. Both are retryable by the client and both mean data is not arriving.
+          runbook: "docs/operations.md#61-ingestion-has-stopped"
