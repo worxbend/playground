@@ -479,3 +479,7 @@ deploy/.env
 
 # mkdocs build output (`mkdocs build --strict`), regenerated on demand.
 site/
+
+# Claude Code scratch: agent worktrees are real git worktrees of THIS repo.
+# Committing them makes the checkout an embedded repository and breaks clones.
+.claude/worktrees/
