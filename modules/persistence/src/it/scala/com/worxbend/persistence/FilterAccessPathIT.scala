@@ -211,7 +211,7 @@ final class FilterAccessPathIT extends PostgresSuite:
   /** The plan for a compiled filter, with sequential scans priced out. */
   private def planOf(filter: Filter): String =
     val frag = FilterSql.compile(filter)
-    explain(frag.sqlString, ps => { val _ = frag.writer.write(ps, 1) }, analyse = false)
+    explain(frag.sqlString, ps => val _ = frag.writer.write(ps, 1), analyse = false)
 
   /** The plan for a hand-written predicate with no parameters. */
   private def rawPlan(predicate: String): String = explain(predicate, _ => (), analyse = false)
@@ -225,12 +225,12 @@ final class FilterAccessPathIT extends PostgresSuite:
 
   /** The number of rows the index scan under a compiled filter's plan actually returned.
     *
-    * The `Bitmap Index Scan` node, or whichever node carries the index condition — its `actual rows` is the size of
-    * the candidate set the index produced, before any recheck. That is the number this suite is about.
+    * The `Bitmap Index Scan` node, or whichever node carries the index condition — its `actual rows` is the size of the
+    * candidate set the index produced, before any recheck. That is the number this suite is about.
     */
   private def indexRows(filter: Filter): Double =
     val frag = FilterSql.compile(filter)
-    val text = explain(frag.sqlString, ps => { val _ = frag.writer.write(ps, 1) }, analyse = true)
+    val text = explain(frag.sqlString, ps => val _ = frag.writer.write(ps, 1), analyse = true)
     // Every partition contributes a node; the corpus lives in one, so the largest index-scan count is the answer.
     text.linesIterator
       .filter(_.contains("Bitmap Index Scan"))
@@ -242,8 +242,8 @@ final class FilterAccessPathIT extends PostgresSuite:
 
   /** `EXPLAIN` with `enable_seqscan = off`, reset on the way out.
     *
-    * The reset matters: these run on a pooled connection, and a leaked `enable_seqscan = off` would silently change
-    * the plans every later suite gets.
+    * The reset matters: these run on a pooled connection, and a leaked `enable_seqscan = off` would silently change the
+    * plans every later suite gets.
     */
   private def explain(predicate: String, bind: PreparedStatement => Unit, analyse: Boolean): String =
     withConnection: connection =>
