@@ -150,7 +150,18 @@ object CobaltApp extends StrictLogging:
 
     val consumer = EventConsumer.start(config.consumer, config.restart, decoder, processor)
 
-    val routes = CobaltRoutes(AdminHandlers(telemetry, health))
+    // The read/replay half of the DLQ, with its own consumer and producer. Built after the write half and closed
+    // before it, so a replay can never outlive the publisher whose records it is putting back.
+    val deadLetterStore = KafkaDeadLetterStore.start(config.consumer, config.replay)
+    val deadLetterAdmin = DeadLetterAdmin(
+      store = deadLetterStore,
+      metrics = ReplayMetrics(telemetry.registry),
+      config = config.replay,
+      ownTopic = config.consumer.topic,
+      dlqTopic = config.consumer.dlqTopic
+    )
+
+    val routes = CobaltRoutes(AdminHandlers(telemetry, health, deadLetterAdmin))
     val adminServer = AdminServer(routes, config.server.host, config.server.port)
     adminServer.start()
 
@@ -165,6 +176,9 @@ object CobaltApp extends StrictLogging:
         // Cancelled before the pools close, or a maintenance tick lands on a closed DataSource during shutdown and
         // logs a failure that is nothing but the shutdown itself.
         quietly("cancelling the maintenance schedule")(maintenance.close())
+        // After the admin listener has been unbound in PhaseServiceUnbind, so an in-flight replay has already finished
+        // or been refused a connection; closing these while a produce is in flight would fail it at the last step.
+        quietly("closing the dead-letter reader")(deadLetterStore.close())
         quietly("closing the dead-letter producer")(deadLetters.close())
         quietly("closing the Kafka admin client")(admin.close())
         quietly("closing the connection pools")(pools.close())

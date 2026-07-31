@@ -205,6 +205,36 @@ object MaintenanceConfig:
       "detach-lock-timeout"
     )(MaintenanceConfig.apply)
 
+/** The bounds on the dead-letter admin surface (`AdminRoutes.DlqPath`).
+  *
+  * Every field here exists to make an operator action *bounded*, which is the whole difference between a replay tool
+  * and a way to turn a poison message into a poison-message storm.
+  *
+  * @param enabled
+  *   whether a replay may be committed. `false` still permits dry runs and the inspection endpoints — a deployment that
+  *   has switched replay off gains nothing from also blinding its operators, and would only push them back to a console
+  *   consumer. Defaults to `true`: the endpoint is on the admin listener, which is not a public port, and a tool nobody
+  *   can use during an incident is the failure this whole surface exists to prevent.
+  * @param maxRecords
+  *   the ceiling on how many dead letters one request may list or replay. A request above it is **refused, not
+  *   clamped** — see [[ReplayRequest.parse]] — and it bounds the fetch as well as the produce, so a listing on a topic
+  *   with a million dead letters costs the same as one on a topic with ten.
+  * @param maxAttempts
+  *   how many times any one record may be replayed, ever. **The bound on the poison loop:** a record that fails again
+  *   comes back to the DLQ under new origin coordinates, so nothing in Kafka limits the cycle; the counter in
+  *   [[ReplayHeaders.Attempt]] does. Three is generous — a defect that survives three deploys is not going to be fixed
+  *   by a fourth replay.
+  * @param pollTimeout
+  *   how long one read of the DLQ may take before it answers with what it has. A listing that hangs is worse than a
+  *   listing that is short, and this endpoint is consulted when the broker is the suspect.
+  */
+final case class ReplayConfig(enabled: Boolean, maxRecords: Int, maxAttempts: Int, pollTimeout: FiniteDuration)
+
+object ReplayConfig:
+
+  given reader: ConfigReader[ReplayConfig] =
+    ConfigReader.forProduct4("enabled", "max-records", "max-attempts", "poll-timeout")(ReplayConfig.apply)
+
 /** cobalt's whole configuration, read once by the composition root.
   *
   * One aggregate rather than four independent lookups, so a typo in any namespace refuses the boot rather than
@@ -215,7 +245,8 @@ final case class CobaltConfig(
   consumer: ConsumerConfig,
   restart: RestartConfig,
   lag: LagConfig,
-  maintenance: MaintenanceConfig
+  maintenance: MaintenanceConfig,
+  replay: ReplayConfig
 )
 
 object CobaltConfig:
@@ -224,7 +255,7 @@ object CobaltConfig:
   val Namespace: String = "cobalt"
 
   given reader: ConfigReader[CobaltConfig] =
-    ConfigReader.forProduct5("server", "consumer", "restart", "lag", "maintenance")(CobaltConfig.apply)
+    ConfigReader.forProduct6("server", "consumer", "restart", "lag", "maintenance", "replay")(CobaltConfig.apply)
 
   /** Loads from the ambient config, returning failures rather than throwing.
     *

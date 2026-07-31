@@ -13,6 +13,9 @@ serving nothing but `/metrics` and the two health probes. Source: `applications/
   before the repository is constructed). ferrite never does.
 - Routing every record it cannot store — undecodable *or* rejected by the database — to
   `events.cloudevents.v1.dlq` in structured mode, and committing past it.
+- **Serving that dead-letter queue back to an operator**: `GET /admin/dlq`, `GET /admin/dlq/records` and
+  `POST /admin/dlq/replay`, so a poison record can be inspected and put back on the topic without a console
+  consumer and without reconstructing it by hand.
 - Committing offsets **only after** the batch is durable.
 - Publishing consumer-group lag from an `AdminClient`, and answering readiness from a background poller.
 - Continuing the trace that started at wolfram's HTTP ingress, by extracting the `traceparent` from the record
@@ -43,13 +46,23 @@ serving nothing but `/metrics` and the two health probes. Source: `applications/
 | `GET /metrics` | Prometheus text exposition, `text/plain; version=0.0.4; charset=utf-8` |
 | `GET /health/live` | Always `200 {"status":"UP"}` |
 | `GET /health/ready` | `200`/`503` with `{"status":…,"dependencies":{"kafka":{"status","detail"},"postgresql":{…}}}` |
+| `GET /admin/dlq` | DLQ depth per partition, plus the replay limits in force |
+| `GET /admin/dlq/records?limit&reason` | Bounded, newest-first listing of dead letters |
+| `POST /admin/dlq/replay?limit&reason&refs&dryRun` | Plans a replay; publishes only with `dryRun=false` |
 
 Cask does the routing (`cask.main.Main.defaultHandler` is its dispatch trie); Undertow is built explicitly in
 `AdminServer` rather than by `cask.main.Main.main`, for two reasons. Cask's own `main` does not expose the bound
 port, so an integration test could not bind port `0` and then talk to it; and its shutdown would be a second,
 independently-ordered JVM hook that may run before or after the consumer drain and the pool close, instead of a
 step inside `CoordinatedShutdown`. The route path literals are asserted against `Meters.MetricsPath`/`HealthPath`
-in `AdminServerSuite`, so a divergence fails a test instead of silently giving Prometheus a 404.
+in `AdminRoutesSuite`, so a divergence fails a test instead of silently giving Prometheus a 404.
+
+The `/admin/` prefix is not decoration. `/metrics` and `/health` are platform-owned and safe to expose; the replay
+route is the only thing cobalt serves that changes anything, and a prefix is what lets an ingress or a network
+policy separate the two without enumerating paths. **It is also not a contradiction of "cobalt is not an HTTP
+API".** ADR §1 forbids a business *write* path over HTTP — a second, unordered, uncommitted way into the database.
+Replay is the opposite: it puts records back onto Kafka, so every one still travels the single ordered committed
+path through the consumer, and the database never hears from this endpoint.
 
 **cobalt publishes no `http.server.requests` family.** Its only HTTP traffic is scrapes and probes, which ADR §7.1
 excludes from that meter anyway; there is no metrics filter in front of Cask.
@@ -187,6 +200,137 @@ continuation lives in `RecordDecoder`'s CONSUMER span; batch health is a metric.
 
 ---
 
+## The dead-letter queue: inspection and replay
+
+`docs/operations.md` used to say, in full: *"There is no replay tool in this repo. Once the defect is fixed,
+re-publish the original events through `POST /events` on wolfram."* That instruction assumes the events still
+exist somewhere other than the DLQ, that their bytes can be retyped by hand, and that there is time. Retention on
+`events.cloudevents.v1.dlq` is 7 days, so what an incident actually leaves is a 7-day window in which the only
+tool is `kafka-console-consumer`. `DeadLetterAdmin`, `DeadLetterReplay` and `DeadLetterStore` are that window's
+tooling.
+
+### Inspection
+
+```bash
+curl -s localhost:8082/admin/dlq | jq
+curl -s 'localhost:8082/admin/dlq/records?limit=20&reason=unconvertible' | jq '.records[]'
+```
+
+`GET /admin/dlq` reports per-partition `earliest`/`latest` and their sum. The sum is labelled
+`outstandingIsUpperBound: true` and it means it: `latest - earliest` counts *offsets*, and the DLQ is keyed on
+origin coordinates, so a compacted topic holds fewer live records than its offset range suggests. Reporting an
+exact count would be the more comfortable lie; the question this number answers is "empty, a handful, or a flood",
+and an upper bound answers all three honestly.
+
+`GET /admin/dlq/records` returns the newest dead letters, each with its `reason` and `detail`, the origin
+coordinates, the CloudEvents `id`/`type`/`source` where they are recoverable, `replayAttempts`, and a payload
+preview. Three bounds apply, because **an unbounded listing endpoint on a topic is a way to OOM the service that
+is supposed to be telling you it is unhealthy**:
+
+- the seek is `max(earliest, latest - limit)` per partition, so at most `limit × partitions` records are fetched
+  however large the topic is;
+- the read stops at the log end computed before it started, so a concurrent producer cannot extend it, and it
+  gives up after `poll-timeout` with whatever it has — a listing that hangs is worse than one that is short;
+- the payload preview is the first 512 bytes, decoded UTF-8-with-replacement, alongside the true byte length and a
+  `truncated` flag. The cut is by *bytes*, so a 4 MB record costs 512 bytes of decoding rather than 4 MB.
+
+A request over `max-records` is refused with `400` rather than trimmed, for the same reason a replay is.
+
+The identity fields are best effort, and they are absent when they have to be: a record is usually on the DLQ
+*because* its attributes could not be read. The `ce_*` headers are tried first (the main topic is binary mode),
+the payload JSON second (for a structured record). A record that yields neither is still listed — "a dead letter
+whose id is unknowable" is itself the diagnosis. So is a record that is not a dead letter at all: the DLQ is a
+topic like any other, and one written by a foreign producer is listed as `readable: false` with its problem rather
+than costing the whole page.
+
+**There is no cursor and no `offset` parameter.** The DLQ is a log with a 7-day retention being written to while it
+is read; a cursor over it would either mean something different on every partition or promise a stability the
+topic cannot keep. Anything deeper than `max-records` is a job for `kcat`, and the listing hands over the exact
+refs to feed it.
+
+**No depth gauge.** The count is on demand rather than a Prometheus gauge: it costs two round trips per sample, and
+`consume.records.poison` already gives the rate a dashboard needs. A gauge would duplicate that reading and add
+standing broker load for it.
+
+### Replay
+
+```bash
+# what would happen — the default, and the shape to run first
+curl -sX POST 'localhost:8082/admin/dlq/replay?limit=50&reason=unconvertible' | jq
+
+# do it
+curl -sX POST 'localhost:8082/admin/dlq/replay?limit=50&reason=unconvertible&dryRun=false' | jq
+
+# exactly these records, all or nothing
+curl -sX POST 'localhost:8082/admin/dlq/replay?refs=events.cloudevents.v1/3/9912&dryRun=false' | jq
+```
+
+**The replayed record is a byte copy, never a re-encode.** `DeadLetterReplay.producerRecord` rebuilds it from the
+dead letter's recorded headers and its verbatim payload bytes; the envelope is never decoded and re-serialised.
+That matters twice. It is the only way to replay a record that *cannot* be decoded, which is most of a DLQ; and it
+keeps the CloudEvents `id` and `source` byte-identical, which is the entire reason replaying an event that DID
+land is a no-op — `ON CONFLICT (occurred_at, ce_source, ce_id) DO NOTHING` only absorbs a duplicate whose identity
+survived the round trip. The original key goes back too, so the record lands on the partition it originally did
+and per-device ordering survives; so does `traceparent`, so a replayed event continues the trace that started at
+wolfram's ingress days earlier.
+
+Two transport headers are added: `x-worxbend-replay-attempt` and `x-worxbend-replay-of`. Neither carries the `ce_`
+prefix, and that is load-bearing — under the Kafka binding a `ce_`-prefixed header *is* a context attribute, so
+`ce_replayattempt` would change the event's extension set, its `raw jsonb`, and therefore its row.
+
+| Decision | What it is, and why |
+| --- | --- |
+| **Method** | `POST`. It is neither safe nor free of effect at the broker. |
+| **Default** | `dryRun=true`. The keystroke that publishes is the one you have to add. An operator who cannot see what a replay would do will not run one during an incident, which makes the tool worthless exactly when it is needed. |
+| **Scope** | `limit` (plus optional `reason`) for "whatever is there, up to N", or `refs` for "these exact records". Never unbounded. |
+| **Bounding** | A request over `max-records` is **refused, not clamped**. Silently giving 200 to someone who asked for 500 means they believe 500 events are back in the pipeline; the missing 300 get found later, from a gap in a dashboard. |
+| **Rate** | One produce at a time, each acknowledged before the next. The same reasoning as the DLQ writes in `BatchProcessor`: a fan-out of produces at a broker that may itself be why these records died is how a bad moment becomes an outage. |
+| **Idempotence** | **Not** idempotent at the broker — each call appends new records to the topic. **Idempotent at the database**, because the event id survives. That asymmetry is what makes retrying a half-finished replay safe rather than a duplication risk. |
+| **Failure** | The plan is computed in full before anything is published, so a named set that cannot be satisfied completely is refused with `422` having published nothing. The produce loop itself cannot be atomic — Kafka offers no transaction that would help, and one would put the replay's fate in the coordinator that may be the problem — so it stops at the first refusal and reports `published` and the ref it stopped on. A boundary, not a guess. |
+| **Off switch** | `cobalt.replay.enabled=false` refuses commits with `403`. Dry runs and the read endpoints keep working: switching replay off should not also blind the operator, which would only send them back to the console consumer. |
+
+A dead letter is *skipped* — reported, counted, never published — for exactly one of three reasons.
+`undecodable`: the DLQ record is not a readable dead letter. `foreign-topic`: its origin topic is not the topic
+this consumer owns. `budget-exhausted`: see below. The middle one is the check that keeps this endpoint from being
+a general-purpose producer — the destination comes out of the record's own payload, so without it the DLQ is a way
+to make cobalt write to any topic in the cluster that a foreign record can name.
+
+Selection is newest-first, because "the last N" is what an operator means. Publication is oldest-first, so a
+device's events reach the topic in the order they originally did rather than backwards.
+
+### The poison loop, and what bounds it
+
+A record that fails again after being replayed lands back on the DLQ — **under a new key.** The DLQ key is the
+origin `topic/partition/offset`, and the replayed record occupies a *new* offset on the main topic, so its dead
+letter is a new record rather than a compaction-overwrite of its predecessor. Nothing in Kafka stops one defect
+accumulating one dead letter per replay.
+
+What stops it is `x-worxbend-replay-attempt`. The counter is written onto the replayed record, and a dead letter
+records its record's headers verbatim, so it survives into the next generation and the one after. The planner
+refuses any record at or above `cobalt.replay.max-attempts` (default 3). An attempt header that is present but
+unparseable also counts as exhausted, never as zero: nothing in this build writes anything else there, so the safe
+reading of "I cannot tell how many times this has gone round" is "do not send it round again".
+
+The loop is therefore bounded at `max-attempts` generations, visible in every listing as `replayAttempts`, and
+traceable — each generation names its predecessor in `x-worxbend-replay-of`, so a loop reads as a chain rather
+than a pile of unrelated dead letters.
+
+### How it is wired
+
+`DeadLetterStore` is one `KafkaConsumer` and one `KafkaProducer` behind a single lock. The lock is a feature:
+`KafkaConsumer` is not thread-safe and Undertow hands every request to a different worker thread, so some
+serialisation is mandatory — and one lock over the whole store additionally means two operators cannot replay
+simultaneously, which is the correct outcome. The consumer uses `assign`, never `subscribe`: it joins no group, it
+seeks to explicit offsets, and it has no committed offsets that could be confused with the real consumer's.
+Reading the DLQ must not be able to move anything. It has its own producer rather than sharing the dead-letter
+publisher's, so each owner closes what it opened.
+
+`DeadLetterReplay` holds every decision as a pure function over values — selection, bounding, classification,
+record reconstruction — so `DeadLetterReplaySuite` asserts all of it without a broker, and the dry run and the
+commit are provably the same computation because they call the same `plan`.
+
+---
+
 ## Configuration
 
 Namespace `cobalt`, plus `database` from `modules/persistence`'s `reference.conf` and `pekko` overrides. An
@@ -208,6 +352,10 @@ failure in this system, because it starts cleanly, reports itself live, and rece
 | `CONSUMER_DRAIN_TIMEOUT` | `cobalt.consumer.drain-timeout` | `30 seconds` | Consumer stop timeout; also the DLQ producer's close timeout. |
 | `LAG_REFRESH_INTERVAL` | `cobalt.lag.refresh-interval` | `20 seconds` | Two admin round trips per interval per replica. Lag is a trend; sampling faster than Prometheus scrapes buys only broker load. |
 | `LAG_REQUEST_TIMEOUT` | `cobalt.lag.request-timeout` | `5 seconds` | Bounds each admin call, and doubles as the broker-reachability probe timeout. |
+| `REPLAY_ENABLED` | `cobalt.replay.enabled` | `true` | Whether a replay may be **committed**. Dry runs and the read endpoints stay available either way. |
+| `REPLAY_MAX_RECORDS` | `cobalt.replay.max-records` | `200` | Ceiling on one listing or one replay. A request above it is refused, never clamped. Bounds the fetch as well as the produce. |
+| `REPLAY_MAX_ATTEMPTS` | `cobalt.replay.max-attempts` | `3` | Generations of replay any one record may survive. The bound on the poison loop. |
+| `REPLAY_POLL_TIMEOUT` | `cobalt.replay.poll-timeout` | `5 seconds` | How long one read of the DLQ may take before it answers with what it has. |
 | `DATABASE_URL` | `database.jdbc-url` | `jdbc:postgresql://localhost:5432/observatory` | **Effectively mandatory.** |
 | `DATABASE_USER` | `database.username` | `observatory` | |
 | `DATABASE_PASSWORD` | `database.password` | `""` | **Mandatory** wherever the server requires a password. |
@@ -241,6 +389,10 @@ Cross-cutting: `SERVICE_VERSION`, `HOSTNAME`, `OTEL_*` (traces only; `OTEL_SDK_D
 | Broker unreachable | Restart backoff; `health.broker` goes down within one lag interval; readiness → 503 |
 | PostgreSQL unreachable | Inserts fail as transient, stream restarts; `health.database` down; readiness → 503 |
 | Restart budget exhausted (50 restarts in 10 min) | The stream **fails permanently**, deliberately. An unbounded retry loop against a broker that is never coming back looks identical from the outside to a healthy consumer with no traffic — same process, same Ready pod, only lag as a symptom |
+| Replay: a named ref is absent or unreplayable | `422`, **nothing published**; the response names every missing and every skipped ref |
+| Replay: the broker refuses a produce part way | The loop stops; `500`, with `published` and the ref it stopped on. Retrying is safe — the insert is idempotent |
+| Replay: the replayed record fails again | A new dead letter one generation on, `x-worxbend-replay-attempt` incremented; refused once `max-attempts` is reached |
+| Replay: the DLQ topic is unreachable | `503`, not `500` — the same request will work when the broker is back |
 | Unreadable configuration | Boot aborts |
 | SIGTERM | See below |
 
@@ -271,6 +423,15 @@ Common tags `service=cobalt`, `version`, `instance`.
 | `consume.records.duplicate` | counter | — | The shortfall between batch size and rows actually written. **Untagged, deliberately**: `ON CONFLICT DO NOTHING` reports one number and there is no way to attribute the shortfall to a `type`. Inventing a per-type split would produce a number that looks precise and is not. |
 | `consume.records.poison` | counter | `reason` | DLQ routings. `reason` is always a bounded value, never an exception message. |
 | `consume.group.lag` | multi-gauge | `group`, `topic`, `partition` | See below. |
+| `dlq.replay.operations` | counter | `outcome` | One replay request. `success` = committed, `failure` = refused or stopped part way, `skipped` = a dry run. **The audit trail as a metric**: every increment is a human intervening in the pipeline. |
+| `dlq.replay.records` | counter | `outcome` | Individual dead letters: `success` published, `failure` refused by the broker, `skipped` declined by the plan. |
+
+Both replay meters are needed, not one or the other: one operation replaying 200 records and 200 operations
+replaying one each give the same record count and describe very different situations — a recovery, and somebody in
+a loop. Only the operation counter distinguishes them. Neither is tagged by skip reason: the reasons are a closed
+set and would be safe as a tag, but the actionable number is "did the replay do what I asked", which `success`
+beside `skipped` answers, and the per-record reason is in the response body and on the log line where the person
+who ran the command is already reading it.
 
 Plus the JVM/system binders. `consume.batch.latency` is the one name in this service not already in `Meters`: ADR
 §7.1's minimum set names `consume.batch.size` but no companion timer, and `modules/observability` is a finished
@@ -339,7 +500,13 @@ cobalt applies the migrations itself, so this is also how the schema gets create
 curl -s localhost:8080/health/ready | jq
 curl -s localhost:8080/metrics | grep consume_
 
-# watch the DLQ while poisoning the topic by hand
+# the DLQ, without a console consumer
+curl -s localhost:8080/admin/dlq | jq
+curl -s 'localhost:8080/admin/dlq/records?limit=10' | jq '.records[] | {ref, reason, event}'
+curl -sX POST 'localhost:8080/admin/dlq/replay?limit=10' | jq        # dry run: the default
+curl -sX POST 'localhost:8080/admin/dlq/replay?limit=10&dryRun=false' | jq
+
+# still there, and still the right tool for anything deeper than max-records
 docker compose -f deploy/docker-compose.yml exec kafka \
   /opt/kafka/bin/kafka-console-consumer.sh --bootstrap-server kafka:9092 \
   --topic events.cloudevents.v1.dlq --from-beginning
@@ -350,4 +517,7 @@ admin surface is published on host port **8082**.
 
 Tests: `sbt cobalt/test` needs no Docker — the broker is behind `DeadLetterPublisher`, commit ordering is tested
 with a substituted committer flow, and the lag arithmetic is a pure function over two maps.
-`sbt "cobalt/IT/testFull"` runs the Testcontainers suites (`CobaltIngestIT`, `AdminServerIT`).
+`sbt "cobalt/IT/testFull"` runs the Testcontainers suites (`CobaltIngestIT`, `AdminServerIT`, `DlqReplayIT`).
+`DlqReplayIT` is the one that matters for the DLQ surface: a replay tool that has never replayed anything is not a
+tool, so it dead-letters a record for real, replays it into a row, and separately proves that a record which fails
+again comes back one generation on and is then refused.

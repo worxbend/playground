@@ -23,6 +23,7 @@ package com.worxbend.cobalt
 
 import com.worxbend.eventing.ContentMode
 import com.worxbend.eventing.DeadLetter
+import com.worxbend.eventing.DecodeFailure
 import com.worxbend.eventing.KafkaCodecs
 import com.worxbend.kernel.event.ContentType
 import com.worxbend.kernel.event.Envelope
@@ -53,6 +54,7 @@ import java.util.Optional
 import java.util.concurrent.ConcurrentLinkedQueue
 import java.util.concurrent.atomic.AtomicInteger
 import org.apache.kafka.clients.consumer.ConsumerRecord
+import org.apache.kafka.clients.producer.ProducerRecord
 import org.apache.kafka.common.header.Headers
 import org.apache.kafka.common.header.internals.RecordHeaders
 import org.apache.kafka.common.record.TimestampType
@@ -151,6 +153,57 @@ object Fixtures:
     offset: CommittableOffset
   ): CommittableMessage[String, Array[Byte]] =
     CommittableMessage(record, offset)
+
+  /** A dead letter for `record`, exactly as [[RecordDecoder]] would build one. */
+  def deadLetter(
+    record: ConsumerRecord[String, Array[Byte]],
+    failure: DecodeFailure = DecodeFailure.MalformedBinary("the headers are not a CloudEvent")
+  ): DeadLetter =
+    DeadLetter.of(record, failure, source, at)
+
+  /** One dead letter as it would sit on the DLQ topic, keyed the way `KafkaCodecs.deadLetterRecord` keys it. */
+  def dlqRecord(letter: DeadLetter, partition: Int = 0, offset: Long = 0L, timestamp: Long = 0L): DlqRecord =
+    DlqRecord(partition, offset, Some(timestamp), Some(letter.origin.dlqKey), Right(letter))
+
+  /** A DLQ record nothing can read — a foreign writer's, or an older build's. */
+  def unreadableDlqRecord(partition: Int = 0, offset: Long = 0L): DlqRecord =
+    DlqRecord(partition, offset, Some(0L), Some("someone-elses-key"), Left("not a dead letter"))
+
+  /** A [[DeadLetterStore]] over a fixed set of records, which records what was published and can be told to refuse.
+    *
+    * Hand-written rather than mocked for the same reason [[RecordingDeadLetters]] is: the assertions are about *order*
+    * and about exactly where a partial failure stopped, and a recorded sequence of plain values cannot misreport
+    * either.
+    */
+  final class StubDeadLetterStore(
+    val records: Vector[DlqRecord] = Vector.empty,
+    val partitions: Vector[DlqPartitionDepth] = Vector.empty,
+    failFrom: Int = Int.MaxValue,
+    unreachable: Boolean = false
+  ) extends DeadLetterStore:
+
+    private val sent: ConcurrentLinkedQueue[ProducerRecord[String, Array[Byte]]] =
+      ConcurrentLinkedQueue[ProducerRecord[String, Array[Byte]]]()
+
+    /** The `limit` each `recent` call was asked for — the only way to assert that the bound reached the broker. */
+    val limits: ConcurrentLinkedQueue[Int] = ConcurrentLinkedQueue[Int]()
+
+    def depth(): DlqDepth =
+      if unreachable then throw IllegalStateException("the broker is unreachable")
+      else DlqDepth(Topics.CloudEventsDlq, partitions)
+
+    def recent(limit: Int): Vector[DlqRecord] =
+      if unreachable then throw IllegalStateException("the broker is unreachable")
+      val _ = limits.add(limit)
+      records.take(limit)
+
+    def publish(record: ProducerRecord[String, Array[Byte]]): Unit =
+      if sent.size >= failFrom then throw IllegalStateException("the broker refused the record")
+      val _ = sent.add(record)
+
+    def close(): Unit = ()
+
+    def published: Vector[ProducerRecord[String, Array[Byte]]] = sent.asScala.toVector
 
   /** Records every dead letter, and can be told to fail — a DLQ that cannot accept a record must not let the offset
     * move past it, and that is a property worth being able to provoke.

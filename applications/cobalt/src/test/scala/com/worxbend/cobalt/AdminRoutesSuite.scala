@@ -24,6 +24,7 @@ package com.worxbend.cobalt
 import com.worxbend.observability.Meters
 import com.worxbend.observability.Telemetry
 import io.circe.parser
+import scala.concurrent.duration.DurationInt
 
 /** The operational surface, asserted without binding a socket.
   *
@@ -32,12 +33,31 @@ import io.circe.parser
   */
 final class AdminRoutesSuite extends munit.FunSuite:
 
-  private def handlers(health: HealthChecks, telemetry: Telemetry): AdminHandlers = AdminHandlers(telemetry, health)
+  private def handlers(health: HealthChecks, telemetry: Telemetry): AdminHandlers =
+    AdminHandlers(
+      telemetry,
+      health,
+      DeadLetterAdmin(
+        Fixtures.StubDeadLetterStore(),
+        ReplayMetrics(telemetry.registry),
+        ReplayConfig(enabled = true, maxRecords = 10, maxAttempts = 3, 1.second),
+        Fixtures.Topic,
+        "dlq"
+      )
+    )
 
   test("the paths match the shared vocabulary, so one scrape config covers all three services"):
     assertEquals(Meters.MetricsPath, "/metrics")
     assertEquals(AdminRoutes.LivenessPath, "/health/live")
     assertEquals(AdminRoutes.ReadinessPath, "/health/ready")
+
+  test("the dead-letter routes live under one prefix, so an ingress can expose the probes without the replay"):
+    // /metrics and /health are platform-owned and safe to expose; POST /admin/dlq/replay is the only route cobalt
+    // serves that changes anything, and a prefix is what lets a network policy separate the two without a path list.
+    assertEquals(AdminRoutes.DlqPath, "/admin/dlq")
+    assertEquals(AdminRoutes.DlqRecordsPath, "/admin/dlq/records")
+    assertEquals(AdminRoutes.DlqReplayPath, "/admin/dlq/replay")
+    assert(!AdminRoutes.DlqPath.startsWith(Meters.HealthPath), "the replay surface must not sit under the probe path")
 
   test("metrics are served verbatim with the registry's own content type"):
     val telemetry = Fixtures.telemetry()

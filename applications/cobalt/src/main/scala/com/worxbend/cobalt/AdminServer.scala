@@ -26,11 +26,18 @@ import io.undertow.Undertow
 import java.net.InetSocketAddress
 import scala.jdk.CollectionConverters.*
 
-/** The Cask route table. Three routes, each a one-line delegation to [[AdminHandlers]].
+/** The Cask route table. Six routes, each a one-line delegation to [[AdminHandlers]].
   *
-  * The paths are string literals because Cask's annotations are macros and want a constant; `AdminServerSuite` asserts
-  * each one against the corresponding constant in `modules/observability`, so a divergence between this file and the
-  * shared vocabulary fails a test rather than silently giving Prometheus a 404.
+  * The paths are string literals because Cask's annotations are macros and want a constant; `AdminRoutesSuite` asserts
+  * each one against the corresponding constant in `modules/observability` or [[AdminRoutes]], so a divergence between
+  * this file and the shared vocabulary fails a test rather than silently giving Prometheus a 404.
+  *
+  * **The replay route is the only `@cask.post` in this build, and the only one that changes anything.** It is a POST
+  * because it is not safe and not repeatable-without-effect at the broker (each call appends records to the topic);
+  * `dryRun` defaults to `true` so the *default* POST is the one that publishes nothing. Everything the operation needs
+  * arrives as query parameters rather than a JSON body: the request has four scalar fields, a body parser would mean
+  * either upickle — a second JSON stack alongside circe, which ADR §3.3 keeps off the classpath — or hand-rolled
+  * parsing, and a query string is what someone can actually type into `curl` mid-incident.
   */
 final class CobaltRoutes(handlers: AdminHandlers) extends cask.Routes:
 
@@ -42,6 +49,22 @@ final class CobaltRoutes(handlers: AdminHandlers) extends cask.Routes:
 
   @cask.get("/health/ready")
   def ready(): cask.Response[String] = CobaltRoutes.respond(handlers.ready())
+
+  @cask.get("/admin/dlq")
+  def dlq(): cask.Response[String] = CobaltRoutes.respond(handlers.dlq())
+
+  @cask.get("/admin/dlq/records")
+  def dlqRecords(limit: Int = ReplayRequest.UnspecifiedLimit, reason: String = ""): cask.Response[String] =
+    CobaltRoutes.respond(handlers.dlqRecords(limit, reason))
+
+  @cask.post("/admin/dlq/replay")
+  def dlqReplay(
+    limit: Int = ReplayRequest.UnspecifiedLimit,
+    reason: String = "",
+    refs: String = "",
+    dryRun: Boolean = true
+  ): cask.Response[String] =
+    CobaltRoutes.respond(handlers.dlqReplay(limit, reason, refs, dryRun))
 
   initialize()
 

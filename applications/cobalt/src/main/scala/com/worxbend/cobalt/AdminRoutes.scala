@@ -38,7 +38,7 @@ final case class AdminReply(status: Int, contentType: String, body: String)
   * the alternative is binding a port in a unit test. Here the routes are three one-line delegations and every decision
   * lives in a pure method.
   */
-final class AdminHandlers(telemetry: Telemetry, health: HealthChecks):
+final class AdminHandlers(telemetry: Telemetry, health: HealthChecks, deadLetters: DeadLetterAdmin):
 
   /** The Prometheus exposition, served verbatim with the registry's own content type.
     *
@@ -81,11 +81,36 @@ final class AdminHandlers(telemetry: Telemetry, health: HealthChecks):
       )
     )
 
+  /** How deep the DLQ is and what a replay is allowed to do. See [[DeadLetterAdmin.summary]]. */
+  def dlq(): AdminReply = deadLetters.summary()
+
+  /** A bounded, newest-first page of dead letters. See [[DeadLetterAdmin.records]]. */
+  def dlqRecords(limit: Int, reason: String): AdminReply = deadLetters.records(limit, reason)
+
+  /** Plans — and, with `dryRun=false`, commits — a replay. See [[DeadLetterAdmin.replay]]. */
+  def dlqReplay(limit: Int, reason: String, refs: String, dryRun: Boolean): AdminReply =
+    deadLetters.replay(limit, reason, refs, dryRun)
+
 object AdminRoutes:
 
   /** Under [[Meters.HealthPath]] so one Prometheus scrape config and one ingress rule cover all three services. */
   val LivenessPath: String = Meters.HealthPath + "/live"
   val ReadinessPath: String = Meters.HealthPath + "/ready"
+
+  /** The dead-letter surface.
+    *
+    * Under `/admin/` and not at the root because these are the first routes cobalt has ever served that are neither a
+    * scrape nor a probe: the prefix is what lets an ingress or a network policy expose `/metrics` and `/health` to the
+    * platform while keeping the replay endpoint on the inside, without enumerating paths one at a time.
+    *
+    * **This is not a contradiction of "cobalt is not an HTTP API".** ADR §1 forbids a business *write* path over HTTP —
+    * a second, unordered, uncommitted way into the database. Replay is the opposite of that: it puts records back onto
+    * Kafka, so every one of them still travels the single ordered committed path through the consumer, and the database
+    * never hears from this endpoint at all.
+    */
+  val DlqPath: String = "/admin/dlq"
+  val DlqRecordsPath: String = DlqPath + "/records"
+  val DlqReplayPath: String = DlqPath + "/replay"
 
   val JsonContentType: String = "application/json; charset=utf-8"
 
