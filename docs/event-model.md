@@ -248,6 +248,101 @@ means a replayed poison record *overwrites* its predecessor under compaction ins
 and `DeadLetter.toEnvelope` derives the dead letter's `id` from the same coordinates, so a replayed poison record is
 idempotent at the database in exactly the way a replayed good record is.
 
+## Searching inside the payload and the extensions
+
+Two of the filter grammar's leaves reach past the fixed dimensions into the parts of an event this build was never
+told the shape of:
+
+```scala
+case PayloadCmp(path: JsonPath, op: NumOp, value: NumLit)   // data.sensor.temperature = >21
+case ExtensionEq(name: ExtName, value: ExtValue)            // ext.tenantid            = acme
+```
+
+They are the only leaves whose *parameter name* comes from the user, so they are the only ones spelled as a key
+prefix in a permalink:
+
+```
+/events?v=1&from=2026-07-01T00:00:00Z&data.sensor.temperature=%3E21&ext.tenantid=acme
+```
+
+`data.<path>` takes an operator-led number — `>21`, `>=18`, `<>0`, or a bare `21`, which means equality. The
+operators are the *jsonpath* spellings (`==`, `!=`) because that is where they end up, with `=` and `<>` accepted on
+the way in because that is what a person types. `ext.<name>` takes the value verbatim.
+
+The rejected alternative was a fixed, repeatable key carrying the whole predicate in its value —
+`payload=sensor.temperature>21`. It would let a plain HTML form post one from a single text input, which the prefixed
+form cannot do without JavaScript. It loses on everything else: the codec would have to find the operator inside a
+string that may legitimately contain `>` or `:`, and every URL edit the UI performs (`Query.remove(pairs, key,
+value)` behind a chip, `Query.toggle` behind a facet) would need a second parser in the presentation layer. Neither
+family has a visible input in the filter bar — nor do `type`, `device`, `room`, `person` or `tag` — so the
+form-friendliness bought nothing that was not already being paid for.
+
+### What the codec guarantees
+
+`FilterQuery.decode` is total, and it is the only way a filter reaches the application from a browser. Three rules
+apply to these two families specifically, all for the same reason: a parameter that is quietly ignored produces a
+**wider** result set than the URL describes, and a user who cannot see that their filter was dropped will trust the
+number in front of them.
+
+- A key that starts with `data.` or `ext.` is always one of these leaves or a `FilterError`, never an unknown
+  parameter and never a silent skip. `data.a b=>1` is reported against `data.a b`; `ext.Tenant=acme` against
+  `ext.Tenant`.
+- **Repeating `ext.<name>` is an error.** The grammar has only equality on an extension, so two values for one name
+  conjoin into something no row can satisfy; reporting it beats an empty page that reads as "nothing matched".
+  Repeating `data.<path>` is *not* an error — `data.t=>18&data.t=<24` is how the grammar spells a range.
+- Every value crosses into SQL through a smart constructor. `NumLit` bounds the comparison value to 38 significant
+  digits and 18 decimal places, and canonicalises it to its plain form; `ExtValue` requires 1–256 characters. The
+  numeric bound is not tidiness: `jsonPathPredicate` renders with `toPlainString`, whose length is `precision +
+  |scale|`, and `?v=1&data.t=>1E%2B2000000000` is a valid `BigDecimal` with one significant digit that would render
+  as a two-gigabyte string. Canonicalising also keeps the AST canonical — `1E+8` and `100000000` are `==` with
+  different `toString`s, and `Filter.sortKey` breaks ties on `toString`.
+
+### What the database can and cannot do with them
+
+Both leaves are correct at any table size. Only one of them is *fast* at any table size, and the difference is worth
+knowing before an incident makes you find out.
+
+| Filter | Compiles to | Index | Access path |
+| --- | --- | --- | --- |
+| `ext.tenantid=acme` | `extensions ?? ? AND extensions ->> ? = ?` | (8) `gin (extensions)`, jsonb_ops | Bitmap index scan on the existence conjunct, heap recheck on the value |
+| `data.value=21` | `data @?? ?::jsonpath` → `$.value ? (@ == 21)` | (7) `gin (data jsonb_path_ops)` | Bitmap index scan on the extracted key `$.value = 21` |
+| `data.value=>21` | `data @?? ?::jsonpath` → `$.value ? (@ > 21)` | (7), **with no search key** | Full index scan, then a recheck of everything it returned |
+
+**The extension filter is compiled as two conjuncts on purpose.** `extensions ->> $1 = $2` is what it used to be, and
+`->>` is in no GIN operator class — so the predicate had no access path at all and every extension filter was a
+sequential scan of the fact table, correct and unbounded. `extensions ? $1` (written `??`, pgjdbc's escape, exactly
+as `@?` is written `@??`) *is* in jsonb_ops. The second conjunct is redundant in meaning — `->>` is NULL when the key
+is absent, so the `AND` narrows nothing — and decisive in plan. The `->>` half stays because it is what defines the
+answer: replacing the pair with `extensions @> jsonb_build_object(?, ?)`, also indexable, would match only JSON
+*strings*, so `ext.sequence=7` would stop matching `"sequence": 7`. Note that the catalog `COMMENT` on index (8)
+writes the existence test as `jsonb_exists(extensions, $1)`; the function spelling means the same thing and is *not*
+in the operator class, so it would put the scan back.
+
+**A payload range comparison cannot use index (7), and no rewriting fixes it.** A GIN index answers `@?` by pulling
+clauses of the form `accessors_chain = constant` out of the jsonpath. `$.value ? (@ == 21)` yields one and plans as a
+selective bitmap index scan; `$.value ? (@ > 21)` yields none, so the index is scanned in full and every entry is
+handed to the recheck. There is no indexable existence conjunct to bolt on, because `jsonb_path_ops` supports
+neither the `?` operator nor a valueless `@?` — that is the price the schema deliberately paid for an index half the
+size of `jsonb_ops`.
+
+The practical consequence, and the thing to tell an operator: **a payload range filter is a refinement, not a
+selection.** Combine it with a time window (which prunes whole partitions) or a device, and the range is applied to a
+few thousand candidate rows. Run it alone across all of retention and it costs a full pass. The equality form has no
+such caveat.
+
+`FilterAccessPathIT` asserts all of this against a real PostgreSQL rather than leaving it as a claim: it plans each
+predicate with `enable_seqscan = off`, so a fallback to a sequential scan means "this predicate has no index path"
+rather than "the planner thought scanning was cheaper", and it measures the rows the bitmap index scan returns to
+tell the extractable jsonpath from the unextractable one. If a future PostgreSQL learns to extract range clauses,
+that test fails — which is the right way to find out.
+
+### In the UI
+
+Both families are chipped in the filter bar, labelled with the parameter name and valued with the raw text, so the
+chip is a legend for the URL. They travel through a form submit as hidden fields — without which typing in the
+search box would silently drop every one of them — and they are removed the same way a facet selection is, by
+editing the query string.
+
 ---
 
 ## End to end

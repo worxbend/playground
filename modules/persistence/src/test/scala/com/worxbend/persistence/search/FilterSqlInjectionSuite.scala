@@ -22,6 +22,7 @@
 package com.worxbend.persistence.search
 
 import com.worxbend.kernel.search.Filter
+import com.worxbend.kernel.search.NumOp
 import com.worxbend.persistence.Filters
 import com.worxbend.persistence.Filters.force
 import com.worxbend.persistence.Recording
@@ -86,8 +87,60 @@ final class FilterSqlInjectionSuite extends munit.FunSuite:
   test("an extension filter's value is independent of the SQL"):
     eachHostile("ExtensionEq")(payload => force(Filter.extensionEq("tenantid", payload)))
     Filters.hostile.foreach: payload =>
+      // The name is bound twice — once for the indexable `??` existence conjunct, once for the `->>` value test — and
+      // the value once. Both conjuncts must bind, or one of them is reading a literal that is not there.
       val values = boundValues(force(Filter.extensionEq("tenantid", payload)))
-      assertEquals(values, Vector[Any]("tenantid", payload))
+      assertEquals(values, Vector[Any]("tenantid", "tenantid", payload))
+
+  test("an extension filter's NAME is independent of the SQL too, and reaches both conjuncts"):
+    // The name is the half that also appears in an operator position in the shape this leaf compiles to
+    // (`extensions ?? ?`), so it gets its own adversarial pass rather than riding on the value's.
+    val names = Vector("tenantid", "sequence", "traceparent", "a", "z9", "0", "abcdefghijklmnopqrst")
+    val reference = sqlOf(force(Filter.extensionEq("tenantid", benign)))
+    names.foreach: name =>
+      assertEquals(sqlOf(force(Filter.extensionEq(name, benign))), reference, s"SQL text changed for name '$name'")
+      assertEquals(boundValues(force(Filter.extensionEq(name, benign))), Vector[Any](name, name, benign))
+    // `ExtName` rejects most hostile payloads outright — but not all of them, and the exception is the point:
+    // `0x27204f5220313d31` is lowercase alphanumeric and 18 characters, so it is a perfectly legal CloudEvents
+    // extension name. A test that asserted "every hostile name is rejected" would have been asserting the wrong
+    // thing and would fail on the one payload that gets through. The property that holds for both halves is that the
+    // SQL does not move.
+    Filters.hostile.foreach: payload =>
+      Filter.extensionEq(payload, benign) match
+        case Left(_)       => ()
+        case Right(filter) =>
+          assertEquals(sqlOf(filter), reference, s"SQL text changed for name '$payload'")
+          assertEquals(boundValues(filter), Vector[Any](payload, payload, benign))
+
+  test("a payload comparison's path, operator and value are all independent of the SQL"):
+    // Every part of a `PayloadCmp` is rendered into a jsonpath *string* by the kernel, and the whole string is one
+    // bind parameter. So the compiled text must not move when the path, the operator or the number changes — if it
+    // did, the jsonpath would be reaching the statement by concatenation and `JsonPath`'s segment pattern would be
+    // the only thing standing between a filter bar and the parser.
+    val reference = sqlOf(force(Filter.payloadCmp("value", NumOp.Eq, BigDecimal(1))))
+    val paths = Vector("value", "temperature", "sensor.temperature", "a.b.c.d.e.f.g.h")
+    val numbers = Vector(BigDecimal(0), BigDecimal(-1), BigDecimal("21.5"), BigDecimal("-0.000000000000000001"))
+    for path <- paths; op <- NumOp.values.toVector; number <- numbers do
+      val frag = FilterSql.compile(force(Filter.payloadCmp(path, op, number)))
+      assertEquals(frag.sqlString, reference, s"SQL text changed for $path ${op.symbol} $number")
+      assertEquals(frag.params.size, 1)
+      // The one parameter is the jsonpath expression, and it carries no quote for a jsonpath parser to reopen.
+      val rendered = frag.params.head.toString
+      assert(rendered.startsWith("$."), rendered)
+      assert(!rendered.contains('\''), rendered)
+      assert(!rendered.contains('"'), rendered)
+    // A hostile path never becomes a filter at all: `JsonPath` rejects every segment that is not an identifier.
+    Filters.hostile.foreach: payload =>
+      assert(Filter.payloadCmp(payload, NumOp.Gt, BigDecimal(1)).isLeft, s"JsonPath admitted '$payload'")
+
+  test("a payload comparison value cannot be inflated into a statement-sized literal"):
+    // `toPlainString` renders `precision + |scale|` characters and `scale` comes straight off a permalink. Without
+    // `NumLit`'s bound, `?v=1&data.t=>1E%2B2000000000` allocates two gigabytes of jsonpath before any of it reaches
+    // the driver — a denial of service with no quote in it, which is why the injection suite is where it is caught.
+    assert(Filter.payloadCmp("t", NumOp.Gt, BigDecimal("1E+2000000000")).isLeft)
+    assert(Filter.payloadCmp("t", NumOp.Gt, BigDecimal("1E-2000000000")).isLeft)
+    val widest = force(Filter.payloadCmp("t", NumOp.Gt, BigDecimal("1E-18")))
+    assertEquals(FilterSql.compile(widest).params.head.toString.length, 32)
 
   test("a payload containment filter is one jsonb parameter regardless of its keys and values"):
     eachHostile("PayloadContains")(payload => force(Filter.payloadContains(Json.obj(payload -> Json.True))))

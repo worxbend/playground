@@ -61,8 +61,8 @@ enum Filter:
   case SeverityAtLeast(level: Severity)
   case TagsAll(vs: Tags)
   case PayloadContains(json: JsonLit)
-  case PayloadCmp(path: JsonPath, op: NumOp, value: BigDecimal)
-  case ExtensionEq(name: ExtName, value: String)
+  case PayloadCmp(path: JsonPath, op: NumOp, value: NumLit)
+  case ExtensionEq(name: ExtName, value: ExtValue)
   case FullText(text: UserText)
 
 object Filter:
@@ -115,12 +115,15 @@ object Filter:
   def payloadContains(json: Json): Either[String, Filter] = JsonLit(json).map(PayloadContains.apply)
 
   def payloadCmp(path: String, op: NumOp, value: BigDecimal): Either[String, Filter] =
-    JsonPath.parse(path).map(p => PayloadCmp(p, op, value))
+    for
+      p <- JsonPath.parse(path)
+      v <- NumLit(value)
+    yield PayloadCmp(p, op, v)
 
   def extensionEq(name: String, value: String): Either[String, Filter] =
     for
       n <- ExtName(name)
-      v <- if value.isEmpty then Left("an extension filter needs a value") else Right(value)
+      v <- ExtValue(value)
     yield ExtensionEq(n, v)
 
   def fullText(text: String): Either[String, Filter] = UserText(text).map(FullText.apply)

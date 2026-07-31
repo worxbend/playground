@@ -47,12 +47,13 @@ import io.circe.Json
   *     `simple`. The configuration is ours, not the user's, so this buys no safety directly — what it buys is an
   *     invariant a test can assert without a carve-out: **compiled SQL contains no quote character at all.** An
   *     invariant with an exception is an invariant nobody checks.
-  *   - `data @?? ?::jsonpath` is not a typo. `?` is the JDBC placeholder, so the jsonb `@?` operator collides with it;
-  *     pgjdbc's documented escape is `??`, which its parser rewrites to a single `?` before the statement reaches the
-  *     server (verified against `postgresql 42.7.13`). The alternative, `jsonb_path_exists(data, …)`, is a function
-  *     rather than an operator and therefore **not** in the `jsonb_path_ops` operator class — it would silently drop
-  *     index (7) from the plan. ADR §6.2's warning about the `?` operator and its `@?` mapping are reconciled here, not
-  *     contradicted.
+  *   - `data @?? ?::jsonpath` and `extensions ?? ?` are not typos. `?` is the JDBC placeholder, so the jsonb operators
+  *     that contain one — `@?` and `?` itself — collide with it; pgjdbc's documented escape is `??`, which its parser
+  *     rewrites to a single `?` before the statement reaches the server (verified against `postgresql 42.7.13`). The
+  *     function spellings — `jsonb_path_exists(data, …)`, `jsonb_exists(extensions, …)` — read better and are **not**
+  *     in an operator class, so each would silently drop its index from the plan. ADR §6.2 warns off the `?` operator
+  *     on that collision alone; the escape is what makes the indexable spelling available, so the warning is reconciled
+  *     here rather than obeyed literally.
   */
 object FilterSql:
 
@@ -105,12 +106,41 @@ object FilterSql:
     // The jsonpath expression is rendered by the kernel, whose segment pattern forbids every character that would
     // need escaping — and it is still bound, never concatenated, so even a future loosening of that pattern cannot
     // reach the statement text.
+    //
+    // Index (7) — `gin (data jsonb_path_ops)` — serves this leaf ONLY for `NumOp.Eq`. GIN extracts search keys from a
+    // jsonpath by pulling out clauses of the form `accessors_chain = constant`, so `$.t ? (@ == 21)` yields the key
+    // `$.t = 21` and plans as a bitmap index scan, while `$.t ? (@ > 21)` yields nothing extractable and the scan
+    // falls back to the whole candidate set. That is a property of the operator class, not of this predicate: there is
+    // no rewriting of a range comparison that jsonb_path_ops can index, and no key-existence conjunct to bolt on
+    // either, because path_ops supports neither `?` nor a valueless `@?`. Range filtering on the payload is therefore
+    // a *refinement* — correct at any size, cheap only when something else (the time window, a device) has already
+    // narrowed the candidates. See docs/event-model.md, "Searching inside the payload".
     case Filter.PayloadCmp(path, op, value) =>
       Sql.unary("data @?? ", path.jsonPathPredicate(op, value), "::jsonpath")
 
-    // `extensions ->> ?`, never the `?` operator: it is indistinguishable from a placeholder (ADR §6.2).
+    // Two conjuncts for one filter, and the redundancy is the entire point.
+    //
+    // `extensions ->> ? = ?` alone is what this compiled until it was measured against index (8), `gin (extensions)`:
+    // `->>` is not in any GIN operator class, so the predicate had no access path at all and every extension filter
+    // was a sequential scan of the fact table. `extensions ?? ?` — key existence, `??` being pgjdbc's escape for the
+    // `?` operator, exactly as `@??` is for `@?` — IS in jsonb_ops, so it plans as a bitmap index scan and hands the
+    // heap recheck a set of rows that actually carry the attribute. Extensions are sparse (the column is
+    // `raw - '{specversion,id,…}'` and is `{}` for a conformant event with none), so that first conjunct is the
+    // selective one.
+    //
+    // The `->>` half stays, unchanged, because it is what defines the answer: `?` tests only that the key is present.
+    // Dropping it for `extensions @> jsonb_build_object(?, ?)`, which is also indexable, would have been the tempting
+    // simplification and is wrong — containment matches only a JSON *string*, so `ext.sequence=7` would stop matching
+    // `"sequence": 7` while continuing to match `"sequence": "7"`, and a filter that quietly answers a narrower
+    // question than it was asked is the failure this whole layer is built to avoid.
+    //
+    // The function spelling `jsonb_exists(extensions, ?)` is equivalent in meaning and NOT equivalent in plan: index
+    // access is driven by operators matched to an operator class, so the function form would silently reintroduce the
+    // scan. The catalog COMMENT on index (8) in `V1__events.sql` writes it that way; this is the spelling that works.
     case Filter.ExtensionEq(name, value) =>
-      Sql.lit("(extensions ->> ") ++ Sql.bind[String](name) ++ Sql.lit(" = ") ++ Sql.bind(value) ++ Sql.lit(")")
+      Sql.lit("(extensions ?? ") ++ Sql.bind[String](name) ++
+        Sql.lit(" AND extensions ->> ") ++ Sql.bind[String](name) ++
+        Sql.lit(" = ") ++ Sql.bind[String](value) ++ Sql.lit(")")
 
     // `websearch_to_tsquery`, never `to_tsquery`: it accepts quoted phrases and `-exclusions` and — decisively — does
     // not raise on malformed input, so a stray `&` typed by a user is an empty result set rather than a 500.

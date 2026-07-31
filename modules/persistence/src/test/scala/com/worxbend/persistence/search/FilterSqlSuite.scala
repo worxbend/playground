@@ -116,7 +116,10 @@ final class FilterSqlSuite extends munit.ScalaCheckSuite:
     assertEquals(sqlOf(Filter.severityAtLeast(Severity.Warn)), "severity_rank >= ?")
     assertEquals(sqlOf(force(Filter.payloadContains(Json.obj("a" -> Json.True)))), "data @> ?::jsonb")
     assertEquals(sqlOf(force(Filter.payloadCmp("value", NumOp.Gt, BigDecimal(21)))), "data @?? ?::jsonpath")
-    assertEquals(sqlOf(force(Filter.extensionEq("tenantid", "x"))), "(extensions ->> ? = ?)")
+    assertEquals(
+      sqlOf(force(Filter.extensionEq("tenantid", "x"))),
+      "(extensions ?? ? AND extensions ->> ? = ?)"
+    )
     assertEquals(sqlOf(force(Filter.fullText("kitchen"))), "search_doc @@ websearch_to_tsquery(?::regconfig, ?)")
 
   test("the jsonpath operator is written with pgjdbc's escape, so it reaches the server as @?"):
@@ -125,6 +128,17 @@ final class FilterSqlSuite extends munit.ScalaCheckSuite:
     // with a parameter-count mismatch that nothing else in the suite would catch.
     assertEquals(sql.count(_ == '?'), 3)
     assertEquals(SqlText.placeholders(sql), 1)
+
+  test("an extension filter carries an indexable key-existence conjunct alongside the value test"):
+    // `->>` is in no GIN operator class, so on its own this leaf had no access path to index (8) and every extension
+    // filter was a sequential scan. `??` is pgjdbc's escape for the `?` operator, which IS in jsonb_ops. The name is
+    // bound twice — once per conjunct — and the value once; anything else means the two halves have drifted apart.
+    val frag = FilterSql.compile(force(Filter.extensionEq("tenantid", "acme")))
+    assertEquals(frag.sqlString, "(extensions ?? ? AND extensions ->> ? = ?)")
+    assertEquals(SqlText.placeholders(frag.sqlString), 3)
+    assertEquals(frag.params.toVector, Vector[Any]("tenantid", "tenantid", "acme"))
+    // Five `?` characters, three placeholders: the other two are the `??` the driver folds into one.
+    assertEquals(frag.sqlString.count(_ == '?'), 5)
 
   test("severity compiles to the rank, and the rank matches the SQL function's threshold"):
     val frag = FilterSql.compile(Filter.severityAtLeast(Severity.Error))

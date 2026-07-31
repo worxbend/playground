@@ -166,3 +166,92 @@ final class FilterQuerySuite extends munit.ScalaCheckSuite:
       FilterQuery.decode("v=1&q=smoke+detected"),
       Right(Some(FilterGenerators.force(Filter.fullText("smoke detected"))))
     )
+
+  // ---------------------------------------------------------------------------------------------------------------
+  // The two open-ended families: `data.<path>` and `ext.<name>`.
+  //
+  // These are the only keys the grammar does not fix, so they are the only ones where an unrecognised parameter and a
+  // valid one are told apart by a prefix rather than by a lookup. Every test below is about that boundary.
+  // ---------------------------------------------------------------------------------------------------------------
+
+  test("a payload comparison is a prefixed key with the operator leading the value"):
+    val filter = FilterGenerators.force(Filter.payloadCmp("sensor.temperature", NumOp.Gte, BigDecimal("21.5")))
+    assertEquals(FilterQuery.encode(Some(filter)), Right("v=1&data.sensor.temperature=%3E%3D21.5"))
+    assertEquals(FilterQuery.decode("v=1&data.sensor.temperature=>=21.5"), Right(Some(filter)))
+
+  test("every comparison operator survives the round trip, including the two human spellings"):
+    NumOp.values.foreach: op =>
+      val filter = FilterGenerators.force(Filter.payloadCmp("value", op, BigDecimal(3)))
+      assertEquals(FilterQuery.encode(Some(filter)).map(FilterQuery.decode), Right(Right(Some(filter))), op.toString)
+    // `=` and `<>` are what a person types; they mean the jsonpath `==` and `!=` the encoder writes back.
+    assertEquals(FilterQuery.decode("v=1&data.value=%3D3"), FilterQuery.decode("v=1&data.value=%3D%3D3"))
+    assertEquals(FilterQuery.decode("v=1&data.value=%3C%3E3"), FilterQuery.decode("v=1&data.value=%21%3D3"))
+
+  test("a bare number with no operator means equality, which is what a person typing a URL expects"):
+    assertEquals(
+      FilterQuery.decode("v=1&data.value=3"),
+      Right(Some(FilterGenerators.force(Filter.payloadCmp("value", NumOp.Eq, BigDecimal(3)))))
+    )
+
+  test("the permalink carries the plain decimal form, never scientific notation"):
+    // `BigDecimal#toString` would write `1E+8` here. `+` percent-encodes to `%2B`, so the readable half of the
+    // grammar would be three characters of noise for a number the user typed as 100000000.
+    val filter = FilterGenerators.force(Filter.payloadCmp("value", NumOp.Gt, BigDecimal("1E+8")))
+    assertEquals(FilterQuery.encode(Some(filter)), Right("v=1&data.value=%3E100000000"))
+    assertEquals(FilterQuery.decode("v=1&data.value=>100000000"), Right(Some(filter)))
+
+  test("several comparisons on one path are a range, not a repeated parameter"):
+    val decoded = FilterQuery.decode("v=1&data.temperature=>=18&data.temperature=<24")
+    val expected = Filter.and(
+      Vector(
+        FilterGenerators.force(Filter.payloadCmp("temperature", NumOp.Gte, BigDecimal(18))),
+        FilterGenerators.force(Filter.payloadCmp("temperature", NumOp.Lt, BigDecimal(24)))
+      )
+    )
+    assertEquals(decoded, Right(Some(FilterGenerators.force(expected))))
+    assertEquals(
+      decoded.map(f => FilterQuery.encode(f)),
+      Right(Right("v=1&data.temperature=%3E%3D18&data.temperature=%3C24"))
+    )
+
+  test("two values for one extension name are reported, not silently conjoined into an impossible filter"):
+    // The grammar has only equality on an extension, so `ext.tenantid=a&ext.tenantid=b` can match nothing. Building it
+    // would return an empty page that reads as "nothing matched" rather than "this link contradicts itself".
+    assertEquals(
+      FilterQuery.decode("v=1&ext.tenantid=acme&ext.tenantid=other"),
+      Left(Vector(FilterError.Repeated("ext.tenantid")))
+    )
+    // Two *different* names are an ordinary conjunction.
+    assert(FilterQuery.decode("v=1&ext.tenantid=acme&ext.sequence=7").isRight)
+
+  test("an extension value keeps every character a CloudEvents attribute may contain"):
+    val traceparent = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01"
+    val filter = FilterGenerators.force(Filter.extensionEq("traceparent", traceparent))
+    assertEquals(FilterQuery.encode(Some(filter)).map(FilterQuery.decode), Right(Right(Some(filter))))
+    val awkward = FilterGenerators.force(Filter.extensionEq("tenantid", "a=b&c d%e+f"))
+    assertEquals(FilterQuery.encode(Some(awkward)).map(FilterQuery.decode), Right(Right(Some(awkward))))
+
+  test("a malformed prefixed key is reported against itself, never dropped"):
+    // Dropping any of these would widen the result set past what the URL asked for, which is the failure mode this
+    // codec exists to prevent. Each is reported against the key the user can see and edit.
+    def reason(query: String): Vector[FilterError] = FilterQuery.decode(query).swap.getOrElse(Vector.empty)
+    assert(reason("v=1&data.temperature=warm").exists {
+      case FilterError.Invalid("data.temperature", _) => true; case _ => false
+    })
+    assert(reason("v=1&data.=>1").exists { case FilterError.Invalid("data.", _) => true; case _ => false })
+    assert(reason("v=1&data.a%20b=>1").exists { case FilterError.Invalid("data.a b", _) => true; case _ => false })
+    assert(reason("v=1&data.value=%3E%3C1").exists {
+      case FilterError.Invalid("data.value", _) => true; case _ => false
+    })
+    assert(reason("v=1&ext.Tenant=acme").exists { case FilterError.Invalid("ext.Tenant", _) => true; case _ => false })
+    assert(reason("v=1&ext.tenantid=").exists { case FilterError.Invalid("ext.tenantid", _) => true; case _ => false })
+    // A near miss on the prefix itself is an unknown parameter, not a payload filter with an odd name.
+    assertEquals(FilterQuery.decode("v=1&dataX=1"), Left(Vector(FilterError.UnknownParameter("dataX"))))
+    assertEquals(FilterQuery.decode("v=1&extension.a=1"), Left(Vector(FilterError.UnknownParameter("extension.a"))))
+
+  test("a comparison value no smart constructor would accept never reaches the AST"):
+    // `1E+2000000000` is a valid BigDecimal with one significant digit. Rendering it as a jsonpath literal allocates
+    // two gigabytes, and the only thing standing between a permalink and that allocation is `NumLit`.
+    assert(FilterQuery.decode("v=1&data.t=%3E1E%2B2000000000").isLeft)
+    assert(FilterQuery.decode(s"v=1&data.t=%3E${"1" * (NumLit.MaxPrecision + 1)}").isLeft)
+    assert(FilterQuery.decode(s"v=1&ext.tenantid=${"a" * (ExtValue.MaxLength + 1)}").isLeft)

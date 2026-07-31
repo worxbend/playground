@@ -78,19 +78,34 @@ object FilterGenerators:
       value <- Gen.oneOf(Json.fromString("open"), Json.fromInt(3), Json.True)
     yield force(Filter.payloadContains(Json.obj(key -> value)))
 
+  /** Numbers drawn right up to [[NumLit]]'s bounds, not just the well-behaved middle.
+    *
+    * The interesting values for a *codec* are the ones whose `toString` and `toPlainString` disagree — a negative scale
+    * renders as `1E+8` one way and `100000000` the other — because the permalink commits to the plain form and the
+    * round-trip property is what proves the two spellings name the same filter.
+    */
+  private val genNumber: Gen[BigDecimal] =
+    for
+      unscaled <- Gen.choose(-100000L, 100000L)
+      scale <- Gen.choose(-NumLit.MaxScale, NumLit.MaxScale)
+    yield BigDecimal(unscaled, scale)
+
   private val genCmp: Gen[Filter] =
     for
       segments <- Gen.choose(1, 3).flatMap(n => Gen.listOfN(n, Gen.oneOf("temperature", "value", "level", "power")))
       op <- Gen.oneOf(NumOp.values.toIndexedSeq)
-      unscaled <- Gen.choose(-100000L, 100000L)
-      scale <- Gen.choose(0, 3)
-    yield force(Filter.payloadCmp(segments.mkString("."), op, BigDecimal(unscaled, scale)))
+      number <- genNumber
+    yield force(Filter.payloadCmp(segments.mkString("."), op, number))
 
-  private val genExtension: Gen[Filter] =
+  /** Extension names are drawn from a pool with no repeats within one filter — see [[genFlatFilter]]. */
+  private val genExtensionName: Gen[String] =
+    Gen.oneOf("tenantid", "sequence", "traceparent", "partitionkey")
+
+  private val genExtension: Gen[(String, String)] =
     for
-      name <- Gen.oneOf("tenantid", "sequence", "traceparent", "partitionkey")
+      name <- genExtensionName
       value <- genValue
-    yield force(Filter.extensionEq(name, value))
+    yield (name, value)
 
   private val genText: Gen[Filter] =
     Gen
@@ -110,9 +125,15 @@ object FilterGenerators:
       tags <- Gen.option(genTags)
       contains <- Gen.option(genContains)
       comparisons <- Gen.choose(0, 3).flatMap(n => Gen.listOfN(n, genCmp))
-      extensions <- Gen.choose(0, 3).flatMap(n => Gen.listOfN(n, genExtension))
+      extensionPairs <- Gen.choose(0, 3).flatMap(n => Gen.listOfN(n, genExtension))
       text <- Gen.option(genText)
     yield
+      // One leaf per extension name. Two equalities on one name conjoin into a predicate nothing can satisfy, so the
+      // codec reports it as a repeated parameter rather than encoding it — this generator produces permalinkable
+      // filters, and that is not one. Payload comparisons have no such rule: `data.t=>18&data.t=<24` is a range.
+      val extensions = extensionPairs
+        .distinctBy((name, _) => name)
+        .map((name, value) => force(Filter.extensionEq(name, value)))
       val leaves =
         Vector(occurred, types, sources, devices, rooms, persons, severity, tags, contains, text).flatten ++
           comparisons ++ extensions
