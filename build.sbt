@@ -309,6 +309,11 @@ addCommandAlias("fmtCheck", "; scalafmtSbtCheck; scalafmtCheckAll")
 // incremental task (`testQuick` is merely its alias) and `testFull` is the one
 // that runs everything. Spelling it `Test/test` still selects the incremental
 // task, so `verify` reported success while executing zero tests.
-addCommandAlias("verify", "; fmtCheck; headerCheck; Test/testFull")
+// `IT/compile`, `IT/headerCheck` and `IT/scalafmtCheck` are in the FAST tier deliberately, even though running the
+// integration tests is not. None of the three needs Docker, and leaving them out meant `verify` could be green over
+// an `src/it` tree that did not compile — which happened: scalafmt rewrote a block lambda's braces off, leaving
+// `ps => val _ = …`, and nothing said so until somebody with a Docker daemon ran `verifyIt`. Compiling the slow
+// tier costs seconds; discovering it broken costs a round trip.
+addCommandAlias("verify", "; fmtCheck; headerCheck; IT/headerCheck; IT/scalafmtCheck; IT/compile; Test/testFull")
 // The slow tier: integration tests need a working Docker daemon.
 addCommandAlias("verifyIt", "; IT/testFull")

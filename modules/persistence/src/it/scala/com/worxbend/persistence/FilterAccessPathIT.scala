@@ -21,6 +21,7 @@
 
 package com.worxbend.persistence
 
+import com.augustnagro.magnum.Frag
 import com.worxbend.kernel.event.AttrValue
 import com.worxbend.kernel.event.Envelope
 import com.worxbend.kernel.event.EventId
@@ -208,10 +209,20 @@ final class FilterAccessPathIT extends PostgresSuite:
 
   // ---------------------------------------------------------------------------------------------------- plumbing
 
+  /** Binds a compiled fragment's single parameter.
+    *
+    * A named method rather than an inline `ps => val _ = …` lambda: `Frag#writer.write` returns non-Unit, so the
+    * discard has to be bound — and scalafmt rewrites the braces off a block lambda, leaving `ps => val _ = …`, which is
+    * not valid Scala. The IT sources are not compiled by `sbt verify`, so that rewrite produced a green `verify` over a
+    * file that would not compile.
+    */
+  private def binderFor(frag: Frag): PreparedStatement => Unit =
+    statement => val _ = frag.writer.write(statement, 1)
+
   /** The plan for a compiled filter, with sequential scans priced out. */
   private def planOf(filter: Filter): String =
     val frag = FilterSql.compile(filter)
-    explain(frag.sqlString, ps => val _ = frag.writer.write(ps, 1), analyse = false)
+    explain(frag.sqlString, binderFor(frag), analyse = false)
 
   /** The plan for a hand-written predicate with no parameters. */
   private def rawPlan(predicate: String): String = explain(predicate, _ => (), analyse = false)
@@ -230,7 +241,7 @@ final class FilterAccessPathIT extends PostgresSuite:
     */
   private def indexRows(filter: Filter): Double =
     val frag = FilterSql.compile(filter)
-    val text = explain(frag.sqlString, ps => val _ = frag.writer.write(ps, 1), analyse = true)
+    val text = explain(frag.sqlString, binderFor(frag), analyse = true)
     // Every partition contributes a node; the corpus lives in one, so the largest index-scan count is the answer.
     text.linesIterator
       .filter(_.contains("Bitmap Index Scan"))
