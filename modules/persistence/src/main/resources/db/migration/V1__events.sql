@@ -46,7 +46,7 @@ EXCEPTION WHEN others THEN RETURN NULL; END; $$;
 
 -- Ordered severity. Text alone cannot be range-compared; the rank can, which is
 -- what makes "at least warning" an index scan instead of an IN-list.
--- These numbers are the SAME numbers as io.kzonix.kernel.search.Severity, and the
+-- These numbers are the SAME numbers as com.worxbend.kernel.search.Severity, and the
 -- spellings are the SAME spellings: `Severity.rank(raw)` and this function must agree
 -- for every string, aliases included. If the two drift, the UI alert filter and partial
 -- index (11) disagree on what an alert is — a `crit` event is an alert to the domain
@@ -89,7 +89,7 @@ CREATE TABLE events.cloud_event (
     -- The reserved-attribute list is written on ONE line on purpose: unquoted array
     -- elements are whitespace-trimmed, but wrapping this literal is exactly the kind
     -- of edit that silently changes which keys count as extensions. It must stay
-    -- identical to io.kzonix.kernel.event.Envelope.ReservedAttributes.
+    -- identical to com.worxbend.kernel.event.Envelope.ReservedAttributes.
     extensions         jsonb GENERATED ALWAYS AS (raw - '{specversion,id,source,type,subject,time,dataschema,datacontenttype,data,data_base64}'::text[]) STORED,
 
     -- smart-home dimensions

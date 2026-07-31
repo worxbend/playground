@@ -1,4 +1,7 @@
-# kzonix
+# playground
+
+[github.com/worxbend/playground](https://github.com/worxbend/playground) · Scala 3.8.4 · sbt 2.0.3 · JDK 25 ·
+package prefix `com.worxbend`
 
 An **event observatory** for smart-home and IoT telemetry. It ingests [CloudEvents](https://cloudevents.io/) over
 HTTP, streams them through Kafka, stores them in PostgreSQL, and serves a server-rendered UI for exploring,
@@ -79,7 +82,7 @@ sbt cobalt/run    # :8080 (HTTP_PORT)
 sbt ferrite/run   # :9000, Play dev mode
 ```
 
-Run a single suite with `sbt "cobalt/testOnly io.kzonix.cobalt.BatchProcessorSuite"`.
+Run a single suite with `sbt "cobalt/testOnly com.worxbend.cobalt.BatchProcessorSuite"`.
 
 > **The sbt 2 `test` trap.** sbt 2 inverted sbt 1's naming: `test` is *incremental* and `testFull` runs
 > everything. That is why `verify` is spelled `Test/testFull`. Never run `sbt clean`.

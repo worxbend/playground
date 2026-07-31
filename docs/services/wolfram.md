@@ -285,7 +285,7 @@ curl -i -X POST localhost:8080/events \
   -H 'ce-specversion: 1.0' \
   -H 'ce-id: 1' \
   -H 'ce-source: urn:dev:kitchen' \
-  -H 'ce-type: io.kzonix.iot.telemetry' \
+  -H 'ce-type: com.worxbend.iot.telemetry' \
   -H "ce-time: $(date -u +%Y-%m-%dT%H:%M:%SZ)" \
   -H 'content-type: application/json' \
   -d '{"deviceId":"kitchen-1","value":21.5,"unit":"C"}'
@@ -294,7 +294,7 @@ curl -i -X POST localhost:8080/events \
 curl -i -X POST localhost:8080/events \
   -H 'content-type: application/cloudevents+json' \
   -d "{\"specversion\":\"1.0\",\"id\":\"2\",\"source\":\"urn:dev:kitchen\",\
-\"type\":\"io.kzonix.iot.telemetry\",\"time\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\
+\"type\":\"com.worxbend.iot.telemetry\",\"time\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\
 \"data\":{\"deviceId\":\"kitchen-1\",\"value\":21.6}}"
 
 curl -s localhost:8080/openapi.json | jq '.paths | keys'

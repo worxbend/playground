@@ -12,7 +12,7 @@
   Levels come from LOG_LEVEL / LOG_APP_LEVEL, read by the included fragment.
 -->
 <configuration>
-  <include resource="io/kzonix/observability/logback-json.xml"/>
+  <include resource="com/worxbend/observability/logback-json.xml"/>
 
   <!--
     Play narrates its module wiring, its router and every filter at INFO on boot and says nothing actionable

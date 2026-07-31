@@ -9,14 +9,14 @@ not after their frameworks, so the name does not have to change if the stack doe
 
 | Module | Stack | Package |
 | --- | --- | --- |
-| `ferrite` | Play 3 (`PlayService` + Pekko HTTP) | `io.kzonix.ferrite` |
-| `cobalt` | Cask | `io.kzonix.cobalt` |
-| `wolfram` | Tapir endpoints on Vert.x 5 | `io.kzonix.wolfram` |
+| `ferrite` | Play 3 (`PlayService` + Pekko HTTP) | `com.worxbend.ferrite` |
+| `cobalt` | Cask | `com.worxbend.cobalt` |
+| `wolfram` | Tapir endpoints on Vert.x 5 | `com.worxbend.wolfram` |
 
 All three expose the same `GET /health` and `GET /greet/:name`, so the point of the repo is comparing the stacks
 side by side. Keep that parity when adding an endpoint to one of them.
 
-The packages deliberately avoid the framework names: `io.kzonix.cask` and `io.kzonix.tapir` would shadow the
+The packages deliberately avoid the framework names: `com.worxbend.cask` and `com.worxbend.tapir` would shadow the
 `cask` and `sttp.tapir` library packages inside their own sources.
 
 ## Commands
@@ -30,7 +30,7 @@ sbt ferrite/run   # :9000
 sbt cobalt/run    # :8080
 sbt wolfram/run   # :8080
 
-sbt "cobalt/testOnly io.kzonix.cobalt.GreetingsSuite"
+sbt "cobalt/testOnly com.worxbend.cobalt.GreetingsSuite"
 sbt ferrite/Docker/publishLocal
 ```
 

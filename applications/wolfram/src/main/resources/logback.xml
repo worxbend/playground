@@ -13,5 +13,5 @@
   Levels come from LOG_LEVEL / LOG_APP_LEVEL, read by the included fragment.
 -->
 <configuration>
-  <include resource="io/kzonix/observability/logback-json.xml"/>
+  <include resource="com/worxbend/observability/logback-json.xml"/>
 </configuration>

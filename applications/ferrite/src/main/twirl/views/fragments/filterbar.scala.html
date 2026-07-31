@@ -8,7 +8,7 @@
  * Every value here is the RAW query-string text, not a value re-rendered from a parsed filter: a rejected permalink
  * has to come back with the offending text still in the box that produced it (ADR section 6.3).
  *@
-@import io.kzonix.ferrite.web.view.FilterBar
+@import com.worxbend.ferrite.web.view.FilterBar
 
 @(bar: FilterBar)
 
@@ -62,7 +62,7 @@
     <label for="severity">Severity at least</label>
     <select id="severity" name="severity">
       <option value="" @if(bar.severity.isEmpty){selected}>Any</option>
-      @for(level <- io.kzonix.kernel.search.Severity.values.toSeq) {
+      @for(level <- com.worxbend.kernel.search.Severity.values.toSeq) {
         <option value="&gt;=@level.label" @if(bar.severity == level.label){selected}>@level.label</option>
       }
     </select>

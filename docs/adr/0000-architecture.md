@@ -3,7 +3,7 @@
 **Status:** Accepted — this document is the implementation contract
 **Date:** 2026-07-26
 **Supersedes:** the 8 individual research reports
-**Repo:** `kzonix/playground` · sbt 2.0.3 · Scala 3.8.4 · JDK 25 · Play 3.1.0-M9
+**Repo:** `worxbend/playground` · sbt 2.0.3 · Scala 3.8.4 · JDK 25 · Play 3.1.0-M9
 
 ---
 
@@ -100,10 +100,10 @@ flowchart LR
 
 | sbt id | path | package | consumers | contents | deps |
 |---|---|---|---|---|---|
-| `kernel` | `modules/kernel` | `io.kzonix.kernel` | ferrite, cobalt, wolfram | CloudEvents `Envelope`, `Payload`, `AttrValue`, `SchemaRef`, opaque ids, `Observation` ADT + total refinement, hand-written CloudEvents JSON Format 1.0 circe codecs, `partitionKey`, the search `Filter` ADT and its querystring codec, topic name constants | **circe-core, circe-parser only** |
-| `eventing` | `modules/eventing` | `io.kzonix.eventing` | cobalt, wolfram | `Envelope` ↔ `io.cloudevents.CloudEvent` adapter, binary/structured content-mode handling, `CloudEventSerializer` wiring, DLQ envelope, W3C traceparent inject/extract over Kafka `Headers` | kernel, cloudevents-kafka, kafka-clients, opentelemetry-api |
-| `persistence` | `modules/persistence` | `io.kzonix.persistence` | ferrite, cobalt | Hikari `DataSource` provider (jakarta `Provider`), `DbCodec[Json]` ↔ jsonb, `Transactor` wiring, `Filter ⇒ Frag` compiler, keyset cursor codec, Flyway runner, **`src/main/resources/db/migration/*.sql`** | kernel, magnum, magnumpg, HikariCP, postgresql, flyway |
-| `observability` | `modules/observability` | `io.kzonix.observability` | ferrite, cobalt, wolfram | `Telemetry` (shared `PrometheusRegistry` + `PrometheusMeterRegistry` + traces-only `OpenTelemetrySdk`), JVM/system binders, common tags, MDC helpers, logback JSON config | micrometer, prometheus-metrics, opentelemetry sdk/exporter, logstash-logback-encoder |
+| `kernel` | `modules/kernel` | `com.worxbend.kernel` | ferrite, cobalt, wolfram | CloudEvents `Envelope`, `Payload`, `AttrValue`, `SchemaRef`, opaque ids, `Observation` ADT + total refinement, hand-written CloudEvents JSON Format 1.0 circe codecs, `partitionKey`, the search `Filter` ADT and its querystring codec, topic name constants | **circe-core, circe-parser only** |
+| `eventing` | `modules/eventing` | `com.worxbend.eventing` | cobalt, wolfram | `Envelope` ↔ `io.cloudevents.CloudEvent` adapter, binary/structured content-mode handling, `CloudEventSerializer` wiring, DLQ envelope, W3C traceparent inject/extract over Kafka `Headers` | kernel, cloudevents-kafka, kafka-clients, opentelemetry-api |
+| `persistence` | `modules/persistence` | `com.worxbend.persistence` | ferrite, cobalt | Hikari `DataSource` provider (jakarta `Provider`), `DbCodec[Json]` ↔ jsonb, `Transactor` wiring, `Filter ⇒ Frag` compiler, keyset cursor codec, Flyway runner, **`src/main/resources/db/migration/*.sql`** | kernel, magnum, magnumpg, HikariCP, postgresql, flyway |
+| `observability` | `modules/observability` | `com.worxbend.observability` | ferrite, cobalt, wolfram | `Telemetry` (shared `PrometheusRegistry` + `PrometheusMeterRegistry` + traces-only `OpenTelemetrySdk`), JVM/system binders, common tags, MDC helpers, logback JSON config | micrometer, prometheus-metrics, opentelemetry sdk/exporter, logstash-logback-encoder |
 | `docs` | `modules/docs` | — | build only | mdoc sources; `publish/skip := true`; relaxed scalacOptions | mdoc |
 
 **The rule that keeps this honest:** a new module requires (a) two or more consumers and (b) a framework-free or single-framework boundary. `kernel` additionally must never gain a dependency beyond circe — assert it with a build-level test:
@@ -289,7 +289,7 @@ Plus a CI gate: `sbt evicted` must not report `kafka-clients` at 4.x, and `sbt d
 
 **The SDK is an adapter, never a domain type.** `io.cloudevents.CloudEvent` is a Java interface with nullable getters, a mutable throwing builder, and a byte-oriented `CloudEventData` — it does not pattern-match and it is infrastructure. It lives in `modules/eventing` only. `modules/kernel` owns the model.
 
-### 4.1 The model (`io.kzonix.kernel.event`)
+### 4.1 The model (`com.worxbend.kernel.event`)
 
 ```scala
 opaque type EventId   <: String = String
@@ -343,7 +343,7 @@ object Observation:
 
 Consequence: an unheard-of firmware event still lands in Postgres, still appears in search, and still renders as raw JSON. Persistence and the UI never depend on the enum being complete.
 
-**Versioning hangs off `dataschema`, not the type string.** `SchemaRef` parses `https://schemas.kzonix.io/iot/telemetry/1.2.0` into `(name, SemVer)`; the registry is keyed on `(EventType, major)`; minor/patch bumps must be additive and decoders ignore unknown fields. The raw `dataschema` URI is stored verbatim so a five-year-old event is still explainable.
+**Versioning hangs off `dataschema`, not the type string.** `SchemaRef` parses `https://schemas.worxbend.io/iot/telemetry/1.2.0` into `(name, SemVer)`; the registry is keyed on `(EventType, major)`; minor/patch bumps must be additive and decoders ignore unknown fields. The raw `dataschema` URI is stored verbatim so a five-year-old event is still explainable.
 
 **Guardrail:** every `Unrecognised` increments a Micrometer counter tagged `(type, reason)`. Alert on a nonzero rate for types the registry claims to know — otherwise a broken decoder is indistinguishable from a new device.
 
@@ -805,7 +805,7 @@ tailwindCss := Def.uncached:   // sbt 2 rejects File-valued cached tasks
 Compile / resourceGenerators += tailwindCss.taskValue
 ```
 
-Output lands on the classpath at `public/css/app.css` — exactly where `Assets.at("/public", …)` looks — so **the Docker image never sees Tailwind or Node**. Cache `~/.cache/kzonix` in CI next to `~/.cache/coursier`; select `tailwindcss-linux-x64-musl` if the *build* ever runs inside Alpine.
+Output lands on the classpath at `public/css/app.css` — exactly where `Assets.at("/public", …)` looks — so **the Docker image never sees Tailwind or Node**. Cache `~/.cache/worxbend` in CI next to `~/.cache/coursier`; select `tailwindcss-linux-x64-musl` if the *build* ever runs inside Alpine.
 
 htmx and Alpine come from WebJars via sbt-web at `/assets/lib/htmx.org/dist/htmx.min.js` and `/assets/lib/alpinejs/dist/cdn.min.js`. Cache-bust with `?v=${BuildInfo.version}` rather than adopting `sbt-digest_sbt2_3:2.2.0-M1`.
 
@@ -823,7 +823,7 @@ Conventions: `hx-target="#event-rows" hx-swap="innerHTML"` for filter/search; a 
 
 **Accessibility (non-negotiable):** skip link to `#main`; on `htmx:afterSwap` move focus to the results heading (`tabindex="-1"`) or screen-reader users lose their place on every filter change; `aria-live="polite"` on status regions only, plus `aria-busy` + `hx-indicator`; real `<table>` with `<th scope="col">` and `<caption class="sr-only">`; sortable headers are `<button>` inside `<th aria-sort>`; **every htmx trigger is an `<a>` or `<button>`** — `hx-get` on a `<div>` is not keyboard reachable; `/` focuses search, `j`/`k` move, `Enter` opens, `Esc` closes via one Alpine `x-on:keydown.window`; always a visible `focus-visible:ring-2`; view-transition swaps gated behind `prefers-reduced-motion`.
 
-**Layering:** templates receive only flat, primitive-typed `io.kzonix.ferrite.web.view.*` case classes — never domain entities, never repository types. Add that package to `TwirlKeys.templateImports`. Do **not** strip `models._` from the default template imports (Play ships a `models.DummyPlaceHolder` class precisely so that import always resolves).
+**Layering:** templates receive only flat, primitive-typed `com.worxbend.ferrite.web.view.*` case classes — never domain entities, never repository types. Add that package to `TwirlKeys.templateImports`. Do **not** strip `models._` from the default template imports (Play ships a `models.DummyPlaceHolder` class precisely so that import always resolves).
 
 ---
 
@@ -962,7 +962,7 @@ lazy val docs = (project in file("modules/docs"))
 ThisBuild / Compile / doc / scalacOptions := scalacFlags   // keep -Werror; revisit only if it blocks
 ```
 
-Nav includes an ADR section; this document becomes `docs/adr/0000-architecture.md`. Stable Scaladoc URLs: `https://kzonix.github.io/playground/api/{ferrite,cobalt,wolfram}/`.
+Nav includes an ADR section; this document becomes `docs/adr/0000-architecture.md`. Stable Scaladoc URLs: `https://worxbend.github.io/playground/api/{ferrite,cobalt,wolfram}/`.
 
 ---
 
@@ -1045,7 +1045,7 @@ Filter bar with dimension autocomplete from `events.device`/`dim_*`; capped-cand
 | The `-Wconf:src=.*/target/.*/twirl/.*:s` filter depends on generated templates living under a path containing `/target/…/twirl/`. A future sbt output-layout change silently un-silences it and breaks the build under `-Werror`. | CI assertion on `show ferrite/Compile/TwirlKeys.compileTemplates/target`. If it moves, update the regex — it is one line. |
 | **Dropping `-new-syntax` from ferrite** means the compiler no longer rejects old control syntax in hand-written ferrite code. Enforcement rests entirely on `.scalafmt.conf` + `fmtCheck`. If someone loosens the scalafmt config or excludes a file, ferrite silently drifts from the rest of the repo. | If this becomes unacceptable, split templates into a `ferrite-views` module and keep `-new-syntax` on ferrite proper — at the cost of a third module for shared view models. |
 | sbt 2 rejects `TaskKey[Seq[File]]` as a cached task (*"java.io.File and Path are not valid output types for a cached task"*). The Tailwind task must be `Def.uncached` with a `@transient lazy val` key. Consequence: Tailwind re-runs on every `Compile/resources`. | Acceptable at 37 ms. If it ever matters, write a manual timestamp check. |
-| The Tailwind binary comes from **GitHub, not Maven** — a fresh machine needs github.com access and a 112 MB download. | Pin the SHA-256, cache `~/.cache/kzonix` in CI, always honour a `TAILWIND_BIN` override for air-gapped builds. Select `-musl` if the build runs inside Alpine. |
+| The Tailwind binary comes from **GitHub, not Maven** — a fresh machine needs github.com access and a 112 MB download. | Pin the SHA-256, cache `~/.cache/worxbend` in CI, always honour a `TAILWIND_BIN` override for air-gapped builds. Select `-musl` if the build runs inside Alpine. |
 | **`PlayWeb`'s `webSettings` strips `MainClass` from `Compile/packageBin/packageOptions`** and sets `generateAssetsJar := true`, so ferrite's dist gains a separate `-assets.jar` and its main jar loses its manifest main class. Harmless with native-packager (the start script sets it) but the artifact shape changes. | None needed; documented so it is not mistaken for a regression. |
 | The root project must carry `.configs(IT)` or `IT/test` **silently tests nothing**. | The `verify` alias includes `IT/headerCheck`, which fails loudly if the config is missing. |
 

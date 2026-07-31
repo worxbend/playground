@@ -22,7 +22,7 @@ One `deploy/docker-compose.yml` brings up the whole stack on a single host.
 | `prometheus` | `prom/prometheus:v3.13.1` | `9090` | Scrapes `/metrics` off all three services every 15 s, 30 d retention. |
 | `grafana` | `grafana/grafana:13.1.1` | `3000` | Prometheus provisioned as the default datasource, plus the **Event observatory** dashboard (§5.2). |
 
-Topics (`kafka-init`, and `io.kzonix.kernel.event.Topics`):
+Topics (`kafka-init`, and `com.worxbend.kernel.event.Topics`):
 
 - `events.cloudevents.v1` — 12 partitions, replication factor 1, CloudEvents **binary** content mode.
 - `events.cloudevents.v1.dlq` — 3 partitions, replication factor 1, CloudEvents **structured** mode, keyed
@@ -71,7 +71,7 @@ curl -fsS localhost:8081/openapi.json | jq .info     # the running build's own A
 
 curl -fsS -X POST localhost:8081/events \
   -H 'ce-specversion: 1.0' -H 'ce-id: smoke-1' \
-  -H 'ce-source: urn:kzonix:smoke' -H 'ce-type: io.kzonix.smoke.v1' \
+  -H 'ce-source: urn:worxbend:smoke' -H 'ce-type: com.worxbend.smoke.v1' \
   -H "ce-time: $(date -u +%Y-%m-%dT%H:%M:%SZ)" \
   -H 'content-type: application/json' \
   -d '{"deviceId":"smoke","severity":"info","value":1}'
@@ -120,7 +120,7 @@ Optional, with compose defaults:
 | --- | --- | --- |
 | `POSTGRES_DB` | `observatory` | Also interpolated into `DATABASE_URL` for cobalt and ferrite. |
 | `POSTGRES_USER` | `observatory` | |
-| `ALLOWED_HOSTS` | `localhost,127.0.0.1` | Play's allowed-hosts filter. Comma-separated; split by `io.kzonix.ferrite.wiring.AllowedHosts`. Compose appends `ferrite` so Prometheus can scrape `http://ferrite:9000/metrics` — without it the filter answers 400 and that target stays DOWN. |
+| `ALLOWED_HOSTS` | `localhost,127.0.0.1` | Play's allowed-hosts filter. Comma-separated; split by `com.worxbend.ferrite.wiring.AllowedHosts`. Compose appends `ferrite` so Prometheus can scrape `http://ferrite:9000/metrics` — without it the filter answers 400 and that target stays DOWN. |
 | `OTEL_EXPORTER_OTLP_ENDPOINT` | `http://otel-collector:4317` | |
 | `OTEL_TRACES_SAMPLER` | `parentbased_traceidratio` | |
 | `OTEL_TRACES_SAMPLER_ARG` | `0.1` | 10 % of traces. |
@@ -190,7 +190,7 @@ process stays *live* while consuming nothing — which is precisely why lag is m
 | Variable | Default | Effect |
 | --- | --- | --- |
 | `APPLICATION_SECRET` | a development-only literal | Mandatory outside development. |
-| `ALLOWED_HOSTS` | `localhost,127.0.0.1,.local` | Allowed-hosts filter. A **comma-separated string**, split by `io.kzonix.ferrite.wiring.AllowedHosts` — Play's own `play.filters.hosts.allowed` list key cannot be fed from the environment. An empty value fails the boot rather than rejecting every request. |
+| `ALLOWED_HOSTS` | `localhost,127.0.0.1,.local` | Allowed-hosts filter. A **comma-separated string**, split by `com.worxbend.ferrite.wiring.AllowedHosts` — Play's own `play.filters.hosts.allowed` list key cannot be fed from the environment. An empty value fails the boot rather than rejecting every request. |
 | `PLAY_HTTP_PORT` | `9000` | Play's own variable (`play.server.http.port`). |
 | `PLAY_HTTP_ADDRESS` | `0.0.0.0` | |
 
@@ -501,7 +501,7 @@ Notes that matter for this schema:
   fast incremental copy of only the months that changed; older months are immutable once their month closes.
 - **Generated columns are not dumped as data** — they are recomputed on restore from `raw`, which is the point of
   storing the CloudEvent verbatim. A restore that changes `events.severity_rank` would silently change history;
-  keep that function in lockstep with `io.kzonix.kernel.search.Severity`.
+  keep that function in lockstep with `com.worxbend.kernel.search.Severity`.
 - **The materialized view restores empty** (`WITH NO DATA` semantics differ per restore path); refresh it
   explicitly if you start depending on it.
 - **Run everything with `-Duser.timezone=UTC`/`TZ=UTC`.** Partition bounds are parsed in the session timezone; a

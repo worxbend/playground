@@ -49,7 +49,7 @@ jobs:
       # `scaladocSite` asks sbt for the path instead of guessing it, so it cannot
       # drift with the sbt version, the Scala version or the output layout.
       - name: Build Scaladoc
-        run: sbt -batch scaladocSite
+        run: sbt -batch playground/scaladocSite
 
       - name: Assemble site
         run: |

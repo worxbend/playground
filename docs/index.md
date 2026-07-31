@@ -1,4 +1,4 @@
-# kzonix event observatory
+# playground event observatory
 
 An event observatory for smart-home and IoT telemetry. It ingests [CloudEvents](https://cloudevents.io/) over HTTP,
 streams them through Kafka, stores them in PostgreSQL, and serves a fast server-rendered UI for exploring,

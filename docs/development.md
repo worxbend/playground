@@ -44,8 +44,8 @@ sbt ferrite/run   # :9000, Play dev mode
 sbt ferrite/tailwind       # regenerate ferrite's committed stylesheet — see §8
 sbt ferrite/tailwindCheck  # fail if it is stale
 
-sbt "cobalt/testOnly io.kzonix.cobalt.BatchProcessorSuite"
-sbt "persistence/IT/testOnly io.kzonix.persistence.MigrationIT"
+sbt "cobalt/testOnly com.worxbend.cobalt.BatchProcessorSuite"
+sbt "persistence/IT/testOnly com.worxbend.persistence.MigrationIT"
 
 # One quoted argument each, or a ";a;b;c" sequence: sbt 2 does not split a single space-joined string.
 sbt ";ferrite/Docker/publishLocal;cobalt/Docker/publishLocal;wolfram/Docker/publishLocal"
@@ -243,7 +243,7 @@ second, unordered, uncommitted way into the same database. New routes here are o
 There is **no routes file** and there must not be: `Compile / routes / sources := Nil`, and routing is
 `AppRouter`, selected by `play.http.router` in `application.conf`.
 
-1. **URL** — add the path to `io.kzonix.ferrite.web.Urls` (and a builder function if it takes parameters). This
+1. **URL** — add the path to `com.worxbend.ferrite.web.Urls` (and a builder function if it takes parameters). This
    is the single source of the string.
 2. **Pattern** — add a `PathExtractor` to `object Paths` in `routing/Routers.scala`, built from the `Urls`
    constant via `PathExtractor.cached`, so the route and the URL builder are the same string *by construction*:
@@ -291,7 +291,7 @@ it must not start against a schema older than its own inserts. ferrite never mig
      instead so a bad payload is a missing dimension rather than an outage.
    - Storage parameters go on leaf partitions, never on the partitioned parent (Postgres rejects them there), and
      they are not inherited by new partitions.
-   - Anything mirroring Scala — `events.severity_rank` vs `io.kzonix.kernel.search.Severity`, the reserved
+   - Anything mirroring Scala — `events.severity_rank` vs `com.worxbend.kernel.search.Severity`, the reserved
      attribute list vs `Envelope.ReservedAttributes` — must stay identical, spellings and aliases included.
      `MigrationScriptSuite` checks the reserved list; keep new mirrors equally checked.
 3. **Update the tests that pin the schema:**
@@ -365,20 +365,20 @@ usual — the regenerated file is a source file like any other.
 
 The CLI is a 112 MB self-contained binary from GitHub releases, **not** from Maven (`org.webjars.npm:tailwindcss`
 ships the `@tailwindcss/oxide` native compiler and needs Node). `Tailwind.resolve` in `project/Tailwind.scala`
-looks for it in this order — `TAILWIND_BIN`, then `~/.cache/kzonix/tailwindcss-<platform>-4.3.3`, then
+looks for it in this order — `TAILWIND_BIN`, then `~/.cache/worxbend/tailwindcss-<platform>-4.3.3`, then
 `tailwindcss` on `PATH` — and if none is there, **it warns with the exact `curl` command and changes nothing.**
 
 ```bash
-mkdir -p ~/.cache/kzonix
-curl -fsSL -o ~/.cache/kzonix/tailwindcss-linux-x64-4.3.3 \
+mkdir -p ~/.cache/worxbend
+curl -fsSL -o ~/.cache/worxbend/tailwindcss-linux-x64-4.3.3 \
   https://github.com/tailwindlabs/tailwindcss/releases/download/v4.3.3/tailwindcss-linux-x64
-chmod +x ~/.cache/kzonix/tailwindcss-linux-x64-4.3.3
+chmod +x ~/.cache/worxbend/tailwindcss-linux-x64-4.3.3
 ```
 
 `PATH` is searched last on purpose: a globally installed `tailwindcss` is very often a different major version,
 and the pinned copy in the cache is the one that reproduces the committed file byte for byte. On a musl host
 (Alpine) take the `-musl` asset from the same release and point `TAILWIND_BIN` at it; the glibc build will not
-run there. In CI, cache `~/.cache/kzonix` beside `~/.cache/coursier`.
+run there. In CI, cache `~/.cache/worxbend` beside `~/.cache/coursier`.
 
 ### Four decisions in that task worth not re-litigating
 

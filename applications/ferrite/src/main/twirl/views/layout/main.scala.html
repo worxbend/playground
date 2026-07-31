@@ -19,18 +19,18 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="light dark">
     <title>@title</title>
-    <link rel="stylesheet" href="@io.kzonix.ferrite.web.Urls.asset("css/app.css")">
+    <link rel="stylesheet" href="@com.worxbend.ferrite.web.Urls.asset("css/app.css")">
     @*
      * htmx and Alpine come from WebJars, unpacked under /public by sbt-web, and are cache-busted by build version
      * rather than by a content digest (ADR section 8.3 rejects sbt-digest's milestone artifact).
      * `defer` on both, Alpine last: Alpine initialises on DOMContentLoaded and its MutationObserver then picks up
      * anything htmx swaps in afterwards, which is why swapped fragments need no re-initialisation glue.
      *@
-    <script defer src="@io.kzonix.ferrite.web.Urls.asset("lib/htmx.org/dist/htmx.min.js")"></script>
-    <script defer src="@io.kzonix.ferrite.web.Urls.asset("js/app.js")"></script>
-    <script defer src="@io.kzonix.ferrite.web.Urls.asset("lib/alpinejs/dist/cdn.min.js")"></script>
+    <script defer src="@com.worxbend.ferrite.web.Urls.asset("lib/htmx.org/dist/htmx.min.js")"></script>
+    <script defer src="@com.worxbend.ferrite.web.Urls.asset("js/app.js")"></script>
+    <script defer src="@com.worxbend.ferrite.web.Urls.asset("lib/alpinejs/dist/cdn.min.js")"></script>
   </head>
-  <body class="app" hx-headers='@io.kzonix.ferrite.web.Csrf.hxHeaders(request)' x-data="observatory">
+  <body class="app" hx-headers='@com.worxbend.ferrite.web.Csrf.hxHeaders(request)' x-data="observatory">
     <a class="skip-link" href="#main">Skip to results</a>
 
     <header class="app-header" role="banner">
@@ -39,9 +39,9 @@
         <span class="app-title">Event observatory</span>
       </div>
       <nav class="app-nav" aria-label="Primary">
-        <a href="@io.kzonix.ferrite.web.Urls.Events" @if(activePath == io.kzonix.ferrite.web.Urls.Events){aria-current="page"}>Events</a>
-        <a href="@io.kzonix.ferrite.web.Urls.HealthReady">Health</a>
-        <a href="@io.kzonix.ferrite.web.Urls.Metrics">Metrics</a>
+        <a href="@com.worxbend.ferrite.web.Urls.Events" @if(activePath == com.worxbend.ferrite.web.Urls.Events){aria-current="page"}>Events</a>
+        <a href="@com.worxbend.ferrite.web.Urls.HealthReady">Health</a>
+        <a href="@com.worxbend.ferrite.web.Urls.Metrics">Metrics</a>
       </nav>
       <p class="app-hint">Press <kbd>/</kbd> to search, <kbd>j</kbd>/<kbd>k</kbd> to move, <kbd>Enter</kbd> to open.</p>
     </header>
@@ -51,7 +51,7 @@
     </main>
 
     <footer class="app-footer" role="contentinfo">
-      <span>ferrite @io.kzonix.ferrite.web.BuildVersion.value</span>
+      <span>ferrite @com.worxbend.ferrite.web.BuildVersion.value</span>
       <span>Reads only. Migrations are an operator-run job, never a boot step.</span>
     </footer>
   </body>

@@ -96,16 +96,16 @@ lazy val containerJvmOptions: Seq[String] = Seq(
 )
 
 /** Aggregates every module, so `sbt test` at the root exercises the whole build. */
-lazy val kzonix = (project in file("."))
+lazy val playground = (project in file("."))
   .configs(IT) // so the root `IT/test` aggregates to every module
   .settings(defaultSettings *)
   .settings(itSettings *)
   .settings(
-    name := "kzonix",
+    name := "playground",
     publish / skip := true,
     // Two sbt 2 constraints shape how this is written, and both fail loudly:
     //   - Settings written bare at the top level of build.sbt are NOT added to an explicitly declared root project,
-    //     so the body has to live inside `kzonix` rather than beside its key.
+    //     so the body has to live inside `playground` rather than beside its key.
     //   - The task returns Unit and not the directory. sbt 2 caches task outputs and rejects `File` as an output
     //     type, since a path is not a value it can hash. The destination is a constant anyway.
     scaladocSite := {
@@ -272,7 +272,7 @@ lazy val wolfram = (project in file("applications/wolfram"))
 
 /** Every project whose Scaladoc is published, and the URL segment it appears under.
   *
-  * A list rather than `kzonix.aggregate`'s members, because the order is the order of `docs/api/index.html` and a
+  * A list rather than `playground.aggregate`'s members, because the order is the order of `docs/api/index.html` and a
   * documentation index that reshuffles itself when someone adds a module is worse than one that has to be edited.
   */
 lazy val documentedProjects: Seq[(String, Project)] =

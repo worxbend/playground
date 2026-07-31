@@ -2,11 +2,11 @@
  * The event detail page: the layout plus the detail fragment, and nothing else. The fragment is the same one an
  * htmx navigation receives, so the two representations cannot drift.
  *@
-@import io.kzonix.ferrite.web.view.Detail
+@import com.worxbend.ferrite.web.view.Detail
 
 @(detail: Detail)(implicit request: RequestHeader)
 
-@layout.main(s"${detail.row.eventType} · observatory", io.kzonix.ferrite.web.Urls.Events) {
+@layout.main(s"${detail.row.eventType} · observatory", com.worxbend.ferrite.web.Urls.Events) {
   <section id="results" class="results" aria-live="polite" aria-busy="false">
     @fragments.detail(detail)
   </section>

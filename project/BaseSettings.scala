@@ -33,8 +33,8 @@ object BaseSettings:
   val buildVersion: String = sys.env.getOrElse("BUILD_VERSION", "0.1.0-SNAPSHOT")
 
   val defaultSettings: Seq[Setting[?]] = Seq(
-    organization := "io.kzonix",
-    organizationName := "Kzonix Projects",
+    organization := "com.worxbend",
+    organizationName := "Worxbend",
     startYear := Some(2020),
     licenses := Seq(License.MIT),
     versionScheme := Some("semver-spec"),

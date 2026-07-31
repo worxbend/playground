@@ -217,9 +217,9 @@ Play's reference configuration and `modules/persistence`'s `reference.conf` supp
 
 Fixed in `application.conf`, no env var:
 
-- `play.http.router = io.kzonix.ferrite.routing.AppRouter` — SIRD, not a compiled routes file.
-- `play.modules.enabled += io.kzonix.ferrite.wiring.FerriteModule`.
-- `play.filters.enabled += io.kzonix.ferrite.web.MetricsFilter`.
+- `play.http.router = com.worxbend.ferrite.routing.AppRouter` — SIRD, not a compiled routes file.
+- `play.modules.enabled += com.worxbend.ferrite.wiring.FerriteModule`.
+- `play.filters.enabled += com.worxbend.ferrite.web.MetricsFilter`.
 - **CSRF is enabled.** The `play.filters.disabled += CSRFFilter` line was *removed* rather than commented out — a
   disabled security filter with a comment explaining why is a filter that stays disabled. The token reaches every
   htmx request through one `hx-headers` attribute on `<body>`: htmx inherits it down the DOM, so every descendant

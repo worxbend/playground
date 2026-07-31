@@ -14,7 +14,7 @@ appears in search results, and still renders in the UI.** Nothing on the write p
 
 `io.cloudevents.CloudEvent` — the SDK type — is an adapter, not a domain type. It is a Java interface with nullable
 getters, a throwing mutable builder and a byte-oriented data model; it does not pattern-match. It is confined to
-`modules/eventing`. The type the three services agree on is `io.kzonix.kernel.event.Envelope`:
+`modules/eventing`. The type the three services agree on is `com.worxbend.kernel.event.Envelope`:
 
 ```scala
 final case class Envelope(
@@ -156,14 +156,14 @@ indistinguishable from a new device.
 ## Versioned schemas
 
 **Versions hang off `dataschema`, never off the `type` string.** The recognised types are bare reverse-DNS:
-`io.kzonix.iot.telemetry`, `io.kzonix.iot.state-changed`, `io.kzonix.iot.alarm`. A type string carrying its own version
+`com.worxbend.iot.telemetry`, `com.worxbend.iot.state-changed`, `com.worxbend.iot.alarm`. A type string carrying its own version
 forks the registry on every additive change and turns "give me all telemetry" from an equality match into a prefix
 match.
 
 `SchemaRef` wraps the raw `dataschema` URI and derives `name` and `version` as *views* over its path segments:
 
 ```
-https://schemas.kzonix.io/iot/telemetry/1.2.0
+https://schemas.worxbend.io/iot/telemetry/1.2.0
                               ^^^^^^^^^ ^^^^^
                               name      SemVer(1,2,0)
 ```
@@ -203,7 +203,7 @@ discovered later.
 
 **Structured on the DLQ.** A poison record is read by a human under time pressure with `kcat`, and reassembling an
 event from a dozen headers at that moment is exactly the wrong task. Self-containment also makes replay a copy rather
-than a reconstruction. The dead letter is *itself* a CloudEvent (`io.kzonix.eventing.dead-letter`) so the DLQ holds the
+than a reconstruction. The dead letter is *itself* a CloudEvent (`com.worxbend.eventing.dead-letter`) so the DLQ holds the
 same kind of thing as every other topic and needs no second reader that nobody exercises until the day it matters.
 
 Two implementation notes that are easy to get wrong and are therefore fixed in `ContentMode`:
@@ -214,7 +214,7 @@ Two implementation notes that are easy to get wrong and are therefore fixed in `
   `MessageUtils.parseStructuredOrBinaryMessage` does, misreads exactly those records as structured and loses every
   attribute in the headers. A genuine structured record never carries `ce_specversion`; its specversion is inside the
   JSON. So that header's presence is the unambiguous signal and the media type is only the fallback.
-- **Binary `time` is rendered by `io.kzonix.kernel.Rfc3339`, not by the SDK serializer.** The SDK uses
+- **Binary `time` is rendered by `com.worxbend.kernel.Rfc3339`, not by the SDK serializer.** The SDK uses
   `DateTimeFormatter.ISO_OFFSET_DATE_TIME`, which omits the seconds field when it is zero — `2024-01-01T17:31Z` — and
   that is not RFC 3339. It parses back fine, so the defect is invisible in any Java-only round trip and surfaces only
   against a stricter consumer in someone else's stack.

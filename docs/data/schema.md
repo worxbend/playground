@@ -66,7 +66,7 @@ also why `search_doc` uses the **two-argument** `to_tsvector('simple', …)` for
 **The reserved-attribute list must match the domain.** The `raw - '{…}'::text[]` literal is written on one line on
 purpose: unquoted array elements are whitespace-trimmed, and wrapping that literal is exactly the kind of edit that
 silently changes which keys count as extensions. It must stay identical to
-`io.kzonix.kernel.event.Envelope.ReservedAttributes`.
+`com.worxbend.kernel.event.Envelope.ReservedAttributes`.
 
 ### `severity_rank` and the domain
 
@@ -74,7 +74,7 @@ silently changes which keys count as extensions. It must stay identical to
 (`warn`/`warning`, `err`/`error`, `crit`/`critical`, `emerg`/`emergency`/`panic`). Text alone cannot be range-compared;
 the rank can, which is what makes "at least warning" an index scan instead of an `IN` list.
 
-**These are the same numbers and the same spellings as `io.kzonix.kernel.search.Severity`, and they must stay that
+**These are the same numbers and the same spellings as `com.worxbend.kernel.search.Severity`, and they must stay that
 way.** If they drift, the UI's alert filter and partial index (11) disagree about what an alert is: a `crit` event
 would be an alert to the domain and a `NULL` rank to the database — missing from the alert feed and from
 `severity >= warn` searches, while still rendering as critical in the detail view.

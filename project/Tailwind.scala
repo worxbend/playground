@@ -24,7 +24,7 @@ object Tailwind:
   /** Where a downloaded binary is kept, beside coursier's cache rather than inside the project, so it survives a
     * worktree being deleted and is shared by every checkout.
     */
-  def cacheDir: File = file(sys.props.getOrElse("user.home", ".")) / ".cache" / "kzonix"
+  def cacheDir: File = file(sys.props.getOrElse("user.home", ".")) / ".cache" / "worxbend"
 
   /** The release asset for the host platform.
     *

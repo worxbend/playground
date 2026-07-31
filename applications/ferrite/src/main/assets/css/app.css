@@ -27,7 +27,7 @@
  *       val fallback = (Compile / sourceDirectory).value / "assets" / "css" / "components.css"
  *       val output   = (Compile / resourceManaged).value / "public" / "css" / "app.css"
  *       IO.createDirectory(output.getParentFile)
- *       // TAILWIND_BIN, else ~/.cache/kzonix/tailwindcss-linux-x64-4.3.3, else download it from the GitHub release.
+ *       // TAILWIND_BIN, else ~/.cache/worxbend/tailwindcss-linux-x64-4.3.3, else download it from the GitHub release.
  *       Tailwind.resolve("4.3.3", log) match
  *         case Some(cli) => run(cli, input, output)              // 42 ms, 20 KB minified, measured
  *         case None      => IO.copyFile(fallback, output)        // never fail the build

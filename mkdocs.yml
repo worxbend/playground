@@ -1,4 +1,4 @@
-site_name: kzonix event observatory
+site_name: playground event observatory
 site_description: A CloudEvents observatory for smart-home and IoT telemetry
 repo_url: https://github.com/worxbend/playground
 edit_uri: edit/main/docs/
