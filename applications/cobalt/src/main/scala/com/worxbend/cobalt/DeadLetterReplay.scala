@@ -274,7 +274,8 @@ object DeadLetterReplay:
       case ReplayScope.Named(refs) =>
         val byRef = records.iterator.map(record => record.ref -> record).toMap
         (refs.flatMap(byRef.get), refs.filterNot(byRef.contains))
-    val ordered = candidates.sortBy(record => (record.timestamp.getOrElse(Long.MinValue), record.partition, record.offset))
+    val ordered =
+      candidates.sortBy(record => (record.timestamp.getOrElse(Long.MinValue), record.partition, record.offset))
     ReplayPlan(request.scope, request.dryRun, ordered.map(classify(_, ownTopic, maxAttempts)), missing)
 
   /** The per-record decision. Total: every candidate becomes a `Replay` or a `Skip` with a stated reason. */
@@ -371,7 +372,7 @@ object DeadLetterReplay:
       "dlqTimestamp" -> record.timestamp.fold(Json.Null)(Json.fromLong)
     )
     record.entry match
-      case Left(problem)     =>
+      case Left(problem) =>
         Json.fromFields(base ++ Vector("readable" -> Json.False, "problem" -> Json.fromString(problem)))
       case Right(deadLetter) =>
         Json.fromFields(

@@ -130,10 +130,10 @@ final class KafkaDeadLetterStore(
   /** Reads the tail of every partition and returns the newest `limit` across all of them.
     *
     * **Bounded three ways, because an unbounded listing endpoint on a topic is a way to OOM the service that is
-    * supposed to be telling you it is unhealthy.** The seek is `max(earliest, latest - limit)` per partition, so at most
-    * `limit × partitions` records are fetched however large the topic is; the loop stops at the log end it computed
-    * before it started, so a producer writing concurrently cannot extend the read; and the whole thing gives up after
-    * [[pollTimeout]] with whatever it has, because a listing that hangs is worse than a listing that is short.
+    * supposed to be telling you it is unhealthy.** The seek is `max(earliest, latest - limit)` per partition, so at
+    * most `limit × partitions` records are fetched however large the topic is; the loop stops at the log end it
+    * computed before it started, so a producer writing concurrently cannot extend the read; and the whole thing gives
+    * up after [[pollTimeout]] with whatever it has, because a listing that hangs is worse than a listing that is short.
     *
     * Reading `limit` from *each* partition and then taking `limit` overall is deliberate over-reading: with three DLQ
     * partitions there is no way to know which holds the newest records without looking, and the alternative —

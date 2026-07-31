@@ -154,7 +154,8 @@ final class DeadLetterAdminSuite extends munit.FunSuite:
     assertEquals(counter(registry, Meters.DlqReplayOperations, Meters.Outcomes.Success), 1.0d)
 
   test("a skipped record is reported with its reason and counted, and does not stop the rest"):
-    val store = Fixtures.StubDeadLetterStore(records = Vector(Fixtures.unreadableDlqRecord(offset = 9L), dlq("a", 1L, 1L)))
+    val store =
+      Fixtures.StubDeadLetterStore(records = Vector(Fixtures.unreadableDlqRecord(offset = 9L), dlq("a", 1L, 1L)))
     val registry = SimpleMeterRegistry()
     val body = json(admin(store, registry).replay(10, "", "", dryRun = false))
     assertEquals(body.get[Int]("published").toOption, Some(1))

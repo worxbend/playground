@@ -145,7 +145,7 @@ final class DeadLetterAdmin(
     */
   def replay(limit: Int, reason: String, refs: String, dryRun: Boolean): AdminReply =
     ReplayRequest.parse(limit, reason, refs, dryRun, config.maxRecords) match
-      case Left(problem)  =>
+      case Left(problem) =>
         metrics.operation(Meters.Outcomes.Failure)
         AdminRoutes.json(400, Json.obj("error" -> Json.fromString(problem)))
       case Right(request) =>
@@ -208,7 +208,7 @@ final class DeadLetterAdmin(
     metrics.records(Meters.Outcomes.Success, count)
     metrics.records(Meters.Outcomes.Skipped, plan.skips.size)
     failure match
-      case None          =>
+      case None =>
         metrics.operation(Meters.Outcomes.Success)
         logger.info(s"replayed $count dead letter(s) onto $ownTopic; ${plan.skips.size} skipped")
         AdminRoutes.json(200, body(plan, outcome))
@@ -230,16 +230,16 @@ final class DeadLetterAdmin(
       "dryRun" -> Json.fromBoolean(plan.dryRun),
       "committed" -> Json.fromBoolean(outcome.published.nonEmpty),
       "topic" -> Json.fromString(ownTopic),
-      "scope" -> (plan.scope match
-        case ReplayScope.Recent(limit, reason) =>
-          Json.obj(
-            "kind" -> Json.fromString("recent"),
-            "limit" -> Json.fromInt(limit),
-            "reason" -> reason.fold(Json.Null)(Json.fromString)
-          )
-        case ReplayScope.Named(refs) =>
-          Json.obj("kind" -> Json.fromString("named"), "refs" -> Json.arr(refs.map(Json.fromString)*))
-      ),
+      "scope" ->
+        (plan.scope match
+          case ReplayScope.Recent(limit, reason) =>
+            Json.obj(
+              "kind" -> Json.fromString("recent"),
+              "limit" -> Json.fromInt(limit),
+              "reason" -> reason.fold(Json.Null)(Json.fromString)
+            )
+          case ReplayScope.Named(refs) =>
+            Json.obj("kind" -> Json.fromString("named"), "refs" -> Json.arr(refs.map(Json.fromString)*))),
       "selected" -> Json.fromInt(plan.decisions.size),
       "replayable" -> Json.fromInt(plan.replays.size),
       "published" -> Json.fromInt(outcome.published.size),
