@@ -24,6 +24,7 @@ package com.worxbend.cobalt
 import com.worxbend.observability.Telemetry
 import com.worxbend.observability.TelemetryConfig
 import com.worxbend.observability.Tracing
+import scala.concurrent.duration.DurationInt
 
 /** Cask over a real socket.
   *
@@ -41,7 +42,14 @@ final class AdminServerIT extends munit.FunSuite:
     setup = _ =>
       val telemetry = Telemetry.start(TelemetryConfig("cobalt-it", "0.0.0-it", "it"), Tracing.noop)
       val health = HealthChecks.create()
-      val server = AdminServer(CobaltRoutes(AdminHandlers(telemetry, health)), "127.0.0.1", 0)
+      val deadLetters = DeadLetterAdmin(
+        Fixtures.StubDeadLetterStore(partitions = Vector(DlqPartitionDepth(0, 0L, 2L))),
+        ReplayMetrics(telemetry.registry),
+        ReplayConfig(enabled = true, maxRecords = 10, maxAttempts = 3, 1.second),
+        Fixtures.Topic,
+        "dlq"
+      )
+      val server = AdminServer(CobaltRoutes(AdminHandlers(telemetry, health, deadLetters)), "127.0.0.1", 0)
       server.start()
       (server, health, telemetry)
     ,
@@ -66,3 +74,22 @@ final class AdminServerIT extends munit.FunSuite:
     val response = requests.get(s"http://127.0.0.1:${server.boundPort}/metrics", check = false)
     assertEquals(response.statusCode, 200)
     assert(response.text().contains("jvm_"), "the JVM binders must be in the same exposition")
+
+  fixture.test("the dead-letter routes exist, and the replay route is a POST"): (server, _, _) =>
+    // The unit suite asserts every answer; what only a real socket can prove is that Cask's annotation macros produced
+    // the routes they claim to — including that the one route which changes something is not reachable by GET.
+    val base = s"http://127.0.0.1:${server.boundPort}"
+    val summary = requests.get(base + AdminRoutes.DlqPath, check = false)
+    assertEquals(summary.statusCode, 200)
+    assert(summary.text().contains("\"outstanding\":2"), summary.text())
+
+    assertEquals(requests.get(base + AdminRoutes.DlqRecordsPath + "?limit=5", check = false).statusCode, 200)
+    assertNotEquals(requests.get(base + AdminRoutes.DlqReplayPath, check = false).statusCode, 200)
+
+  fixture.test("a replay dry run is the default, and query parameters reach the handler"): (server, _, _) =>
+    val base = s"http://127.0.0.1:${server.boundPort}" + AdminRoutes.DlqReplayPath
+    val defaulted = requests.post(base, check = false)
+    assertEquals(defaulted.statusCode, 200)
+    assert(defaulted.text().contains("\"dryRun\":true"), defaulted.text())
+    // An over-limit request is refused rather than clamped, and the refusal survives the round trip as a 400.
+    assertEquals(requests.post(base + "?limit=999", check = false).statusCode, 400)

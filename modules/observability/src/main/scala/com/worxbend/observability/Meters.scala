@@ -203,6 +203,36 @@ object Meters:
     */
   val ConsumerLag: String = "consume.group.lag"
 
+  // --- cobalt: dead-letter replay ----------------------------------------------------------------------------------
+
+  /** Counter. Replay *operations* an operator asked for, tagged [[TagKeys.Outcome]].
+    *
+    * **The audit trail, expressed as a metric.** Every increment here is a human deciding to put records back into the
+    * pipeline, which is the one thing in this system that happens because somebody typed a command rather than because
+    * an event arrived. Correlating its timestamps with `consume.records.poison` is how "the replay fixed it" is told
+    * apart from "the replay re-poisoned the topic", and neither reading is available from the records counter alone —
+    * one operation replaying 200 records and 200 operations replaying one each are the same number there and very
+    * different situations.
+    *
+    * [[Outcomes.Skipped]] means a *dry run*: the plan was computed and nothing was published. Kept distinct from
+    * `success` because "an operator is looking" and "an operator has acted" must not share a series; a spike of dry
+    * runs during an incident is healthy, a spike of commits is the thing to ask about.
+    */
+  val DlqReplayOperations: String = "dlq.replay.operations"
+
+  /** Counter. Individual dead letters a replay touched, tagged [[TagKeys.Outcome]].
+    *
+    * [[Outcomes.Success]] is published to the source topic, [[Outcomes.Failure]] is a produce the broker refused, and
+    * [[Outcomes.Skipped]] is a record the plan declined — replay budget exhausted, an unreadable DLQ record, or an
+    * origin topic this consumer does not own.
+    *
+    * **Not tagged by skip reason, deliberately.** The reasons are a closed set and would be safe as a tag, but the
+    * number that matters operationally is "did the replay do what I asked", and a `skipped` count next to the `success`
+    * count answers it. The per-record reason is in the response body and on the log line, where it is being read by the
+    * person who ran the command and cardinality costs nothing.
+    */
+  val DlqReplayRecords: String = "dlq.replay.records"
+
   // --- shared: the event taxonomy ---------------------------------------------------------------------------------
 
   /** Counter. A CloudEvents `type` that decoded structurally but has no domain refinement, tagged [[TagKeys.EventType]]
