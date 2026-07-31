@@ -71,11 +71,6 @@ final class EventsController @Inject() (cc: ControllerComponents, service: Searc
   ec: ExecutionContext
 ) extends AbstractController(cc):
 
-  /** The landing page is the unfiltered search. A redirect rather than a second copy of the list, so there is exactly
-    * one canonical URL for "all recent events" to share and to cache.
-    */
-  def index: Action[AnyContent] = Action(Redirect(Urls.Events))
-
   /** The list, filtered, paged and faceted. */
   def list: Action[AnyContent] = Action.async: request =>
     SearchQuery.parse(request.rawQueryString) match

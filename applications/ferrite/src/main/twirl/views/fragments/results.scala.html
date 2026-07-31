@@ -52,7 +52,8 @@
             <th scope="col" class="cell-metric">Value</th>
           </tr>
         </thead>
-        <tbody id="event-rows">
+        @* `data-order` is what the live tail consults before it prepends anything — see Results.order. *@
+        <tbody id="event-rows" data-order="@results.order">
           @fragments.rows(results.rows, results.moreUrl)
         </tbody>
       </table>

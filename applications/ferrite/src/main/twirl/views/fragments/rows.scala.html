@@ -14,7 +14,9 @@
 @(rows: Seq[EventRow], moreUrl: Option[String])
 
 @for(row <- rows) {
-  <tr class="event-row severity-@row.severityTone" data-uid="@row.eventUid">
+  @* `data-uid` and `data-at` are the two halves of the partitioned primary key. The live tail reads them off the
+     newest row to build its cursor, and de-duplicates on `data-uid` so a resumed tail cannot show a row twice. *@
+  <tr class="event-row severity-@row.severityTone" data-uid="@row.eventUid" data-at="@row.occurredAt">
     <td class="cell-time">
       <a class="row-open" href="@row.detailUrl">
         <time datetime="@row.occurredAt" title="@row.occurredAtLabel">@row.relative</time>

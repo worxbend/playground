@@ -324,7 +324,8 @@ object Presenter:
       emptiness = Option.when(rows.isEmpty)(emptiness(query, outcome)),
       sortUrl = Urls.events(flippedSort(query)),
       sortAria = if query.sort == SortDirection.Newest then "descending" else "ascending",
-      sortLabel = if query.sort == SortDirection.Newest then "Sort oldest first" else "Sort newest first"
+      sortLabel = if query.sort == SortDirection.Newest then "Sort oldest first" else "Sort newest first",
+      order = SearchQuery.sortLabel(query.sort)
     )
 
   /** The same search with the time order reversed.

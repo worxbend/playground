@@ -18,7 +18,12 @@
 @layout.main("Events · observatory", com.worxbend.ferrite.web.Urls.Events) {
   @fragments.filterbar(page.bar)
 
-  <h1 id="results-heading" class="results-heading" tabindex="-1">Events</h1>
+  <div class="results-header">
+    <h1 id="results-heading" class="results-heading" tabindex="-1">Events</h1>
+    @* Outside #results on purpose: the tail owns an open connection, and everything inside that region is replaced
+       on every filter change. *@
+    @fragments.tail(com.worxbend.ferrite.web.Urls.Live)
+  </div>
 
   <section id="results"
            class="results"

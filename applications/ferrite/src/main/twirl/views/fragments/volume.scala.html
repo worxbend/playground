@@ -1,0 +1,36 @@
+@*
+ * The overview's volume chart. The same `Histogram` model the search timeline uses, so the two charts quantise
+ * identically and read as the same object — but plain <a> links instead of htmx triggers, because the overview has no
+ * `#results` region and an hx-target that matches nothing is a click that silently does nothing.
+ *
+ * Every bar is a link to the search for that bucket, so the chart is a way *into* the events list rather than a
+ * picture of it. Empty buckets are drawn as zero-height bars rather than dropped: a chart that collapses gaps lies
+ * about the shape of the data, which is the one thing it exists to show.
+ *@
+@import com.worxbend.ferrite.web.view.Histogram
+
+@(histogram: Histogram)
+
+<section class="volume" aria-labelledby="volume-heading">
+  <h2 id="volume-heading" class="panel-heading">Events over time</h2>
+
+  @if(histogram.empty) {
+    <p class="histogram-empty">No events between @histogram.fromLabel and @histogram.untilLabel.</p>
+  } else {
+    <ol class="histogram-bars">
+      @for(bar <- histogram.bars) {
+        <li class="histogram-bar @bar.heightClass">
+          <a href="@bar.url" title="@bar.startLabel — @bar.countLabel events">
+            <span class="sr-only">@bar.startLabel: @bar.countLabel events</span>
+          </a>
+        </li>
+      }
+    </ol>
+  }
+
+  <p class="histogram-axis">
+    <span>@histogram.fromLabel</span>
+    <span class="histogram-scale">@histogram.widthLabel per bar · peak @histogram.peakLabel</span>
+    <span>@histogram.untilLabel</span>
+  </p>
+</section>

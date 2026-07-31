@@ -1,0 +1,39 @@
+@*
+ * One breakdown panel: a leaderboard where every row is the search it stands for.
+ *
+ * A <ul> and not a table: there is one value per row and one measure, so a table's column headers would describe
+ * nothing. The share bar is a class, never an inline style — the CSP has no 'unsafe-inline' in style-src — and it is
+ * marked aria-hidden because the number beside it already says the same thing to a screen reader.
+ *
+ * A row whose value the filter grammar cannot express (the rollup's `none` severity) renders as text rather than as a
+ * link that would 400. That case is decided in OverviewPresenter, not here.
+ *@
+@import com.worxbend.ferrite.web.view.Panel
+
+@(panel: Panel)
+
+<section class="panel" aria-labelledby="panel-@panel.key">
+  <h2 class="panel-heading" id="panel-@panel.key">@panel.heading</h2>
+
+  @if(panel.rows.isEmpty) {
+    <p class="panel-empty">@panel.note</p>
+  } else {
+    <ul class="meter-list">
+      @for(row <- panel.rows) {
+        <li class="meter-row severity-@row.tone">
+          @for(url <- row.url) {
+            <a class="meter-label" href="@url">@row.label</a>
+          }
+          @if(row.url.isEmpty) {
+            <span class="meter-label is-unlinked" title="This value has no equivalent search filter">@row.label</span>
+          }
+          <span class="meter-track" aria-hidden="true"><span class="meter-fill @row.shareClass"></span></span>
+          <span class="meter-count">@row.count</span>
+          @if(row.errorCount.nonEmpty) {
+            <span class="meter-errors" title="Events at error severity or above">@row.errorCount err</span>
+          }
+        </li>
+      }
+    </ul>
+  }
+</section>

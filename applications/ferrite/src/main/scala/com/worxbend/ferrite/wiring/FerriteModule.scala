@@ -23,6 +23,7 @@ package com.worxbend.ferrite.wiring
 
 import com.worxbend.observability.Telemetry
 import com.worxbend.persistence.repository.EventRepository
+import com.worxbend.persistence.repository.OverviewRepository
 import java.time.Clock
 import play.api.Configuration
 import play.api.Environment
@@ -51,6 +52,7 @@ final class FerriteModule extends Module:
       // Eager: the pools must fail the boot, not the first request. See `Databases`.
       bind[Databases].toSelf.eagerly(),
       bind[EventRepository].toProvider[EventRepositoryProvider],
+      bind[OverviewRepository].toProvider[OverviewRepositoryProvider],
       bind[Readiness].to[DatabaseReadiness],
       bind[Telemetry].toProvider[TelemetryProvider],
       // Replaces Play's own provider, which is disabled in `application.conf`. See `AllowedHosts` for why a

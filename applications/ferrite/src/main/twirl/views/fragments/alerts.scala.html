@@ -1,0 +1,35 @@
+@*
+ * The alert feed: the newest events at error severity or above, inside the same window as the rest of the page.
+ *
+ * This is the ONE panel on the overview that reads the fact table rather than the rollup, because it needs individual
+ * events and the rollup only holds counts. It is affordable because of index (11) of ADR section 5 — a partial index
+ * over `severity_rank >= 50`, which covers well under one percent of rows and exists for exactly this query.
+ *
+ * A <ol> of links rather than a nine-column table: this is a glance, and the drill-down is the row itself.
+ *@
+@import com.worxbend.ferrite.web.view.EventRow
+
+@(alerts: Seq[EventRow], allUrl: String, note: String)
+
+<section class="panel alerts" aria-labelledby="panel-alerts">
+  <h2 class="panel-heading" id="panel-alerts">Recent alerts</h2>
+
+  @if(alerts.isEmpty) {
+    <p class="panel-empty">@note</p>
+  } else {
+    <ol class="alert-list">
+      @for(alert <- alerts) {
+        <li class="alert-row severity-@alert.severityTone">
+          <a class="alert-open" href="@alert.detailUrl">
+            <time class="alert-time" datetime="@alert.occurredAt" title="@alert.occurredAtLabel">@alert.relative</time>
+            <span class="severity-badge">@alert.severity</span>
+            <span class="alert-type mono">@alert.eventType</span>
+            <span class="alert-subject">@alert.subject</span>
+          </a>
+        </li>
+      }
+    </ol>
+  }
+
+  <p class="panel-more"><a href="@allUrl">All alerts in this window</a></p>
+</section>

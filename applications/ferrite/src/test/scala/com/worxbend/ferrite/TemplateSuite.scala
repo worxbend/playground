@@ -110,6 +110,59 @@ final class TemplateSuite extends FunSuite:
       assert(tag == "a" || tag == "button" || tag == "form", s"hx-get on a <$tag> is not keyboard reachable")
     }
 
+  test("there is exactly one keyboard handler, and it is the Alpine one on <body>"):
+    // ADR §8.4 requires one `x-on:keydown.window`. Scattered listeners are how a shortcut works on one page and not
+    // another, and how two of them end up fighting over the same key.
+    val document = page("v=1", Vector(Fixtures.summary()))
+    // Attribute names carrying `:` and `.` are not addressable by a jsoup CSS selector, so this walks the document.
+    val handlers = document.getAllElements.asScala.toVector.filter(_.hasAttr("x-on:keydown.window"))
+    assertEquals(handlers.size, 1)
+    assertEquals(handlers.head.tagName(), "body")
+
+  test("every row carries both halves of its primary key, which is what the live tail resumes from"):
+    val summary = Fixtures.summary()
+    val document = page("v=1", Vector(summary))
+    val row = document.select("tr.event-row").first()
+    assertEquals(row.attr("data-uid"), summary.eventUid.toString)
+    assertEquals(row.attr("data-at"), com.worxbend.kernel.Rfc3339.render(summary.occurredAt))
+
+  // --------------------------------------------------------------------------------------------------- live tail
+
+  test("the live control is a real button outside the results region, so a swap cannot take it away"):
+    val document = page("v=1", Vector(Fixtures.summary()))
+    val bar = document.select(".tail-bar").first()
+    assert(bar != null, "expected the live-tail control")
+    assertEquals(document.select("#results .tail-bar").size(), 0, "the tail owns a connection and must survive swaps")
+    assertEquals(bar.attr("data-stream"), com.worxbend.ferrite.web.Urls.Live)
+    val toggle = bar.select("button.tail-toggle")
+    assertEquals(toggle.size(), 1)
+    assertEquals(toggle.attr("type"), "button")
+    assert(toggle.attr("x-bind:aria-pressed").nonEmpty, "live is a state, not a colour")
+
+  test("the live control is hidden until Alpine un-hides it, so it never renders as a button that does nothing"):
+    val document = page("v=1", Vector(Fixtures.summary()))
+    val bar = document.select(".tail-bar").first()
+    assert(bar.hasAttr("hidden"), "without Alpine the tail cannot work and must not be offered")
+    assertEquals(bar.attr("x-bind:hidden"), "false")
+
+  test("the row container advertises its sort order, which is what the tail checks before prepending"):
+    // The tail prepends, which is only the right place for an arriving row when the list is newest-first. The order
+    // is rendered INTO the results region because the sort button swaps that region on its own — a value captured
+    // outside it would go stale the moment somebody flipped the order.
+    assertEquals(page("v=1", Vector(Fixtures.summary())).select("#event-rows").attr("data-order"), "newest")
+
+    val flipped = SearchQuery.parse("v=1&sort=oldest").getOrElse(fail("the sort control did not parse"))
+    val outcome = SearchOutcome(
+      SearchPage(Vector(Fixtures.summary()), None),
+      Fixtures.facets,
+      Fixtures.buckets,
+      1L,
+      TimeWindow(now.minusHours(24), now),
+      1.hour
+    )
+    val document = Jsoup.parse(views.html.fragments.results(Presenter.results(outcome, flipped, now)).body)
+    assertEquals(document.select("#event-rows").attr("data-order"), "oldest")
+
   // -------------------------------------------------------------------------------------------------------- csrf
 
   test("the CSRF token is on the body as hx-headers, once, where every htmx request inherits it"):

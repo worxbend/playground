@@ -85,8 +85,13 @@ object RouteTemplate:
     Meters.UninstrumentedPaths.exists(prefix => request.path == prefix || request.path.startsWith(s"$prefix/"))
 
   def of(request: RequestHeader): String = request.path match
-    case Urls.Root                                         => Urls.Root
-    case Urls.Events                                       => Urls.Events
+    case Urls.Root   => Urls.Root
+    case Urls.Events => Urls.Events
+    // The live tail gets a template of its own rather than being excluded. `MetricsFilter` records when the `Result`
+    // is produced, which for a chunked response is when the headers are ready — so a tail open for an hour is one
+    // short observation at connect, not an hour-long outlier, and this series is then the only place that says how
+    // many tails were opened and how many were refused with a 503.
+    case Urls.Live                                         => Urls.Live
     case path if path.startsWith(s"${Urls.Events}/")       => s"${Urls.Events}/{eventUid}"
     case path if path.startsWith(s"${Urls.AssetsPrefix}/") => s"${Urls.AssetsPrefix}/*file"
     case _                                                 => Other

@@ -39,10 +39,22 @@ import java.util.UUID
   */
 object Urls:
 
-  /** Landing page. Redirects to [[Events]] rather than duplicating it, so there is one canonical list URL to share. */
+  /** The overview. The landing page is a page, not a redirect: "what is this system doing right now" is a different
+    * question from "find me these events", and answering the first with a redirect to the second was the whole of the
+    * old landing experience.
+    */
   val Root: String = "/"
 
   val Events: String = "/events"
+
+  /** The live tail's Server-Sent Events stream.
+    *
+    * A top-level path and **not** `/events/stream`, which would read better and be a latent bug: `Paths.Event` matches
+    * `/events/{anything}`, so the stream would only work while its `case` happened to be listed before the detail
+    * route. Nothing about that ordering is visible at either site, and getting it wrong turns the tail into a 400 that
+    * says "'stream' is not an event id". A path that cannot collide costs one line and removes the hazard.
+    */
+  val Live: String = "/live"
 
   val Metrics: String = "/metrics"
 
@@ -63,6 +75,12 @@ object Urls:
 
   /** The list page, with an already-rendered query string (no leading `?`). */
   def events(query: String): String = if query.isEmpty then Events else s"$Events?$query"
+
+  /** The overview, with an already-rendered query string (no leading `?`). */
+  def overview(query: String): String = if query.isEmpty then Root else s"$Root?$query"
+
+  /** The live-tail stream for a filter, with an already-rendered query string (no leading `?`). */
+  def live(query: String): String = if query.isEmpty then Live else s"$Live?$query"
 
   /** The detail page for one event.
     *

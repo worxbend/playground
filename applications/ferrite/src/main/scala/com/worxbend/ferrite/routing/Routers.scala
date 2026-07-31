@@ -23,6 +23,8 @@ package com.worxbend.ferrite.routing
 
 import com.worxbend.ferrite.controllers.EventsController
 import com.worxbend.ferrite.controllers.OpsController
+import com.worxbend.ferrite.controllers.OverviewController
+import com.worxbend.ferrite.controllers.TailController
 import com.worxbend.ferrite.web.Urls
 import controllers.Assets
 import jakarta.inject.Inject
@@ -51,6 +53,7 @@ object Paths:
   val Root: PathExtractor = PathExtractor.cached(Seq(Urls.Root))
   val Events: PathExtractor = PathExtractor.cached(Seq(Urls.Events))
   val Event: PathExtractor = PathExtractor.cached(Seq(s"${Urls.Events}/", ""))
+  val Live: PathExtractor = PathExtractor.cached(Seq(Urls.Live))
   val Asset: PathExtractor = PathExtractor.cached(Seq(s"${Urls.AssetsPrefix}/", "*"))
   val Metrics: PathExtractor = PathExtractor.cached(Seq(Urls.Metrics))
   val HealthLive: PathExtractor = PathExtractor.cached(Seq(Urls.HealthLive))
@@ -63,12 +66,17 @@ object Paths:
   * method it calls.
   */
 @Singleton
-final class WebRouter @Inject() (controller: EventsController) extends SimpleRouter:
+final class WebRouter @Inject() (
+  events: EventsController,
+  overview: OverviewController,
+  tail: TailController
+) extends SimpleRouter:
 
   override def routes: Routes =
-    case GET(Paths.Root())          => controller.index
-    case GET(Paths.Events())        => controller.list
-    case GET(Paths.Event(eventUid)) => controller.detail(eventUid)
+    case GET(Paths.Root())          => overview.index
+    case GET(Paths.Live())          => tail.stream
+    case GET(Paths.Events())        => events.list
+    case GET(Paths.Event(eventUid)) => events.detail(eventUid)
 
 /** Metrics and the two probes.
   *
@@ -109,8 +117,9 @@ object AssetsRouter:
 /** The application's routing table: the UI, the assets, then the operational endpoints.
   *
   * Selected by `play.http.router` in `application.conf`. Composition by `orElse` rather than one large partial function
-  * keeps each half independently testable and makes precedence explicit — the UI claims `/` and `/events`, assets claim
-  * `/assets/…`, and the operational routes come last because they are exact paths that cannot collide with either.
+  * keeps each half independently testable and makes precedence explicit — the UI claims `/`, `/events` and `/live`,
+  * assets claim `/assets/…`, and the operational routes come last because they are exact paths that cannot collide with
+  * either.
   */
 @Singleton
 final class AppRouter @Inject() (web: WebRouter, assets: AssetsRouter, ops: OpsRouter) extends SimpleRouter:

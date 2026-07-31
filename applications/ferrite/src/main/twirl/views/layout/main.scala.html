@@ -7,8 +7,13 @@
  *
  * Accessibility is wired here rather than per page, because these are document-level obligations: the skip link, the
  * landmark roles, the focusable <main>, and the single busy indicator every htmx trigger points `hx-indicator` at.
- * The keyboard shortcuts and post-swap focus management live in /assets/js/app.js — the Content-Security-Policy
- * deliberately has no 'unsafe-inline' in script-src, so there is no inline <script> anywhere in this application.
+ *
+ * ONE keyboard handler, and it is the `x-on:keydown.window` on <body> (ADR section 8.4). Scattered listeners are how
+ * a shortcut ends up working on one page and not another, and how two of them end up fighting over the same key. Its
+ * implementation is a method on the `observatory` Alpine component in /assets/js/app.js, because the
+ * Content-Security-Policy deliberately has no 'unsafe-inline' in script-src — there is no inline <script> anywhere in
+ * this application, and an Alpine expression is compiled with `new Function`, which is what the 'unsafe-eval' in that
+ * policy is there for.
  *@
 @(title: String, activePath: String)(content: Html)(implicit request: RequestHeader)
 
@@ -30,7 +35,10 @@
     <script defer src="@com.worxbend.ferrite.web.Urls.asset("js/app.js")"></script>
     <script defer src="@com.worxbend.ferrite.web.Urls.asset("lib/alpinejs/dist/cdn.min.js")"></script>
   </head>
-  <body class="app" hx-headers='@com.worxbend.ferrite.web.Csrf.hxHeaders(request)' x-data="observatory">
+  <body class="app"
+        hx-headers='@com.worxbend.ferrite.web.Csrf.hxHeaders(request)'
+        x-data="observatory"
+        x-on:keydown.window="onKey($event)">
     <a class="skip-link" href="#main">Skip to results</a>
 
     <header class="app-header" role="banner">
@@ -39,11 +47,12 @@
         <span class="app-title">Event observatory</span>
       </div>
       <nav class="app-nav" aria-label="Primary">
+        <a href="@com.worxbend.ferrite.web.Urls.Root" @if(activePath == com.worxbend.ferrite.web.Urls.Root){aria-current="page"}>Overview</a>
         <a href="@com.worxbend.ferrite.web.Urls.Events" @if(activePath == com.worxbend.ferrite.web.Urls.Events){aria-current="page"}>Events</a>
         <a href="@com.worxbend.ferrite.web.Urls.HealthReady">Health</a>
         <a href="@com.worxbend.ferrite.web.Urls.Metrics">Metrics</a>
       </nav>
-      <p class="app-hint">Press <kbd>/</kbd> to search, <kbd>j</kbd>/<kbd>k</kbd> to move, <kbd>Enter</kbd> to open.</p>
+      <p class="app-hint">Press <kbd>/</kbd> to search, <kbd>j</kbd>/<kbd>k</kbd> to move, <kbd>Enter</kbd> to open, <kbd>Esc</kbd> to close.</p>
     </header>
 
     <main id="main" class="app-main" tabindex="-1">
