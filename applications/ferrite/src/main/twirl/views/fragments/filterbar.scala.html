@@ -8,6 +8,7 @@
  * Every value here is the RAW query-string text, not a value re-rendered from a parsed filter: a rejected permalink
  * has to come back with the offending text still in the box that produced it (ADR section 6.3).
  *@
+@import com.worxbend.ferrite.search.SearchQuery
 @import com.worxbend.ferrite.web.view.FilterBar
 
 @(bar: FilterBar)
@@ -88,23 +89,51 @@
     </div>
   }
 
-  @if(bar.chips.nonEmpty) {
-    <ul class="filter-chips" aria-label="Active filters">
-      @for(chip <- bar.chips) {
-        <li class="chip">
-          <span class="chip-label">@chip.label</span>
-          <span class="chip-value">@chip.value</span>
-          <a class="chip-remove"
-             href="@chip.removeUrl"
-             hx-get="@chip.removeUrl"
-             hx-target="#results"
-             hx-swap="innerHTML"
-             hx-push-url="true"
-             aria-label="Remove filter @chip.label @chip.value">&times;</a>
-        </li>
-      }
-    </ul>
+  @* Payload comparisons and extension equalities are chipped alongside the facet selections, in one list, because
+     from the user's side they are the same thing: a filter that is narrowing the results and has no visible control.
+     They come from `SearchQuery` rather than from `bar.chips` only because their parameter names are invented by the
+     user and so cannot come from the presenter's fixed table. *@
+  @defining(SearchQuery.predicateChips(bar.hidden, bar.permalink)) { predicates =>
+    @if(bar.chips.nonEmpty || predicates.nonEmpty) {
+      <ul class="filter-chips" aria-label="Active filters">
+        @for(chip <- bar.chips) {
+          <li class="chip">
+            <span class="chip-label">@chip.label</span>
+            <span class="chip-value">@chip.value</span>
+            <a class="chip-remove"
+               href="@chip.removeUrl"
+               hx-get="@chip.removeUrl"
+               hx-target="#results"
+               hx-swap="innerHTML"
+               hx-push-url="true"
+               aria-label="Remove filter @chip.label @chip.value">&times;</a>
+          </li>
+        }
+        @for(chip <- predicates) {
+          @* Same class as the facet chips, deliberately: they behave identically and a token the stylesheet does not
+             define would be a hook nobody styled. *@
+          <li class="chip">
+            <span class="chip-label">@chip.label</span>
+            <span class="chip-value">@chip.value</span>
+            <a class="chip-remove"
+               href="@chip.removeUrl"
+               hx-get="@chip.removeUrl"
+               hx-target="#results"
+               hx-swap="innerHTML"
+               hx-push-url="true"
+               aria-label="Remove filter @chip.label @chip.value">&times;</a>
+          </li>
+        }
+      </ul>
+    }
   }
+
+  @* The two families with neither an input nor a facet: a browser cannot compose `data.<path>` as a field name
+     without JavaScript, and this bar works without it. Stating the spelling is what makes them discoverable. *@
+  <p class="filter-help">
+    In the link: <code>data.temperature=&gt;21</code> compares a payload number,
+    <code>ext.tenantid=acme</code> an extension attribute.
+  </p>
 
   <div class="filter-permalink">
     <label for="permalink">Permalink</label>

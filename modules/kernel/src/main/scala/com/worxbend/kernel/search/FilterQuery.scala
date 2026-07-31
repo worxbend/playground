@@ -44,6 +44,39 @@ import scala.util.Try
   *
   * Parameter order is the AST's canonical branch order, so the same filter always produces the same string — which is
   * what makes that content hash a stable key.
+  *
+  * ==Why payload and extension filters are spelled as key prefixes==
+  *
+  * The two open-ended dimensions — any path under `data`, any CloudEvents extension attribute — are the only ones whose
+  * *parameter name* is chosen by the user rather than fixed by the grammar:
+  *
+  * {{{
+  * data.sensor.temperature=>21     PayloadCmp(sensor.temperature, Gt, 21)
+  * ext.tenantid=acme               ExtensionEq(tenantid, "acme")
+  * }}}
+  *
+  * The alternative considered and rejected was a fixed, repeatable key with the whole predicate in the value —
+  * `payload=sensor.temperature>21`, `ext=tenantid:acme`. It has one real advantage: a plain HTML form can post it from
+  * a single `<input name="payload">`, whereas a prefixed key needs a name the browser cannot compose without
+  * JavaScript. It was rejected anyway, for three reasons that outlast that convenience.
+  *
+  *   - **Two escaping problems instead of none.** With the value carrying `path`, `op` and `number`, the codec has to
+  *     find the operator inside a string that may legitimately contain `>` or `:` (an extension value routinely does —
+  *     `traceparent` is colon-delimited). The prefixed form puts the delimiter in the query string's own `=`, which is
+  *     already unambiguous because [[Percent]] escapes every `=` inside a key or a value.
+  *   - **Editing stays a URL edit.** Every other filter family in this grammar is `key=value`, and the UI's whole
+  *     navigation model is "change one parameter" — `Query.remove(pairs, key, value)` removes a chip, a facet click
+  *     toggles a pair. A predicate hidden inside a value would need its own parser in the presentation layer just to
+  *     take one predicate off.
+  *   - **It reads.** `?data.temperature=>21&ext.tenantid=acme` is legible in a chat message and correctable in a
+  *     browser bar, which is the requirement the whole "not base64 JSON" decision exists to serve.
+  *
+  * The lost form-friendliness costs nothing here: neither dimension has a visible input in the filter bar (nor do
+  * `type`, `device`, `room`, `person` or `tag`), they travel through a submit as hidden fields, and they are added and
+  * removed through links.
+  *
+  * `data.` deliberately shares its prefix with the bare `data=` containment key, because they are the same dimension
+  * asked two ways; `data` alone can never be mistaken for a path, since [[JsonPath]] requires at least one segment.
   */
 object FilterQuery:
 
@@ -116,8 +149,12 @@ object FilterQuery:
     case Filter.TagsAll(vs)              => Right(vs.map(v => TagKey -> (v: String)))
     case Filter.PayloadContains(js)      => Right(Vector(DataKey -> js.noSpaces))
     case Filter.PayloadCmp(p, op, value) =>
-      Right(Vector(s"$PathPrefix${p.render}" -> s"${op.symbol}$value"))
-    case Filter.ExtensionEq(name, value) => Right(Vector(s"$ExtensionPrefix$name" -> value))
+      // `toPlainString`, never `BigDecimal#toString`: the latter switches to scientific notation past a certain
+      // scale, so `1E+10` would appear in a link nobody typed that way, and `+` percent-encodes to `%2B` — three
+      // characters of noise in the one place this grammar promises legibility. `NumLit` bounds the plain form's
+      // length, which is what makes rendering it unconditionally safe.
+      Right(Vector(s"$PathPrefix${p.render}" -> s"${op.symbol}${value.bigDecimal.toPlainString}"))
+    case Filter.ExtensionEq(name, value) => Right(Vector(s"$ExtensionPrefix$name" -> (value: String)))
     case Filter.FullText(text)           => Right(Vector(TextKey -> (text: String)))
 
   private def splitPair(fragment: String): Either[FilterError, (String, String)] =
@@ -160,9 +197,15 @@ object FilterQuery:
         .sorted
         .map(FilterError.UnknownParameter.apply)
 
+    // A repeated `ext.<name>` is reported for a reason the fixed single-valued keys do not share: the grammar has
+    // only equality on an extension, so two values for one name conjoin into a predicate no row can satisfy. Building
+    // it would hand back an empty page that looks like "nothing matched" rather than "this link contradicts itself".
+    // A repeated `data.<path>` is *not* an error — `data.t=>18&data.t=<24` is how the grammar spells a range.
     val repeated =
       byKey.iterator
-        .collect { case (key, values) if SingleValued(key) && values.sizeIs > 1 => key }
+        .collect {
+          case (key, values) if (SingleValued(key) || key.startsWith(ExtensionPrefix)) && values.sizeIs > 1 => key
+        }
         .toVector
         .sorted
         .map(FilterError.Repeated.apply)

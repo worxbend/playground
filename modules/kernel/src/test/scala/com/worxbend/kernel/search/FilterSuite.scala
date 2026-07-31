@@ -72,6 +72,12 @@ final class FilterSuite extends munit.ScalaCheckSuite:
     assert(Filter.extensionEq("thisnameiswaytoolongforacloudevent", "acme").isLeft)
     assert(Filter.extensionEq("tenantid", "").isLeft)
 
+  test("an extension value is length-capped, because it arrives from a URL"):
+    assert(Filter.extensionEq("tenantid", "a" * ExtValue.MaxLength).isRight)
+    assert(Filter.extensionEq("tenantid", "a" * (ExtValue.MaxLength + 1)).isLeft)
+    // A `traceparent` — the longest value any spec-defined extension carries — must fit with room to spare.
+    assert(Filter.extensionEq("traceparent", "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01").isRight)
+
   test("payload paths reject anything that is not an identifier segment"):
     assert(Filter.payloadCmp("temperature", NumOp.Gt, BigDecimal(21)).isRight)
     assert(Filter.payloadCmp("sensor.temperature", NumOp.Gt, BigDecimal(21)).isRight)
@@ -81,11 +87,27 @@ final class FilterSuite extends munit.ScalaCheckSuite:
     assert(Filter.payloadCmp("a'; DROP TABLE events.cloud_event; --", NumOp.Gt, BigDecimal(21)).isLeft)
     assert(Filter.payloadCmp("a.b.c.d.e.f.g.h.i", NumOp.Gt, BigDecimal(21)).isLeft)
 
+  test("a comparison value is bounded in both directions, so its rendered form is bounded too"):
+    // Neither bound can be reached by a sensor reading. Both can be reached by a hand-edited permalink, and the
+    // rendered length is `precision + |scale|`, so an unbounded scale is a multi-gigabyte string built out of a URL.
+    assert(NumLit(BigDecimal("21.5")).isRight)
+    assert(NumLit(BigDecimal("1E+2000000000")).isLeft)
+    assert(NumLit(BigDecimal("1E-2000000000")).isLeft)
+    // `BigDecimal(String)` is exact in Scala 2.13+ — it does not round to the default MathContext — so a 39-digit
+    // literal from a URL really does arrive with 39 significant digits and really is rejected here.
+    assert(NumLit(BigDecimal("1" * (NumLit.MaxPrecision + 1))).isLeft)
+    assert(NumLit(BigDecimal("1" * NumLit.MaxPrecision)).isRight)
+    assert(Filter.payloadCmp("t", NumOp.Gt, BigDecimal("1E+2000000000")).isLeft)
+    // The widest accepted value still renders short enough to read.
+    val widest = FilterGenerators.force(NumLit(BigDecimal("1E-18")))
+    assertEquals(widest.bigDecimal.toPlainString, "0.000000000000000001")
+
   test("a validated path renders a jsonpath expression with nothing to escape"):
     val path = FilterGenerators.force(JsonPath.parse("sensor.temperature"))
+    val value = FilterGenerators.force(NumLit(BigDecimal("21.5")))
     assertEquals(path.jsonPath, "$.sensor.temperature")
-    assertEquals(path.jsonPathPredicate(NumOp.Gte, BigDecimal("21.5")), "$.sensor.temperature ? (@ >= 21.5)")
-    assert(!path.jsonPathPredicate(NumOp.Gt, BigDecimal(1)).contains("'"))
+    assertEquals(path.jsonPathPredicate(NumOp.Gte, value), "$.sensor.temperature ? (@ >= 21.5)")
+    assert(!path.jsonPathPredicate(NumOp.Gt, value).contains("'"))
 
   test("payload containment must be a bounded JSON object"):
     assert(Filter.payloadContains(Json.obj("room" -> Json.fromString("kitchen"))).isRight)

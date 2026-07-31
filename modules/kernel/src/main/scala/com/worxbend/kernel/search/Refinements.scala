@@ -53,6 +53,76 @@ object ExtName:
     if Pattern.matches(raw) then Right(raw)
     else Left(s"'$raw' is not a CloudEvents extension name (lowercase alphanumeric, 1-20 characters)")
 
+/** The right-hand side of an extension equality.
+  *
+  * Compared as text, because that is what `extensions ->> ?` yields for every attribute type CloudEvents defines: JSON
+  * Format 1.0 renders Boolean and Integer unquoted and everything else as a string, and `->>` erases the difference. So
+  * `ext.sequence=7` matches `"sequence": 7` and `"sequence": "7"` alike, which is the answer a user filtering on a
+  * value they read off the detail page expects.
+  *
+  * Non-empty because an equality against nothing is not a filter — `extensions ->> 'x' = ''` matches an attribute
+  * explicitly set to the empty string, which is not what an operator who left the box blank meant. Length-capped
+  * because this value arrives from a query string and is bound into a statement that ends up in the slow-query log: the
+  * cap is two orders of magnitude above the longest attribute the spec's own extensions define (`traceparent`, 55
+  * characters), so it can only ever reject a paste.
+  */
+opaque type ExtValue <: String = String
+
+object ExtValue:
+
+  val MaxLength: Int = 256
+
+  def apply(raw: String): Either[String, ExtValue] =
+    if raw.isEmpty then Left("an extension filter needs a value")
+    else if raw.length > MaxLength then Left(s"an extension value must be at most $MaxLength characters")
+    else Right(raw)
+
+/** The right-hand side of a numeric payload comparison.
+  *
+  * `BigDecimal` and not `Double`: the comparison is rendered into a jsonpath literal, and a `Double` would print
+  * `21.699999999999999` for a filter the user typed as `21.7` and then not match the row they were looking at.
+  *
+  * The bounds are not cosmetic. `JsonPath.jsonPathPredicate` renders the value with `toPlainString`, whose length is
+  * `precision + |scale|`, and **`scale` is attacker-controlled from a permalink**: `?v=1&data.t=>1E%2B2000000000`
+  * parses as a perfectly ordinary `BigDecimal` with one significant digit and a scale of -2,000,000,000, and rendering
+  * it allocates a two-gigabyte string before any of it reaches the database. Bounding both here is what makes the claim
+  * "every leaf holds a value a smart constructor has already validated" true of this leaf too, and it caps the rendered
+  * literal at 57 characters.
+  *
+  * 38 significant digits is Postgres `numeric`'s comfortable range and around 30 more than any sensor reading needs; 18
+  * decimal places is nanosecond resolution on a value expressed in seconds. Neither can be reached by accident.
+  */
+opaque type NumLit <: BigDecimal = BigDecimal
+
+object NumLit:
+
+  val MaxPrecision: Int = 38
+
+  val MaxScale: Int = 18
+
+  /** Bounds, then **canonicalises**: the accepted value is always the one `toPlainString` describes.
+    *
+    * Canonicalising is not tidiness. `BigDecimal` has two spellings for the same number — `1E+8` carries scale -8,
+    * `100000000` carries scale 0 — and they are `==` while their `toString`s differ. `Filter.sortKey` breaks ties on
+    * `toString`, so without this the same filter could sort its branches two ways depending on which spelling it was
+    * built from, and a permalink (which commits to the plain form) would decode into an AST that is equal leaf by leaf
+    * and unequal as a whole. Everything else in this file canonicalises for the same reason; a number should not be the
+    * exception.
+    *
+    * Scale is checked before the plain form is materialised, because materialising it is the allocation the bound
+    * exists to prevent. Precision is checked after, so the bound applies to what will actually be rendered and the
+    * function is idempotent — `NumLit(NumLit(x))` cannot reject its own output.
+    */
+  def apply(value: BigDecimal): Either[String, NumLit] =
+    val decimal = value.bigDecimal
+    if decimal.scale > MaxScale || decimal.scale < -MaxScale then
+      Left(s"a payload comparison value may have at most $MaxScale decimal places")
+    else
+      val plain = BigDecimal(decimal.toPlainString)
+      if plain.bigDecimal.precision > MaxPrecision then
+        Left(s"a payload comparison value may have at most $MaxPrecision significant digits")
+      else Right(plain)
+
 /** Free text destined for `websearch_to_tsquery`.
   *
   * Only length- and blank-checked: `websearch_to_tsquery` — unlike `to_tsquery` — never raises on malformed input, so
@@ -110,8 +180,12 @@ object JsonPath:
 
     /** The full existence predicate the `PayloadCmp` case compiles to. Rendered here rather than in `persistence`
       * because it is jsonpath, not SQL, and the segment validation that makes it safe lives here too.
+      *
+      * `NumLit` and not `BigDecimal` in the signature: `toPlainString` on an unbounded scale is a multi-gigabyte
+      * allocation reachable from a query string, so the bound belongs on the type this function accepts rather than on
+      * the discipline of its callers.
       */
-    def jsonPathPredicate(op: NumOp, value: BigDecimal): String =
+    def jsonPathPredicate(op: NumOp, value: NumLit): String =
       s"${path.jsonPath} ? (@ ${op.symbol} ${value.bigDecimal.toPlainString})"
 
 /** A JSON literal for `data @> ?::jsonb` containment.

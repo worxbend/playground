@@ -118,6 +118,12 @@ object SearchQuery:
   val TextKey: String = "q"
   val SeverityKey: String = "severity"
 
+  /** The two open-ended filter families, whose parameter *names* are chosen by the user: `data.<path>=<op><number>` and
+    * `ext.<name>=<value>`. Everything else in the grammar has a fixed key.
+    */
+  val PathPrefix: String = "data."
+  val ExtensionPrefix: String = "ext."
+
   /** Parameters this layer consumes. Everything else belongs to the kernel's filter codec. */
   val ControlKeys: Set[String] = Set(LimitKey, CursorKey, SortKey)
 
@@ -197,3 +203,36 @@ object SearchQuery:
   def lenient(rawQueryString: String): SearchQuery =
     val (_, filterPairs) = Query.parse(rawQueryString).partition((key, _) => ControlKeys(key))
     SearchQuery(None, DefaultSort, SearchRequest.DefaultLimit, None, filterPairs)
+
+  /** The payload and extension predicates of a rendered filter bar, as dismissible chips.
+    *
+    * These two families are the only active filters with neither an input of their own nor a facet to click, so without
+    * a chip they are invisible: they travel through a form submit as hidden fields, and a user looking at a link
+    * somebody sent them has no way to see — let alone remove — the `data.temperature=>21` that is excluding most of the
+    * rows. An applied filter the user cannot see is the same defect as a dropped one, pointing the other way.
+    *
+    * `label` is the parameter name verbatim and `value` the raw text, rather than a prose rendering: the chip is then a
+    * legend for the URL, which is the thing the user is actually expected to edit and share. It also keeps the chip
+    * honest for a value the codec rejected — `data.temperature=warm` still shows what was typed.
+    *
+    * Derived from a rendered [[com.worxbend.ferrite.web.view.FilterBar]] rather than from a `SearchQuery`, because the
+    * filter-bar fragment is handed the view model and nothing else. `hidden` already carries exactly the pairs with no
+    * input, and `permalink` is this search as a URL, so removing one pair from it is the whole of the edit — the same
+    * `Query.remove` [[SearchQuery.without]] performs, applied one layer later.
+    */
+  def predicateChips(hidden: Vector[(String, String)], permalink: String): Vector[PredicateChip] =
+    val (path, queryString) = permalink.span(_ != '?')
+    val pairs = Query.parse(queryString)
+    hidden.collect {
+      case (key, value) if key.startsWith(PathPrefix) || key.startsWith(ExtensionPrefix) =>
+        val remaining = Query.render(Query.remove(pairs, key, value))
+        PredicateChip(key, value, if remaining.isEmpty then path else s"$path?$remaining")
+    }
+
+/** One payload or extension predicate in the filter bar.
+  *
+  * Field-for-field the same shape as [[com.worxbend.ferrite.web.view.Chip]] and deliberately not that type: the chips
+  * built in the presenter come from a fixed table of parameter names, and these come from parameters whose names the
+  * user invented. Sharing the record would suggest the two are produced the same way.
+  */
+final case class PredicateChip(label: String, value: String, removeUrl: String)
