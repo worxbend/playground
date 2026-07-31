@@ -29,8 +29,8 @@ The build is Scala **3.8.4** with `-source:3.3`. Build definitions under `projec
 ## 2. Command vocabulary
 
 ```bash
-sbt verify      # fmtCheck + headerCheck + Test/testFull  — exactly what CI runs. Fast; no Docker.
-sbt verifyIt    # IT/testFull — the slow tier. Needs a working Docker daemon.
+sbt verify      # fmtCheck + headerCheck + IT lint + IT/compile + Test/testFull. Fast; no Docker.
+sbt verifyIt    # IT/testFull — the slow tier. Needs a working Docker daemon. CI runs this too.
 sbt fmt         # scalafmt, build sources included
 sbt fmtCheck    # scalafmtSbtCheck + scalafmtCheckAll
 sbt headerCreate  # stamp licence headers — NEVER hand-write one
@@ -67,6 +67,11 @@ Never run `sbt clean` — it throws away an incremental-compile state this build
 
 `Test/test` still selects the incremental task, so a command alias written as `Test/test` reports success while
 executing zero tests. That is why `verify` is spelled `Test/testFull` and `verifyIt` is spelled `IT/testFull`.
+
+`verify` also runs `IT/compile`, `IT/headerCheck` and `IT/scalafmtCheck` — the parts of the slow tier that need
+no Docker. Leaving them out meant `verify` could be green over an `src/it` tree that did not compile, and it was:
+scalafmt rewrote a block lambda's braces off, leaving `ps => val _ = …`, and nothing said so until somebody with
+a daemon ran `verifyIt` three merges later. Compiling the slow tier costs seconds.
 When you want a real answer, use `testFull`.
 
 ### The two test tiers
@@ -389,8 +394,10 @@ run there. In CI, cache `~/.cache/worxbend` beside `~/.cache/coursier`.
 - **Absence is a warning, never an error, and never a rewrite.** The committed CSS is only ever replaced by bytes
   a successful, non-empty CLI run produced into a scratch file first — a CLI that died half-way through writing
   its `--output` would otherwise leave a truncated stylesheet behind.
-- **`tailwindCheck` is not in `verify`.** `verify` must stay runnable with nothing but a JDK. Without the CLI the
-  check warns and passes, exactly like `tailwind` does. That is the one gap left, and it is recorded as such in
+- **`tailwindCheck` is in CI but not in `verify`.** `verify` must stay runnable with nothing but a JDK, and
+  without the CLI the check warns and passes, exactly like `tailwind` does — so a local `verify` will not tell
+  you the stylesheet is stale. The `stylesheet` job in `.github/workflows/scala.yml` installs the pinned CLI and
+  runs the check for real, so drift is caught before merge. The residual gap is the local one, recorded in
   `docs/operations.md` §8.
 - **Both tasks are wrapped in `Def.uncached`.** sbt 2 caches task results by declared inputs, and neither task
   declares the Twirl templates as one. Without it the first invocation is replayed for every later one and a

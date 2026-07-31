@@ -275,6 +275,13 @@ services:
       DATABASE_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
       HTTP_HOST: 0.0.0.0
       HTTP_PORT: 8080
+      # DLQ replay. Passed explicitly rather than left to the application defaults so that the one setting an
+      # operator may want to change under pressure — whether a replay can be *committed* at all — is visible in the
+      # deployment rather than buried in a jar. Dry runs and the two read endpoints stay available with
+      # REPLAY_ENABLED=false, deliberately: switching replay off must not also blind the operator.
+      REPLAY_ENABLED: ${REPLAY_ENABLED:-true}
+      REPLAY_MAX_RECORDS: ${REPLAY_MAX_RECORDS:-200}
+      REPLAY_MAX_ATTEMPTS: ${REPLAY_MAX_ATTEMPTS:-3}
     ports: ["8082:8080"]
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health/live >/dev/null || exit 1"]

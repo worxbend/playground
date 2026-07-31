@@ -619,8 +619,17 @@ Symptom: `rate(consume_records_poison_total[15m]) > 0`.
    - `unpersistable` — the database deterministically refused the row (SQLSTATE class 22 *data exception* or 23
      *integrity constraint*). **This is the class that includes a missing partition** — check §6.2 step 4 first,
      because that cause dead-letters good events at full throughput.
-2. **Read the dead letters.** They are structured-mode CloudEvents keyed `topic/partition/offset`, carrying the
-   origin coordinates, the `reason` and a human `detail`:
+2. **Read the dead letters.** cobalt serves them back on its admin port. They are structured-mode CloudEvents
+   keyed `topic/partition/offset`, carrying the origin coordinates, the `reason` and a human `detail`:
+
+   ```bash
+   curl -s localhost:8082/admin/dlq | jq                                  # depth per partition
+   curl -s 'localhost:8082/admin/dlq/records?limit=20&reason=malformed' | jq '.records[]'
+   ```
+
+   The listing is bounded on purpose — an unbounded one is a way to OOM the service that is supposed to be telling
+   you it is unhealthy. See `docs/services/cobalt.md` for the full surface. A Kafka console consumer still works
+   and needs no service to be up, which is why it is worth knowing:
 
    ```bash
    docker compose exec kafka /opt/kafka/bin/kafka-console-consumer.sh \
@@ -630,8 +639,19 @@ Symptom: `rate(consume_records_poison_total[15m]) > 0`.
 
 3. **Mind the clock.** The DLQ inherits `KAFKA_LOG_RETENTION_HOURS=168` — dead letters are gone after **7 days**.
    If a fix will take longer than that, copy the topic out to durable storage first.
-4. **Replay.** There is no replay tool in this repo. Once the defect is fixed, re-publish the original events
-   through `POST /events` on wolfram; the idempotent insert makes a re-ingested event a no-op if it did land.
+4. **Replay, once the defect is fixed.** `POST /admin/dlq/replay` re-publishes dead letters onto the main topic
+   with their original CloudEvents bytes and headers, so the idempotent insert makes a re-ingested event that did
+   land a no-op. **It plans by default and commits only when asked** — run it without `dryRun=false` first and
+   read what it says it would do:
+
+   ```bash
+   curl -sX POST 'localhost:8082/admin/dlq/replay?limit=50&reason=malformed' | jq              # plan
+   curl -sX POST 'localhost:8082/admin/dlq/replay?limit=50&reason=malformed&dryRun=false' | jq # commit
+   ```
+
+   Watch `dlq_replay_records_total{outcome}` beside `consume_records_poison_total`: a replay whose records come
+   straight back to the DLQ is a poison loop, and the fix was not the fix. Replaying everything blindly is how a
+   poison burst becomes a poison storm, which is why the scope is bounded and the bound is explicit.
 5. **Rate limiting.** DLQ publishes are sequential on purpose — a poison burst is by definition a bad moment for
    the pipeline, and a fan-out of produces at a struggling broker turns it into an outage. A slow DLQ therefore
    also slows the main path; that is the intended trade.
@@ -794,33 +814,51 @@ Ordered by operational blast radius.
    3.0.x line ships an sbt 1 plugin only. Test-kit and server APIs can shift between milestones, and there is no
    security-support commitment for a milestone. Pin every Play artifact to one version and bump them together;
    do not "fix" the version without accepting the loss of sbt 2.
-3. **Only six meters have histogram buckets** — the ones tabulated in §5.1. `histogram_quantile` against any
+3. **The alert rules fire into nothing.** The 13 rules in `deploy/observability/rules/observatory.rules.yml`
+   evaluate, and you can see them at `/api/v1/rules` and as `ALERTS` series — but there is no Alertmanager, so
+   nothing is *delivered*. That is a deliberate stop: a homelab with no on-call rotation has nowhere to route a
+   page. Adding one is a container and a routing decision, not a rule. Until then, alerts are something you look
+   at, not something that reaches you. See §5.4.
+4. **A payload range comparison cannot use its index.** `data.value=>21` — and every operator except `=` — plans
+   as a sequential scan. PostgreSQL's `jsonb_path_ops` GIN extracts search keys only from jsonpath clauses of the
+   form `accessors_chain = constant`, so `$.value ? (@ == 21)` is a selective bitmap index scan while
+   `$.value ? (@ > 21)` is not. `FilterAccessPathIT` asserts both halves of this, so the day it stops being true
+   the suite says so. Pair a range comparison with a time bound or another indexed attribute; a range alone over
+   the whole fact table is a scan.
+5. **Only six meters have histogram buckets** — the ones tabulated in §5.1. `histogram_quantile` against any
    other timer returns nothing, quietly, because a timer with no declared ladder publishes `_count`/`_sum`/`_max`
    only. That is the deliberate default: a wrong bucket range is worse than none, since every observation lands in
    `+Inf` and the panel reports a confident, meaningless number. Give a timer a ladder by adding it to
    `Meters.Buckets.timers`.
-5. **The hourly rollup is created, refreshed, and read by nothing.** `events.event_rollup_hourly` is populated by
-   the migration and kept current by `RollupRefresh` on cobalt's maintenance schedule
-   (`maintenance_job_duration_seconds{job="rollup-refresh"}` increments), but ferrite's histogram queries the fact
-   table directly. It is a standing cost with no reader: either wire it into the histogram query or drop it.
-6. **Compose omits the hardening and tuning ADR §10.2 calls for:** no `security_opt: [no-new-privileges:true]`,
-   no `pg_stat_statements`/`track_io_timing`/`log_min_duration_statement` on Postgres, no `postgres-exporter`.
-   None is required to run; all are cheap to add and the first slow-query investigation will want
-   `pg_stat_statements`.
-7. **Traces go to the collector's `debug` exporter only** — they are logged and dropped. The pipeline is live (a
+6. **Traces go to the collector's `debug` exporter only** — they are logged and dropped. The pipeline is live (a
    single smoke event produces `resource spans: 2, spans: 3`, so HTTP → Kafka → consumer is one trace), but point
    `otel-collector.yaml` at Tempo or Jaeger before you need to *read* one.
-8. **ferrite's stylesheet is committed output and the build does not verify it.** `sbt ferrite/tailwindCheck`
-   exists and catches drift, but it needs the Tailwind CLI binary and is therefore not part of `verify`, which
-   must stay runnable with nothing but a JDK. A template that gains a utility class in a change where nobody ran
-   the task ships a page that renders without it. See `docs/development.md` §8.
+7. **The live tail can miss a late-arriving event.** It advances a keyset cursor over `(occurred_at, event_uid)`,
+   so an event whose `occurred_at` is older than a row already tailed — a clock-skewed producer, or ingest lag
+   past the cursor — never appears in the stream. Reload to see it. The alternative, seeking on `ingested_at`,
+   has only a BRIN index and cannot serve an ordered seek; a grace window would re-send the feed several times
+   over. Search shares the same property, and the time clamp in wolfram bounds how far skew can go.
+8. **The browser JavaScript has no test tier.** `applications/ferrite/src/main/resources/public/js/app.js` — the
+   SSE client and the keyboard model — is verified by reading, not by running. The *server* side of the tail is
+   proven end to end by `OverviewPageIT`, and `TemplateSuite` pins every markup contract the script depends on,
+   so a template change that breaks it fails the build. But the script itself is unexercised. Adding a tier means
+   a Node toolchain or a headless browser in the build, which is a deliberate decision nobody has made.
+9. **ferrite's stylesheet is committed output, and `verify` still does not check it.** The `stylesheet` CI job
+   now installs the Tailwind CLI and runs `ferrite/tailwindCheck` for real, so drift is caught before merge. But
+   `verify` must stay runnable with nothing but a JDK, so a local run will not tell you: a template that gains a
+   utility class in a change where nobody ran `sbt ferrite/tailwind` ships a page that renders without it, and
+   only CI will say so. See `docs/development.md` §8.
 
-Fixed, and no longer listed: `deploy/.env.example` (present), ferrite's `DockerPlugin` (enabled, so
-`ferrite:latest` builds), compose's database variables (`DATABASE_URL`/`DATABASE_USER`/`DATABASE_PASSWORD`,
-matching what the services read), the absence of a partition-maintenance job (cobalt runs one — §7.3), the three
-un-emitted meters and Hikari's missing pool binding (all wired — §5), timers without histogram buckets (six meter
-families have them — §5.1), and ferrite's duplicated `logback.xml` (excluded from the module jar, so the image
-carries exactly the `conf/` copy an operator can override).
+Fixed, and no longer listed: `deploy/.env.example` (present); ferrite's `DockerPlugin` (enabled, so
+`ferrite:latest` builds); compose's database variables (`DATABASE_URL`/`DATABASE_USER`/`DATABASE_PASSWORD`,
+matching what the services read); the absence of a partition-maintenance job (cobalt runs one — §7.3); the three
+un-emitted meters and Hikari's missing pool binding (all wired — §5); timers without histogram buckets (six meter
+families have them — §5.1); ferrite's duplicated `logback.xml` (excluded from the module jar, so the image carries
+exactly the `conf/` copy an operator can override); **the orphaned hourly rollup** (`events.event_rollup_hourly`
+now drives the overview page at `/` through `OverviewRepository` — §5.2); **the missing container hardening**
+(`no-new-privileges` on every container, `pg_stat_statements`, `track_io_timing`, `log_min_duration_statement` and
+`postgres-exporter` all present and verified — §2.1, §5.3); and **the absence of a DLQ replay tool**
+(`POST /admin/dlq/replay` on cobalt — §6.3).
 
 ---
 

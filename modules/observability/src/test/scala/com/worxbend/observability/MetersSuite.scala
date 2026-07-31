@@ -29,27 +29,24 @@ package com.worxbend.observability
   */
 final class MetersSuite extends munit.FunSuite:
 
+  /** Every meter name in the vocabulary, discovered rather than listed.
+    *
+    * **This used to be a hand-written list, and it was wrong.** Three meters had been added to `Meters` without being
+    * added here — `consume.batch.latency`, `dlq.replay.operations`, `dlq.replay.records` — so the naming and collision
+    * invariants below silently did not cover them. A list that must be kept in step with a set of constants is a list
+    * that drifts, and the drift is invisible: the suite stays green, because it is still checking the names it knows.
+    *
+    * Reflection is the wrong tool almost everywhere and the right one here. `Meters` is a flat object of `String`
+    * constants with no companion structure to fold over, and the alternative — a macro, or restructuring the vocabulary
+    * into an enum — would change production code to serve a test. The predicate is narrow: a public no-arg method on
+    * `Meters` returning `String`, minus the two that are URL paths and are asserted separately.
+    */
   private val meterNames: List[String] =
-    List(
-      Meters.IngestReceived,
-      Meters.IngestRejected,
-      Meters.KafkaProduceLatency,
-      Meters.ConsumeBatchSize,
-      Meters.ConsumePersisted,
-      Meters.ConsumeDuplicate,
-      Meters.ConsumePoison,
-      Meters.ConsumerLag,
-      Meters.EventUnrecognised,
-      Meters.SearchQueryDuration,
-      Meters.SearchFacetsCapped,
-      Meters.PartitionDefaultRows,
-      Meters.MaintenanceDuration,
-      Meters.MaintenancePartitionsCreated,
-      Meters.MaintenancePartitionsDetached,
-      Meters.MaintenancePartitionHeadroom,
-      Meters.MaintenancePartitionsBlocked,
-      Meters.HttpServerRequests
-    )
+    Meters.getClass.getDeclaredMethods.toList
+      .filter(method => method.getParameterCount == 0 && method.getReturnType == classOf[String])
+      .map(method => method.invoke(Meters).asInstanceOf[String])
+      .filterNot(_.startsWith("/"))
+      .sorted
 
   private val tagKeys: List[String] =
     List(
@@ -78,7 +75,21 @@ final class MetersSuite extends munit.FunSuite:
       assert(name.matches("[a-z][a-z0-9.]*[a-z0-9]"), s"$name is not a valid dotted meter name")
 
   test("no two meter constants collide"):
-    assertEquals(meterNames.distinct.size, meterNames.size, "two meters share a name")
+    assertEquals(meterNames.distinct.size, meterNames.size, s"two meters share a name: $meterNames")
+
+  test("the discovered vocabulary covers every meter the services emit"):
+    // A guard on the guard: if the reflection above ever stops finding meters — a refactor to `def`s with arguments,
+    // a move into a nested object — every invariant in this suite would pass vacuously over an empty list. Naming a
+    // few known members keeps that failure loud. The count is a lower bound on purpose; adding a meter must not
+    // require editing a test.
+    assert(meterNames.sizeIs >= 20, s"only ${meterNames.size} meters discovered — has Meters been restructured?")
+    List(
+      Meters.IngestReceived,
+      Meters.ConsumeBatchLatency,
+      Meters.DlqReplayOperations,
+      Meters.DlqReplayRecords,
+      Meters.HttpServerRequests
+    ).foreach(name => assert(meterNames.contains(name), s"$name was not discovered"))
 
   test("no two tag keys collide"):
     assertEquals(tagKeys.distinct.size, tagKeys.size, "two tag keys share a name")
