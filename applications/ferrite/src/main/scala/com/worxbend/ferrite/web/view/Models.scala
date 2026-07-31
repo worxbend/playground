@@ -154,7 +154,14 @@ final case class Results(
   emptiness: Option[Emptiness],
   sortUrl: String,
   sortAria: String,
-  sortLabel: String
+  sortLabel: String,
+  /** `newest` or `oldest`, rendered onto the row container as `data-order`.
+    *
+    * The live tail prepends arriving rows, which is only the right place for them when the list is newest-first. It
+    * reads this attribute rather than being told at page load, because the sort button swaps the results region on its
+    * own and a value captured outside that region would go stale the moment somebody flipped the order.
+    */
+  order: String
 )
 
 /** The empty state: what was searched, why nothing came back, and the two things worth trying next. */
@@ -199,3 +206,66 @@ final case class Failure(
 
 /** Everything the full list page needs. */
 final case class EventsPage(bar: FilterBar, results: Results)
+
+// -------------------------------------------------------------------------------------------------------- overview
+
+/** One entry of the overview's range selector. A link, not a `<select>`: the range is in the URL, so it must be
+  * shareable and it must work without JavaScript.
+  */
+final case class RangeOption(key: String, label: String, url: String, selected: Boolean)
+
+/** A headline number.
+  *
+  * `url` is never empty. A dashboard number an operator cannot click is a number they then have to reproduce by hand in
+  * the search bar, which is the moment they stop trusting it.
+  */
+final case class Tile(label: String, value: String, detail: String, url: String, tone: String)
+
+/** One row of a breakdown panel: a dimension value, its share of the window, and the search it stands for.
+  *
+  * `shareClass` carries the bar width for the same reason [[Bar.heightClass]] carries the height — the
+  * Content-Security-Policy has no `'unsafe-inline'` in `style-src`, so a per-row `style="width:…"` would not render.
+  *
+  * `url` is optional, and the case that makes it so is real: the rollup stores `coalesce(severity, 'none')`, and "no
+  * severity" is not something the filter grammar can express. A row that cannot be turned into a search is rendered as
+  * text rather than as a link that would quietly search for something else.
+  */
+final case class MeterRow(
+  label: String,
+  count: String,
+  errorCount: String,
+  share: Int,
+  shareClass: String,
+  url: Option[String],
+  tone: String
+)
+
+/** One breakdown panel. `note` is shown in place of the rows when there are none. */
+final case class Panel(key: String, heading: String, note: String, rows: Vector[MeterRow])
+
+/** The overview.
+  *
+  * @param freshness
+  *   a sentence about how current the rollup is, always rendered. Every count on this page comes from a materialized
+  *   view refreshed on a schedule, so it is stale by up to one refresh interval — a dashboard that does not say so is a
+  *   dashboard that will be quoted against a search result it disagrees with.
+  * @param stale
+  *   true only when the rollup has never been refreshed against a populated fact table. Deliberately not inferred from
+  *   "the newest bucket is old": on a quiet system that is the correct answer, and an alarm that fires on quiet is an
+  *   alarm people turn off.
+  */
+final case class OverviewPage(
+  ranges: Vector[RangeOption],
+  rangeLabel: String,
+  fromLabel: String,
+  untilLabel: String,
+  tiles: Vector[Tile],
+  volume: Histogram,
+  panels: Vector[Panel],
+  alerts: Vector[EventRow],
+  alertsUrl: String,
+  alertsNote: String,
+  freshness: String,
+  stale: Boolean,
+  searchUrl: String
+)

@@ -173,12 +173,6 @@ final class EventsControllerSuite extends FunSuite:
     assertEquals(status(result), Status.NOT_FOUND)
     assert(body(result).contains("No such event"))
 
-  test("the landing page redirects to the canonical list URL"):
-    val controller = Fixtures.controller(Fixtures.StubRepository())
-    val result = Helpers.call(controller.index, get(Urls.Root))
-    assertEquals(status(result), Status.SEE_OTHER)
-    assertEquals(header("Location", result), Some(Urls.Events))
-
 /** Mints a cursor that belongs to a given query, so paging tests exercise the real fingerprint check. */
 object SearchQueryFixtures:
 

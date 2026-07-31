@@ -1,0 +1,30 @@
+@*
+ * The live-tail control.
+ *
+ * It lives in the PAGE and not in the results fragment, deliberately: `#results` is replaced wholesale on every filter
+ * change, and a control inside it would lose its state — and its open connection — every time somebody typed in the
+ * search box.
+ *
+ * `hidden` with `x-bind:hidden="false"` is the progressive-enhancement switch. Without Alpine the attribute stays and
+ * the control is not shown at all, which is the honest outcome: the tail is the one feature here that genuinely
+ * cannot work without JavaScript, and a button that does nothing is worse than a button that is not there.
+ *
+ * A real <button>, so it is keyboard reachable and announced; `aria-pressed` is what makes "live" a state rather than
+ * a colour; and the status line is a polite live region so a screen-reader user is told when the tail stops.
+ *
+ * `data-stream` is the stream's PATH and not a built URL. The filter comes from `location.search` when the tail
+ * starts, which is the only source that is still correct after htmx has pushed a new URL for a filter the server
+ * never rendered this element for.
+ *@
+@(streamPath: String)
+
+<div class="tail-bar" hidden x-bind:hidden="false" data-stream="@streamPath">
+  <button type="button"
+          class="button tail-toggle"
+          x-on:click="toggleTail()"
+          x-bind:class="live ? 'is-live' : ''"
+          x-bind:aria-pressed="live ? 'true' : 'false'"
+          x-text="live ? 'Pause' : 'Go live'">Go live</button>
+
+  <span class="tail-state" x-bind:class="live ? 'is-live' : 'is-paused'" x-text="tailNote" role="status">Paused</span>
+</div>

@@ -50,6 +50,18 @@ final class UrlRoutingSuite extends FunSuite:
     assert(Paths.Events.unapplySeq(request(Urls.events(""))).isDefined)
     assert(Paths.Events.unapplySeq(request(Urls.events("v=1&type=com.worxbend.iot.alarm"))).isDefined)
 
+  test("the overview URL is the root, with and without a range"):
+    assert(Paths.Root.unapplySeq(request(Urls.overview(""))).isDefined)
+    assert(Paths.Root.unapplySeq(request(Urls.overview("range=7d"))).isDefined)
+
+  test("the live-tail URL is matched, and no other pattern claims it"):
+    assert(Paths.Live.unapplySeq(request(Urls.live(""))).isDefined)
+    assert(Paths.Live.unapplySeq(request(Urls.live("v=1&severity=%3E%3Derror"))).isDefined)
+    // The whole reason the stream is `/live` and not `/events/stream`: under the latter the detail pattern would also
+    // match it, and the tail would work only while its `case` happened to be listed first.
+    assert(Paths.Event.unapplySeq(request(Urls.live(""))).isEmpty)
+    assert(Paths.Events.unapplySeq(request(Urls.live(""))).isEmpty)
+
   test("an event detail URL is matched and yields the event id back"):
     val url = Urls.event(at, Fixtures.FirstUid)
     assertEquals(Paths.Event.unapplySeq(request(url)), Some(List(Fixtures.FirstUid.toString)))
@@ -76,11 +88,13 @@ final class UrlRoutingSuite extends FunSuite:
     assert(Paths.HealthLive.unapplySeq(request(Urls.HealthReady)).isEmpty)
 
   test("the live web router answers every URL the helper can build"):
-    val router = routing.WebRouter(Fixtures.controller(Fixtures.StubRepository()))
+    val router = Fixtures.webRouter()
     assert(router.routes.isDefinedAt(FakeRequest("GET", Urls.Root)))
+    assert(router.routes.isDefinedAt(FakeRequest("GET", Urls.overview("range=30d"))))
     assert(router.routes.isDefinedAt(FakeRequest("GET", Urls.events(""))))
     assert(router.routes.isDefinedAt(FakeRequest("GET", Urls.events("v=1&device=kitchen-1"))))
     assert(router.routes.isDefinedAt(FakeRequest("GET", Urls.event(at, Fixtures.FirstUid))))
+    assert(router.routes.isDefinedAt(FakeRequest("GET", Urls.live("v=1&device=kitchen-1"))))
     assert(!router.routes.isDefinedAt(FakeRequest("GET", "/nope")))
 
   test("every asset the layout references is actually on the classpath under the assets root"):

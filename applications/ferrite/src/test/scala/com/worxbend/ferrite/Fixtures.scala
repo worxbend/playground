@@ -23,9 +23,13 @@ package com.worxbend.ferrite
 
 import com.typesafe.config.ConfigFactory
 import com.worxbend.ferrite.controllers.EventsController
+import com.worxbend.ferrite.controllers.OverviewController
+import com.worxbend.ferrite.controllers.TailController
+import com.worxbend.ferrite.overview.OverviewService
 import com.worxbend.ferrite.search.SearchExecutionContext
 import com.worxbend.ferrite.search.SearchMetrics
 import com.worxbend.ferrite.search.SearchService
+import com.worxbend.ferrite.tail.TailService
 import com.worxbend.kernel.search.Filter
 import com.worxbend.persistence.repository.EventDetail
 import com.worxbend.persistence.repository.EventRef
@@ -38,8 +42,14 @@ import com.worxbend.persistence.repository.FacetValue
 import com.worxbend.persistence.repository.HistogramBucket
 import com.worxbend.persistence.repository.HistogramRequest
 import com.worxbend.persistence.repository.NewEvent
+import com.worxbend.persistence.repository.OverviewRepository
+import com.worxbend.persistence.repository.OverviewRequest
+import com.worxbend.persistence.repository.RollupDimension
+import com.worxbend.persistence.repository.RollupSlice
+import com.worxbend.persistence.repository.RollupTotals
 import com.worxbend.persistence.repository.SearchPage
 import com.worxbend.persistence.repository.SearchRequest
+import com.worxbend.persistence.repository.VolumePoint
 import io.circe.Json
 import io.micrometer.core.instrument.MeterRegistry
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry
@@ -192,3 +202,70 @@ object Fixtures:
     EventsController(Helpers.stubControllerComponents(), service(repository), clock)(using
       scala.concurrent.ExecutionContext.parasitic
     )
+
+  // ----------------------------------------------------------------------------------------------------- overview
+
+  val volume: Vector[VolumePoint] = Vector(
+    VolumePoint(Now.minusHours(2), 0L, 0L),
+    VolumePoint(Now.minusHours(1), 5L, 1L),
+    VolumePoint(Now, 12L, 0L)
+  )
+
+  val slices: Map[RollupDimension, Vector[RollupSlice]] = Map(
+    RollupDimension.Type -> Vector(RollupSlice("com.worxbend.iot.telemetry", 12L, 0L)),
+    RollupDimension.Source -> Vector(RollupSlice("https://gateway.worxbend.io/hall", 17L, 1L)),
+    // `none` is the rollup's own placeholder for an event that carried no severity at all, and it is the case that
+    // proves a breakdown row can be un-linkable: the filter grammar has no way to express it.
+    RollupDimension.Severity -> Vector(RollupSlice("error", 5L, 5L), RollupSlice("none", 2L, 0L))
+  )
+
+  /** Records the requests it is handed, like [[StubRepository]], so a test can assert on the window the web tier
+    * computed rather than only on the rendered numbers.
+    */
+  final class StubOverviewRepository(
+    points: Vector[VolumePoint] = Fixtures.volume,
+    breakdowns: Map[RollupDimension, Vector[RollupSlice]] = Fixtures.slices,
+    totalResult: RollupTotals = RollupTotals(17L, 5L),
+    newest: Option[OffsetDateTime] = Some(Fixtures.Now)
+  ) extends OverviewRepository:
+
+    val lastRequest: AtomicReference[Option[OverviewRequest]] = AtomicReference(None)
+    val asked: AtomicReference[Vector[RollupDimension]] = AtomicReference(Vector.empty)
+
+    def volume(request: OverviewRequest): Future[Vector[VolumePoint]] =
+      lastRequest.set(Some(request))
+      Future.successful(points)
+
+    def breakdown(dimension: RollupDimension, request: OverviewRequest): Future[Vector[RollupSlice]] =
+      val _ = asked.updateAndGet(_ :+ dimension)
+      Future.successful(breakdowns.getOrElse(dimension, Vector.empty))
+
+    def totals(request: OverviewRequest): Future[RollupTotals] = Future.successful(totalResult)
+
+    def freshness(): Future[Option[OffsetDateTime]] = Future.successful(newest)
+
+  def overviewService(
+    rollup: OverviewRepository = StubOverviewRepository(),
+    events: EventRepository = StubRepository()
+  ): OverviewService =
+    OverviewService(rollup, events, clock)(using searchExecutionContext)
+
+  def overviewController(
+    rollup: OverviewRepository = StubOverviewRepository(),
+    events: EventRepository = StubRepository()
+  ): OverviewController =
+    OverviewController(Helpers.stubControllerComponents(), overviewService(rollup, events), clock)(using
+      scala.concurrent.ExecutionContext.parasitic
+    )
+
+  def tailService(repository: EventRepository = StubRepository()): TailService =
+    TailService(repository, clock)(using searchExecutionContext)
+
+  def tailController(service: TailService = tailService()): TailController =
+    TailController(Helpers.stubControllerComponents(), service, clock)(using
+      scala.concurrent.ExecutionContext.parasitic
+    )
+
+  /** The real router over stub controllers, so a routing test exercises the composition rather than a copy of it. */
+  def webRouter(repository: EventRepository = StubRepository()): routing.WebRouter =
+    routing.WebRouter(controller(repository), overviewController(events = repository), tailController())

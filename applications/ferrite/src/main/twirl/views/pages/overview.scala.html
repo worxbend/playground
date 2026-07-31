@@ -1,0 +1,57 @@
+@*
+ * The overview — "what is this system doing right now", answered from the hourly rollup.
+ *
+ * Every number here is clickable and lands on the equivalent `/events` search over the SAME window. That is the
+ * design rule, not a nicety: a dashboard whose panels are dead ends makes an operator retype what they just read, and
+ * a number retyped is a number mistyped.
+ *
+ * The staleness note is rendered unconditionally. Counts come from a materialized view refreshed on a schedule, so
+ * they lag search by up to one refresh interval; a page that does not say so is a page that will be quoted against a
+ * search result it disagrees with.
+ *@
+@import com.worxbend.ferrite.web.view.OverviewPage
+
+@(page: OverviewPage)(implicit request: RequestHeader)
+
+@layout.main("Overview · observatory", com.worxbend.ferrite.web.Urls.Root) {
+  <div class="overview-header">
+    <h1 id="overview-heading" class="results-heading" tabindex="-1">Overview</h1>
+
+    @* Links, not a <select>: the range is in the URL, so it has to be shareable and work without JavaScript. *@
+    <nav class="range-picker" aria-label="Time range">
+      @for(range <- page.ranges) {
+        <a class="range-option @if(range.selected){is-selected}"
+           href="@range.url"
+           @if(range.selected){aria-current="page"}>@range.label</a>
+      }
+    </nav>
+  </div>
+
+  <p class="overview-window">
+    @page.fromLabel — @page.untilLabel
+    <a class="overview-search" href="@page.searchUrl">Search this window</a>
+  </p>
+
+  <ul class="tiles">
+    @for(tile <- page.tiles) {
+      <li class="tile severity-@tile.tone">
+        <a class="tile-link" href="@tile.url">
+          <span class="tile-label">@tile.label</span>
+          <span class="tile-value">@tile.value</span>
+          <span class="tile-detail">@tile.detail</span>
+        </a>
+      </li>
+    }
+  </ul>
+
+  @fragments.volume(page.volume)
+
+  <div class="panels">
+    @for(panel <- page.panels) {
+      @fragments.panel(panel)
+    }
+    @fragments.alerts(page.alerts, page.alertsUrl, page.alertsNote)
+  </div>
+
+  <p class="overview-freshness @if(page.stale){is-stale}" @if(page.stale){role="alert"}>@page.freshness</p>
+}

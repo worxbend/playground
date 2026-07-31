@@ -27,7 +27,9 @@ import com.worxbend.observability.TelemetryConfig
 import com.worxbend.persistence.Database
 import com.worxbend.persistence.DatabaseConfig
 import com.worxbend.persistence.repository.EventRepository
+import com.worxbend.persistence.repository.OverviewRepository
 import com.worxbend.persistence.repository.PostgresEventRepository
+import com.worxbend.persistence.repository.PostgresOverviewRepository
 import com.zaxxer.hikari.metrics.micrometer.MicrometerMetricsTrackerFactory
 import jakarta.inject.Inject
 import jakarta.inject.Provider
@@ -130,6 +132,21 @@ final class EventRepositoryProvider @Inject() (databases: Databases, ec: SearchE
     PostgresEventRepository(databases.database.read.transactor, databases.database.read.transactor)(using ec)
 
   def get(): EventRepository = repository
+
+/** The overview's reader, on the same pool and the same bounded dispatcher.
+  *
+  * A second provider rather than a second method on the first, because the two repositories read different relations
+  * with different cost models: this one only ever touches `events.event_rollup_hourly`. Keeping the split visible in
+  * the wiring is what makes "the overview must not scan the fact table" checkable by looking at one file.
+  */
+@Singleton
+final class OverviewRepositoryProvider @Inject() (databases: Databases, ec: SearchExecutionContext)
+    extends Provider[OverviewRepository]:
+
+  private lazy val repository: OverviewRepository =
+    PostgresOverviewRepository(databases.database.read.transactor)(using ec)
+
+  def get(): OverviewRepository = repository
 
 /** Metrics and traces, started once and closed on shutdown.
   *
