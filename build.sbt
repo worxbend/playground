@@ -262,7 +262,7 @@ lazy val wolfram = (project in file("applications/wolfram"))
   .settings(packagingSettings *)
   .settings(
     name := "wolfram",
-    libraryDependencies ++= tapir ++ Seq(vertx, circeGeneric) ++ tapirTestkit.map(_ % Test),
+    libraryDependencies ++= tapir ++ openApiCirce ++ Seq(vertx, circeGeneric, jwt) ++ tapirTestkit.map(_ % Test),
     libraryDependencies ++= testContainers.map(_ % IT)
   )
 

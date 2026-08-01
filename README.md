@@ -17,12 +17,12 @@ rather than their frameworks, so a name does not have to change if a stack does.
 
 | Service | Stack | Responsibility |
 | --- | --- | --- |
-| **wolfram** | Tapir on Vert.x 5 | HTTP ingestion. Validates CloudEvents and publishes to Kafka. Owns no state. |
+| **wolfram** | Tapir on Vert.x 5 | HTTP ingestion. A JWT-authenticated, AIP-shaped `/v1/events` API with Swagger UI at `/docs`. Validates CloudEvents and publishes to Kafka. Owns no state. |
 | **cobalt** | Pekko Streams Kafka + Cask | Consumes, decodes and persists events. Cask serves only metrics and health. |
 | **ferrite** | Play 3 + Twirl/htmx | The web application: PostgreSQL, search, and the UI. Never sees Kafka. |
 
 ```
-client --POST /events--> wolfram --> Kafka --> cobalt --> PostgreSQL <-- ferrite --> browser
+client --POST /v1/events--> wolfram --> Kafka --> cobalt --> PostgreSQL <-- ferrite --> browser
 ```
 
 ## Shared libraries

@@ -122,15 +122,35 @@ object PublisherConfig:
   * rather than the first time that particular subsystem is exercised — a service that boots and then 503s on its first
   * request is much harder to diagnose than one that refuses to boot.
   */
-final case class WolframConfig(server: ServerConfig, ingest: IngestConfig, publisher: PublisherConfig)
+final case class WolframConfig(
+  server: ServerConfig,
+  ingest: IngestConfig,
+  publisher: PublisherConfig,
+  auth: AuthConfig
+)
 
 object WolframConfig:
 
   /** The config namespace. */
   val Namespace: String = "wolfram"
 
+  /** Derived rather than written by hand for [[AuthConfig]] alone, because it is the one section with optional fields —
+    * and `forProductN` over eight of them is a positional list nobody can read, in which two adjacent `Option[String]`s
+    * can be swapped without the compiler noticing.
+    */
+  given authReader: ConfigReader[AuthConfig] = ConfigReader.forProduct8(
+    "enabled",
+    "algorithm",
+    "secret",
+    "public-key",
+    "issuer",
+    "audience",
+    "required-scope",
+    "leeway"
+  )(AuthConfig.apply)
+
   given reader: ConfigReader[WolframConfig] =
-    ConfigReader.forProduct3("server", "ingest", "publisher")(WolframConfig.apply)
+    ConfigReader.forProduct4("server", "ingest", "publisher", "auth")(WolframConfig.apply)
 
   /** Loads from the ambient config, returning failures rather than throwing.
     *

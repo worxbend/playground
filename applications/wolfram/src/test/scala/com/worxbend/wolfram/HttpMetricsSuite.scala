@@ -33,8 +33,11 @@ import munit.FunSuite
 final class HttpMetricsSuite extends FunSuite:
 
   test("the uri tag is the route template, never a raw path — the cardinality rule of ADR §7.1"):
-    assertEquals(HttpMetrics.route(Endpoints.publishEvent), "/events")
-    assertEquals(HttpMetrics.route(Endpoints.publishBatch), "/events/batch")
+    assertEquals(HttpMetrics.route(Endpoints.createEvent), "/v1/events")
+    // The colon is part of the template and must survive into the tag: a custom method that reported the same `uri`
+    // as its collection would merge two operations' latency into one series.
+    assertEquals(HttpMetrics.route(Endpoints.batchCreateEvents), "/v1/events:batchCreate")
+    assertEquals(HttpMetrics.route(Endpoints.validateEvent), "/v1/events:validate")
 
   test("outcome buckets follow Micrometer's convention"):
     assertEquals(HttpMetrics.outcome(202), "SUCCESS")

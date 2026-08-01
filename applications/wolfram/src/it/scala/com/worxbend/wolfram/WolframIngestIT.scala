@@ -81,11 +81,29 @@ final class WolframIngestIT extends FunSuite:
 
   private def eventTime: String = Rfc3339.render(Instant.now().atOffset(ZoneOffset.UTC))
 
+  /** Authentication is on for real in this tier. The unit suite proves the verifier's decisions; what only a bound port
+    * can prove is that the security layer is actually *installed* on the routes Vert.x serves — a `serverSecurityLogic`
+    * that was described but never applied looks identical in a stub interpreter.
+    */
+  private val Secret: String = "an-integration-secret-long-enough-for-hs256!!"
+
+  private def token: String =
+    pdi.jwt.JwtCirce.encode(
+      pdi.jwt.JwtClaim(
+        content = s"""{"scope":"${JwtVerifier.PublishScope}"}""",
+        subject = Some("wolfram-it"),
+        expiration = Some(Instant.now().plusSeconds(600).getEpochSecond)
+      ),
+      Secret,
+      pdi.jwt.JwtAlgorithm.HS256
+    )
+
   test("a binary-mode POST becomes a binary-mode Kafka record, keyed and traced"):
     withApp: (app, topic, servers) =>
       val backend = HttpClientSyncBackend()
       val response = basicRequest
-        .post(uri"http://localhost:${app.port}/events")
+        .post(uri"http://localhost:${app.port}/v1/events")
+        .header("Authorization", s"Bearer $token")
         .header("ce-specversion", "1.0")
         .header("ce-id", "it-1")
         .header("ce-source", "/gateway/it")
@@ -97,7 +115,7 @@ final class WolframIngestIT extends FunSuite:
         .body("""{"celsius":21.5}""".getBytes(UTF_8))
         .send(backend)
 
-      assertEquals(response.code, StatusCode.Accepted)
+      assertEquals(response.code, StatusCode.Ok)
 
       val record = consumeOne(servers, topic)
       assertEquals(ContentMode.of(record.headers), Some(ContentMode.Binary))
@@ -121,12 +139,13 @@ final class WolframIngestIT extends FunSuite:
            |"data":{"celsius":21.5}}""".stripMargin
 
       val response = basicRequest
-        .post(uri"http://localhost:${app.port}/events")
+        .post(uri"http://localhost:${app.port}/v1/events")
+        .header("Authorization", s"Bearer $token")
         .header("content-type", HttpBinding.StructuredMediaType)
         .body(body.getBytes(UTF_8))
         .send(backend)
 
-      assertEquals(response.code, StatusCode.Accepted)
+      assertEquals(response.code, StatusCode.Ok)
 
       val record = consumeOne(servers, topic)
       assertEquals(ContentMode.of(record.headers), Some(ContentMode.Binary))
@@ -146,7 +165,7 @@ final class WolframIngestIT extends FunSuite:
       assert(metrics.body.exists(_.contains("jvm_memory_used_bytes")), metrics.body.toString)
 
       val openApi = basicRequest.get(uri"http://localhost:${app.port}/openapi.json").send(backend)
-      assert(openApi.body.exists(_.contains("\"/events\"")), openApi.body.toString)
+      assert(openApi.body.exists(_.contains("\"/v1/events\"")), openApi.body.toString.take(300))
 
   test("a real request produces histogram buckets in the real exposition"):
     withApp: (app, _, _) =>
@@ -155,7 +174,8 @@ final class WolframIngestIT extends FunSuite:
       // the bucket filter in `Telemetry` is keyed on the meter *name*, and a unit test that registers the timer by
       // hand cannot prove the name the interceptor actually uses is the one the filter matches.
       val posted = basicRequest
-        .post(uri"http://localhost:${app.port}/events")
+        .post(uri"http://localhost:${app.port}/v1/events")
+        .header("Authorization", s"Bearer $token")
         .header("ce-specversion", "1.0")
         .header("ce-id", "it-buckets")
         .header("ce-source", "/gateway/it")
@@ -167,7 +187,7 @@ final class WolframIngestIT extends FunSuite:
         .header("content-type", "application/json")
         .body("""{"metric":"temperature","value":21.5,"unit":"C"}""".getBytes(UTF_8))
         .send(backend)
-      assertEquals(posted.code, StatusCode.Accepted)
+      assertEquals(posted.code, StatusCode.Ok)
 
       val exposition = basicRequest
         .get(uri"http://localhost:${app.port}/metrics")
@@ -185,6 +205,43 @@ final class WolframIngestIT extends FunSuite:
       )
       // A well-formed telemetry payload: refinement succeeded, so nothing was counted as unrecognised.
       assert(!exposition.contains("event_unrecognised_total"), "a decodable event was counted as unrecognised")
+
+  test("the security layer is installed on the served routes, not merely described"):
+    withApp: (app, _, _) =>
+      val backend = HttpClientSyncBackend()
+      // No Authorization header at all. A stub interpreter cannot distinguish "security logic described" from
+      // "security logic wired into the route", and that difference is an open ingestion endpoint.
+      val response = basicRequest
+        .post(uri"http://localhost:${app.port}/v1/events")
+        .header("ce-specversion", "1.0")
+        .header("ce-id", "it-noauth")
+        .header("ce-source", "/gateway/it")
+        .header("ce-type", "com.worxbend.iot.telemetry")
+        .header("ce-time", eventTime)
+        .header("content-type", "application/json")
+        .body("""{"metric":"t","value":1,"unit":"C"}""".getBytes(UTF_8))
+        .send(backend)
+      assertEquals(response.code, StatusCode.Unauthorized)
+      assert(response.body.left.exists(_.contains("UNAUTHENTICATED")), response.body.toString)
+
+  test("Swagger UI and both document renderings are served on the service's own port"):
+    withApp: (app, _, _) =>
+      val backend = HttpClientSyncBackend()
+      val base = s"http://localhost:${app.port}"
+
+      val json = basicRequest.get(uri"$base/openapi.json").send(backend)
+      assertEquals(json.code, StatusCode.Ok)
+      assert(json.body.exists(_.contains("/v1/events:batchCreate")), json.body.toString.take(200))
+
+      val yaml = basicRequest.get(uri"$base/${ApiDocs.DocsPath}/${ApiDocs.YamlPath}").send(backend)
+      assertEquals(yaml.code, StatusCode.Ok)
+      assert(yaml.body.exists(_.startsWith("openapi:")), yaml.body.toString.take(120))
+
+      // The UI itself redirects to its index; following it must reach real HTML, not a 404 from a mount that
+      // resolved its assets against the wrong prefix.
+      val ui = basicRequest.get(uri"$base/${ApiDocs.DocsPath}").followRedirects(true).send(backend)
+      assertEquals(ui.code, StatusCode.Ok)
+      assert(ui.body.exists(_.toLowerCase.contains("swagger")), ui.body.toString.take(200))
 
   /** Boots the real service on an ephemeral port against a freshly created topic. */
   private def withApp(body: (WolframApp, String, String) => Unit): Unit =
@@ -213,6 +270,16 @@ final class WolframIngestIT extends FunSuite:
     WolframConfig(
       server = ServerConfig("127.0.0.1", 0),
       ingest = IngestConfig(1048576L, 256, 24.hours, 90.days),
+      auth = AuthConfig(
+        enabled = true,
+        algorithm = "HS256",
+        secret = Some(Secret),
+        publicKey = None,
+        issuer = None,
+        audience = None,
+        requiredScope = Some(JwtVerifier.PublishScope),
+        leeway = 30.seconds
+      ),
       publisher = PublisherConfig(
         bootstrapServers = servers,
         topic = topic,

@@ -98,7 +98,13 @@ object WolframApp:
     val metrics = IngestMetrics(telemetry.registry)
     val publisher = KafkaEventPublisher.start(config.publisher, metrics, telemetry.tracing)
     val service = IngestionService(publisher, TimeClamp.from(config.ingest), config.ingest, metrics)
-    val api = IngestApi(service)
+    // Boot fails here, not on the first authenticated request. Every way a verifier can be misconfigured — an
+    // unknown algorithm, an HMAC algorithm with no secret, an unparseable public key — becomes a startup error
+    // naming the field, which is the same discipline this service applies to its Kafka and time configuration.
+    val verifier = JwtVerifier
+      .from(config.auth)
+      .fold(problem => throw IllegalStateException(s"wolfram auth configuration is unusable: $problem"), identity)
+    val api = IngestApi(service, verifier)
 
     // The tracing interceptor is prepended so the SERVER span is open before anything else — including the metrics
     // interceptor — runs, which is what puts `trace_id` in the MDC of every log line the request produces (ADR §7.2).
@@ -110,7 +116,10 @@ object WolframApp:
 
     val interpreter = VertxFutureServerInterpreter(options)
     val router = Router.router(vertx)
-    api.routes.foreach: route =>
+    // The docs go through the same interpreter as the API, so Swagger UI's "Try it out" is a same-origin request
+    // and there is no CORS configuration to get wrong. They are mounted after the API so a future endpoint at
+    // /docs would win over the UI rather than being shadowed by it.
+    (api.routes ++ ApiDocs.routes).foreach: route =>
       val _ = interpreter.route(route)(router)
     AdminRoutes(telemetry, publisher).mount(router)
 
@@ -137,7 +146,11 @@ object Main extends StrictLogging:
       )
     val telemetry = Telemetry.start(ServiceName)
     val app = WolframApp.start(config, telemetry)
-    logger.info(s"wolfram listening on ${config.server.host}:${app.port}, publishing to ${config.publisher.topic}")
+    logger.info(
+      s"wolfram listening on ${config.server.host}:${app.port}, publishing to ${config.publisher.topic}; " +
+        s"auth ${if config.auth.enabled then s"${config.auth.algorithm} enabled" else "DISABLED"}, " +
+        s"docs at /${ApiDocs.DocsPath}"
+    )
 
     // A shutdown hook rather than signal handling: SIGTERM from an orchestrator is the only way this process is
     // expected to stop, and the hook is the one mechanism that also covers `System.exit` from a failed subsystem.

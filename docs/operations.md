@@ -68,15 +68,32 @@ docker compose ps                                   # every service "healthy", k
 curl -fsS localhost:8081/health/ready                # wolfram: {"status":"UP","broker":"reachable"}
 curl -fsS localhost:8082/health/ready | jq           # cobalt: broker + database both UP
 curl -fsS localhost:9000/health/ready                # ferrite: read pool hands out a connection
-curl -fsS localhost:8081/openapi.json | jq .info     # the running build's own API document
 
-curl -fsS -X POST localhost:8081/events \
+# wolfram authenticates every /v1 operation, so the smoke test needs a token minted
+# with the deployment's own AUTH_SECRET and the events:write scope:
+TOKEN=$(docker compose exec -T -e S="$AUTH_SECRET" wolfram sh -lc '
+  python3 - <<EOF
+import base64, hmac, hashlib, json, os, time
+seg = lambda d: base64.urlsafe_b64encode(json.dumps(d, separators=(",",":")).encode()).rstrip(b"=")
+h, b = seg({"alg":"HS256","typ":"JWT"}), seg({"sub":"smoke","scope":"events:write","exp":int(time.time())+600})
+sig = hmac.new(os.environ["S"].encode(), h+b"."+b, hashlib.sha256).digest()
+print((h+b"."+b+b"."+base64.urlsafe_b64encode(sig).rstrip(b"=")).decode())
+EOF')
+# …or mint it wherever you already issue tokens; nothing here is wolfram-specific.
+
+curl -fsS -X POST localhost:8081/v1/events \
+  -H "authorization: Bearer $TOKEN" \
   -H 'ce-specversion: 1.0' -H 'ce-id: smoke-1' \
   -H 'ce-source: urn:worxbend:smoke' -H 'ce-type: com.worxbend.smoke.v1' \
   -H "ce-time: $(date -u +%Y-%m-%dT%H:%M:%SZ)" \
   -H 'content-type: application/json' \
   -d '{"deviceId":"smoke","severity":"info","value":1}'
-# 202 Accepted, then the event appears at http://localhost:9000/events within a second
+# 200 with the created resource (AIP-133 returns the resource, not a receipt), and the
+# event appears at http://localhost:9000/events within a second.
+# Without the token: 401 with {"error":{"status":"UNAUTHENTICATED",...}}.
+
+curl -fsS localhost:8081/openapi.json | jq '.paths | keys'   # the running build's contract
+# Swagger UI on the same port: http://localhost:8081/docs
 ```
 
 Prometheus targets: <http://localhost:9090/targets> — all five targets must be `UP`: the three `observatory`

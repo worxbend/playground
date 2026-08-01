@@ -60,8 +60,13 @@ object HttpMetrics:
       case 5 => "SERVER_ERROR"
       case _ => "UNKNOWN"
 
-  /** The route template a request matched, e.g. `/events/batch`. */
-  private[wolfram] def route(endpoint: AnyEndpoint): String = OpenApi.pathOf(endpoint)
+  /** The route template a request matched, e.g. `/v1/events:batchCreate`.
+    *
+    * Tapir's own rendering, not a reconstruction. It is the *template* and never the concrete path, which is what keeps
+    * the `uri` tag bounded by the number of endpoints rather than by the number of requests — the single likeliest way
+    * to take Prometheus down in this system (ADR §7.1).
+    */
+  private[wolfram] def route(endpoint: AnyEndpoint): String = endpoint.showPathTemplate(showQueryParam = None)
 
   /** Records one completed request. Split out so it is testable without an interpreter. */
   private[wolfram] def record(registry: MeterRegistry, method: String, uri: String, status: Int, nanos: Long): Unit =

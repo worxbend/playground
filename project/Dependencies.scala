@@ -26,6 +26,11 @@ object Dependencies:
     val Flyway = "13.0.0"
     val PureConfig = "0.17.10"
     val Quicklens = "1.9.15"
+    // The apispec line tapir 1.13.29 itself depends on. Pinned here because the OpenAPI *serialiser* is a separate
+    // artifact from the model, and resolving them at different versions produces a `NoSuchMethodError` at the first
+    // request for the document rather than at compile time.
+    val ApiSpec = "0.11.10"
+    val JwtScala = "11.0.4"
     // --- observability ---
     val Micrometer = "1.17.0" // the micrometer-tracing line is 1.7.x — do not reuse this value for it
     val PrometheusJava = "1.8.0"
@@ -37,6 +42,11 @@ object Dependencies:
     // --- web assets ---
     val Htmx = "2.0.10"
     val AlpineJs = "3.15.12"
+    // uPlot: ~45 kB minified, no dependencies, canvas-rendered. Chosen over Chart.js/ECharts because the CSP allows
+    // no external host and every byte is served from this jar — and because a time-series chart of a few thousand
+    // points is the only shape this UI draws.
+    val UPlot = "1.6.30" // the newest published to Maven Central; npm is ahead
+    val SwaggerUi = "5.25.3"
     // --- test ---
     val ScalaTest = "3.2.20"
     val ScalaCheck = "1.19.0"
@@ -136,15 +146,40 @@ object Dependencies:
     "tapir-core",
     "tapir-json-circe",
     "tapir-vertx-server",
-    "tapir-opentelemetry-tracing"
+    "tapir-opentelemetry-tracing",
+    // Derives the OpenAPI document from the endpoint values, schemas included. The alternative this replaced was a
+    // hand-rolled walk of the endpoint ADT, which could describe paths and status codes but emitted placeholder body
+    // schemas — so the one thing a client generator needs most was the one thing the document did not have.
+    "tapir-openapi-docs",
+    // Serves Swagger UI and the document from the same server interpreter as the API, so the docs are reachable on
+    // the service's own port with no second listener and no static-file plumbing.
+    "tapir-swagger-ui-bundle"
   ).map("com.softwaremill.sttp.tapir" %% _ % Versions.Tapir)
+
+  /** The OpenAPI model serialisers. `tapir-openapi-docs` produces the model and deliberately does not choose a
+    * serialisation, so both the JSON and the YAML renderings are opt-in.
+    */
+  val openApiCirce: Seq[ModuleID] = Seq(
+    "com.softwaremill.sttp.apispec" %% "openapi-circe" % Versions.ApiSpec,
+    "com.softwaremill.sttp.apispec" %% "openapi-circe-yaml" % Versions.ApiSpec
+  )
+
+  /** JWT verification.
+    *
+    * jwt-scala over `com.auth0:java-jwt` because the claim set arrives as a circe `Json` — the same library every other
+    * payload in this build is decoded with — instead of a bespoke `DecodedJWT` accessor API that would need its own
+    * mapping layer. Verification itself is `java.security`, not this library; jwt-scala is parsing and signature
+    * plumbing over the JDK's own primitives.
+    */
+  val jwt: ModuleID = "com.github.jwt-scala" %% "jwt-circe" % Versions.JwtScala
 
   val vertx: ModuleID = "io.vertx" % "vertx-core" % Versions.Vertx
 
   val webjars: Seq[ModuleID] = Seq(
     "org.webjars.npm" % "htmx.org" % Versions.Htmx,
     // Intransitive: the POM otherwise drags in @vue/reactivity.
-    ("org.webjars.npm" % "alpinejs" % Versions.AlpineJs).intransitive()
+    ("org.webjars.npm" % "alpinejs" % Versions.AlpineJs).intransitive(),
+    "org.webjars.npm" % "uplot" % Versions.UPlot
   )
 
   // --- test-scope groups ---

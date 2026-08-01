@@ -36,7 +36,26 @@ plain `KafkaProducer`. Source: `applications/wolfram/`.
 
 ## Public surface
 
-### `POST /events`
+The surface follows Google's [API Improvement Proposals](https://google.aip.dev), because they answer the
+questions a hand-rolled HTTP API answers differently every time — and answer them the way most tooling already
+expects. Concretely:
+
+| AIP | What it means here |
+| --- | --- |
+| 133 / 135 | The resource is `events`. Creating one is `POST /v1/events`, and the response **is the created resource**, not a bespoke receipt. |
+| 122 | Every response carries `name: "events/{event}"`. `{event}` is the percent-encoded CloudEvents `(source, id)` pair, because that pair and not `id` alone is what the spec makes unique. |
+| 136 | Operations that are not standard methods are **custom methods** and use a **colon**: `POST /v1/events:batchCreate`, `POST /v1/events:validate`. |
+| 185 | The `/v1` prefix is on the path, so a proxy can route on it and a browser can be pointed at it. |
+| 193 | Every failure is one `{"error": {code, message, status, details}}` envelope. |
+
+**The colon in a custom method is load-bearing, not decoration.** `POST /v1/events/batch` is indistinguishable
+from acting on a resource whose id is `batch`, and the day a `GET /v1/events/{event}` is added those two routes
+collide. `:batchCreate` can never collide with a resource id, because `:` is reserved out of the identifier
+segment.
+
+**Everything under `/v1` requires a bearer token.** See [Authentication](#authentication).
+
+### `POST /v1/events` — Create
 
 One CloudEvent, in either HTTP content mode. Declared media types: `application/cloudevents+json`,
 `application/json`, `application/octet-stream`.
@@ -67,7 +86,7 @@ client's error body and an operator's dashboard use the same vocabulary.
 The status is chosen by the *runtime class* of the failure value (Tapir `oneOf`), so a 413 body can never be
 served with a 400 status. `ApiModel.status` restates the mapping so a test can assert the two agree.
 
-### `POST /events/batch`
+### `POST /v1/events:batchCreate` — Batch Create
 
 An `application/cloudevents-batch+json` document: a JSON array of structured-mode CloudEvents. A request whose
 `Content-Type` is not that media type is rejected 400 by `IngestApi.publishBatch` before the service is called.
@@ -105,7 +124,9 @@ to provide. The serial cost is bounded because the batch itself is bounded by `m
 | `GET /metrics` | Prometheus text exposition, `text/plain; version=0.0.4; charset=utf-8`. |
 | `GET /health/live` | Always `200 {"status":"UP"}`. |
 | `GET /health/ready` | `200 {"status":"UP","broker":"reachable"}` / `503 {"status":"OUT_OF_SERVICE","broker":"unreachable"}`. |
-| `GET /openapi.json` | Generated from the endpoint values, served rather than published as a file so it can never describe a build other than the running one. |
+| `GET /openapi.json` | The OpenAPI 3.1 document, generated from the endpoint values by `tapir-openapi-docs` and served rather than published as a file, so it can never describe a build other than the running one. |
+| `GET /docs` | **Swagger UI**, on the service's own port. "Try it out" is therefore a same-origin request: no CORS to configure, no second listener to expose. |
+| `GET /docs/openapi.yaml` | The same document as YAML. Generators and `jq` want the JSON; humans and `git diff` want this. |
 
 These are **plain Vert.x routes, not Tapir endpoints** (`AdminRoutes`). That makes their exclusion from
 `http.server.requests` structural: the metrics interceptor lives inside the Tapir interpreter, so it never sees
@@ -157,6 +178,40 @@ before anything decodes it), **then decode** (everything after needs an envelope
 only check that is a policy rather than a spec violation, and it reads better on an otherwise known-good event).
 
 ---
+
+## Authentication
+
+Every `/v1` operation requires a JWT bearer token. Verification is `JwtVerifier`, and it covers the signature,
+`exp`, `nbf`, and — when the deployment sets them — `iss` and `aud`. A token that passes must also carry the
+`events:write` scope.
+
+**The algorithm is pinned by configuration and the token's own `alg` header is checked against it, never
+trusted.** Accepting the header's choice is the `alg: none` family of attacks, and the
+RSA-public-key-used-as-an-HMAC-secret confusion that follows from letting a caller move a key between algorithm
+families. `AuthSuite` asserts an `alg: none` token is refused.
+
+**401 and 403 are different answers and the code keeps them apart.** 401 says "I do not know who you are, try
+again with a credential"; 403 says "I know exactly who you are and the answer is still no". Collapsing them sends
+a client with an expired token into a permissions investigation and a client missing a scope into a token-refresh
+loop that can never succeed.
+
+| Variable | Default | Effect |
+| --- | --- | --- |
+| `AUTH_ENABLED` | `true` | **Defaults on.** A security layer whose default is "off" ships off: nothing fails when it is, the tests pass, and the first evidence is an unauthenticated write in production. Turning it off has to be said out loud. |
+| `AUTH_ALGORITHM` | `HS256` | `HS256`/`HS384`/`HS512` (needs `AUTH_SECRET`) or `RS256`/`RS384`/`RS512` (needs `AUTH_PUBLIC_KEY`). |
+| `AUTH_SECRET` | — | HMAC secret, minimum 32 characters. Shorter is refused **at boot**, not at the first request. |
+| `AUTH_PUBLIC_KEY` | — | Base64 X.509 RSA public key. Armour and `\n` escapes are both accepted, because environment variables cannot hold real newlines portably. |
+| `AUTH_ISSUER` | unset | When set, `iss` must equal it. Unset means the claim is not checked — correct for a single-issuer deployment, wrong the moment a second issuer can reach this port. |
+| `AUTH_AUDIENCE` | unset | When set, `aud` must contain it. |
+| `AUTH_REQUIRED_SCOPE` | `events:write` | Empty disables the scope check while leaving signature verification on. |
+| `AUTH_LEEWAY` | `30 seconds` | Skew tolerance on `exp`/`nbf`. Small on purpose: this is the window in which a revoked token still works. |
+
+**Misconfiguration is a boot failure with a sentence naming the field**, never a runtime 500 on the first
+authenticated request: an unknown algorithm, an HMAC algorithm with no secret, a secret under 32 characters, an
+unparseable public key. A service configured to verify but given nothing to verify against refuses to start
+rather than accepting everything.
+
+Minting a token for a smoke test is in `docs/operations.md` §2.
 
 ## Configuration
 

@@ -123,3 +123,64 @@ object Fixtures:
   /** The publisher every "the broker is down" test uses. */
   def unavailable: StubPublisher =
     StubPublisher(_ => Left(Rejection.BrokerUnavailable("no broker available")), reachable = false)
+
+/** Token minting for the suites that exercise the authenticated surface.
+  *
+  * A real HS256 secret and real signing, not a stubbed verifier: the thing worth testing is that a token this service
+  * would *reject* is actually rejected, and a stub that returns `Right` for everything proves nothing about the
+  * signature check. The secret is 48 characters because `JwtVerifier` refuses anything under 32 — which is itself one
+  * of the behaviours the suite asserts.
+  */
+object Tokens:
+
+  val Secret: String = "test-secret-that-is-long-enough-for-hs256-ok!!"
+
+  val Issuer: String = "https://issuer.test"
+  val Audience: String = "wolfram"
+
+  /** The configuration the suites verify against: signature only, plus the publish scope. */
+  val config: AuthConfig = AuthConfig(
+    enabled = true,
+    algorithm = "HS256",
+    secret = Some(Secret),
+    publicKey = None,
+    issuer = None,
+    audience = None,
+    requiredScope = Some(JwtVerifier.PublishScope),
+    leeway = 0.seconds
+  )
+
+  /** A fixed clock, so `exp` sits deterministically on one side of "now". A verifier reading the wall clock cannot be
+    * tested for expiry without sleeping.
+    */
+  val clock: java.time.Clock = java.time.Clock.fixed(Fixtures.now, java.time.ZoneOffset.UTC)
+
+  def verifier(using c: AuthConfig = config): JwtVerifier =
+    JwtVerifier.from(c, clock).fold(problem => sys.error(problem), identity)
+
+  /** Signs a claim set. Every parameter has a default that produces a *valid* token, so each test names only the one
+    * thing it is making wrong — which is what keeps the failing assertion legible.
+    */
+  def signed(
+    subject: String = "producer-1",
+    scopes: Set[String] = Set(JwtVerifier.PublishScope),
+    issuedAt: java.time.Instant = Fixtures.now.minusSeconds(60),
+    expiresAt: Option[java.time.Instant] = Some(Fixtures.now.plusSeconds(600)),
+    notBefore: Option[java.time.Instant] = None,
+    issuer: Option[String] = None,
+    audience: Option[Set[String]] = None,
+    secret: String = Secret
+  ): String =
+    val claim = pdi.jwt.JwtClaim(
+      content = io.circe.Json.obj("scope" -> io.circe.Json.fromString(scopes.mkString(" "))).noSpaces,
+      subject = Some(subject),
+      issuer = issuer,
+      audience = audience,
+      issuedAt = Some(issuedAt.getEpochSecond),
+      expiration = expiresAt.map(_.getEpochSecond),
+      notBefore = notBefore.map(_.getEpochSecond)
+    )
+    pdi.jwt.JwtCirce.encode(claim, secret, pdi.jwt.JwtAlgorithm.HS256)
+
+  /** The `Authorization` header for a valid publish token. */
+  def bearerHeader: Map[String, String] = Map("Authorization" -> s"Bearer ${signed()}")

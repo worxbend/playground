@@ -248,6 +248,12 @@ services:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       HTTP_HOST: 0.0.0.0
       HTTP_PORT: 8080
+      # Bearer-token verification for every /v1 operation. `AUTH_ENABLED` defaults to true in the image, so leaving
+      # AUTH_SECRET unset is a boot failure and not an open ingestion endpoint — which is the point. Mint a token
+      # with the same secret and the `events:write` scope; see docs/services/wolfram.md.
+      AUTH_ENABLED: ${AUTH_ENABLED:-true}
+      AUTH_ALGORITHM: ${AUTH_ALGORITHM:-HS256}
+      AUTH_SECRET: ${AUTH_SECRET:?AUTH_SECRET is required; set AUTH_ENABLED=false to run without authentication}
     ports: ["8081:8080"]
     healthcheck:
       test: ["CMD-SHELL", "wget -qO- http://localhost:8080/health/live >/dev/null || exit 1"]

@@ -100,5 +100,10 @@ object AdminRoutes:
     */
   val live: Reply = reply(200, Json.obj("status" -> Json.fromString("UP")))
 
-  /** The generated OpenAPI document. */
-  def openApi: Reply = reply(200, OpenApi.document())
+  /** The generated OpenAPI document.
+    *
+    * Kept on this operational router rather than left to the Swagger UI bundle's own `/docs/openapi.yaml`, because
+    * `/openapi.json` at the root is the conventional place a code generator looks and it should not move just because
+    * the UI is mounted somewhere. Both render the same model.
+    */
+  def openApi: Reply = reply(200, ApiDocs.json())
