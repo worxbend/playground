@@ -361,7 +361,13 @@
     var readout = figure.querySelector('.chart-readout');
     if (!canvas || !series.t || series.t.length === 0) return null;
 
-    var data = [series.t, series.v];
+    /* Two series when the source measured both. `e` is absent for the search
+     * timeline, which counts rows matching an arbitrary filter and has no
+     * error split — drawing a flat zero line there would assert something the
+     * query never measured. */
+    var hasErrors = Array.isArray(series.e) && series.e.length === series.t.length;
+    var data = hasErrors ? [series.t, series.v, series.e] : [series.t, series.v];
+    var danger = themeColour('--chart-danger', '#f87171');
 
     /* Bars and not a line. A line between hourly buckets implies values
      * between them, and there are none — the series is a histogram, and
@@ -400,7 +406,11 @@
           }
         },
         { paths: bars, fill: accent, stroke: accent, width: 0, points: { show: false } }
-      ],
+      ].concat(
+        hasErrors
+          ? [{ paths: bars, fill: danger, stroke: danger, width: 0, points: { show: false } }]
+          : []
+      ),
       hooks: {
         setCursor: [
           function (u) {
@@ -410,7 +420,9 @@
               return;
             }
             var when = new Date(u.data[0][idx] * 1000);
-            readout.textContent = when.toLocaleString() + ' · ' + formatCount(u.data[1][idx]) + ' events';
+            var text = when.toLocaleString() + ' · ' + formatCount(u.data[1][idx]) + ' events';
+            if (hasErrors) text += ' · ' + formatCount(u.data[2][idx]) + ' errors';
+            readout.textContent = text;
           }
         ]
       }
@@ -435,6 +447,21 @@
 
     var chart = build(figure, series);
     if (!chart) return;
+
+    /* Click-to-drill. The bucket URLs travel with the series so the canvas
+     * navigates exactly where the fallback bar links — one destination, not
+     * two that can disagree. htmx picks up the navigation through a synthetic
+     * click on the real <a>, which keeps the results swap and the pushed URL
+     * behaving identically whether the user clicked the chart or the bar. */
+    if (figure.getAttribute('data-chart-navigate') === 'true' && Array.isArray(series.u)) {
+      figure.querySelector('.chart-canvas').addEventListener('click', function () {
+        var idx = chart.cursor.idx;
+        if (idx == null) return;
+        var bars = figure.parentElement && figure.parentElement.querySelectorAll('.histogram-bar a');
+        if (bars && bars[idx]) bars[idx].click();
+      });
+      figure.classList.add('is-navigable');
+    }
 
     /* Only now is the fallback hidden — after the canvas exists. Hiding it
      * first would leave a hole on any browser where uPlot failed to load. */

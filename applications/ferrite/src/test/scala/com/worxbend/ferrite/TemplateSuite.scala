@@ -195,7 +195,25 @@ final class TemplateSuite extends FunSuite:
     // jsoup would report a real <script> element if Twirl's escaping had been defeated with @Html.
     assertEquals(document.select("td.cell-subject script").size(), 0)
     assertEquals(document.select("td.cell-subject").first().text(), Fixtures.hostileSubject)
-    assertEquals(document.select("script:not([src])").size(), 0, "no inline script: the CSP forbids it")
+    // No *executable* inline script — the CSP has no 'unsafe-inline' in script-src, so one would be blocked and the
+    // page would half-work. `type="application/json"` islands are data, not script, and are not governed by that
+    // directive; they are held to a different and stricter rule immediately below.
+    val executable = document.select("script:not([src])").asScala.toVector.filterNot { element =>
+      element.attr("type").equalsIgnoreCase("application/json")
+    }
+    assertEquals(executable.size, 0, "no executable inline script: the CSP forbids it")
+
+    // The islands carry the per-bucket drill-down URLs, which are built from the user's own filter values. A value
+    // containing `</script>` would terminate the element early and everything after it would parse as markup — stored
+    // XSS through a chart. `Histogram.seriesJson` escapes `<`, `>` and `&` as \uXXXX, which is valid JSON that
+    // decodes identically and cannot close the element.
+    document.select("script[type=application/json]").asScala.toVector.foreach { island =>
+      val raw = island.data()
+      assert(!raw.contains("<"), s"an island can be closed from inside it: $raw")
+      assert(!raw.contains(">"), s"an island can be closed from inside it: $raw")
+      // Still parseable — an escape that broke the JSON would trade an XSS for a chart that never draws.
+      assert(io.circe.parser.parse(raw).isRight, s"the escaped island is not valid JSON: $raw")
+    }
 
   test("a hostile filter value is escaped in the input it is echoed into"):
     val document = page(s"v=1&q=${com.worxbend.ferrite.web.Query.encode(Fixtures.hostileSubject)}", Vector.empty)

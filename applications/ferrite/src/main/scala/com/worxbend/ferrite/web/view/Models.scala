@@ -81,7 +81,15 @@ final case class Bar(
   countLabel: String,
   heightPercent: Int,
   heightClass: String,
-  url: String
+  url: String,
+  /** Events at error severity or above in this bucket, where the source knows.
+    *
+    * `Option` and not `0`, because "no errors" and "this series does not carry errors" are different claims and only
+    * one of them belongs on a chart. The search histogram counts rows matching an arbitrary filter and has no error
+    * split; the overview reads a rollup that does. Drawing a flat zero line for the first would assert something the
+    * query never measured.
+    */
+  errors: Option[Long] = None
 )
 
 /** The timeline strip above the results.
@@ -109,12 +117,35 @@ final case class Histogram(
     * `[timestamps, counts]` is uPlot's own column-major shape, so the client hands it straight to the constructor
     * without a transform — and a transform is where a chart quietly starts disagreeing with the table beside it.
     */
+  /** [[series]] rendered for embedding in a `<script type="application/json">` element.
+    *
+    * **`<`, `>` and `&` are escaped as `\u003c`, `\u003e` and `\u0026`, and that is a security fix, not tidiness.** The
+    * island carries the per-bucket drill-down URLs, and those are built from the *user's own filter values* — so a
+    * filter containing the literal text `</script>` would terminate the element early and everything after it would be
+    * parsed as markup. That is stored XSS through a chart.
+    *
+    * circe does not escape those characters, because they need no escaping in JSON; an HTML parser disagrees. The three
+    * `\uXXXX` forms are valid JSON that decodes to exactly the same string, so `JSON.parse` on the other side is
+    * unaffected and the element can no longer be closed from inside it. `TemplateSuite` asserts a hostile value
+    * survives the round trip without emitting a `<`.
+    */
+  def seriesJson: String =
+    series.noSpaces.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+
   def series: io.circe.Json =
     val seconds = bars.map(bar => io.circe.Json.fromLong(java.time.Instant.parse(bar.start).getEpochSecond))
     val counts = bars.map(bar => io.circe.Json.fromLong(bar.count))
+    // The error overlay, present only when every bucket carries one. A partially populated series would draw a line
+    // that dips to nothing where the data is merely absent, which is the most misleading thing a chart can do.
+    val errors =
+      Option.when(bars.nonEmpty && bars.forall(_.errors.isDefined))(bars.flatMap(_.errors).map(io.circe.Json.fromLong))
     io.circe.Json.obj(
       "t" -> io.circe.Json.arr(seconds*),
       "v" -> io.circe.Json.arr(counts*),
+      "e" -> errors.fold(io.circe.Json.Null)(values => io.circe.Json.arr(values*)),
+      // Where a click on bucket *i* should go. The canvas is a control, not a picture: drilling into a spike is one
+      // click, and it lands on the same shareable URL the fallback bar links to.
+      "u" -> io.circe.Json.arr(bars.map(bar => io.circe.Json.fromString(bar.url))*),
       // The bucket width, so the chart can draw bars of the right span rather than guessing from the point spacing —
       // which is wrong for the last bucket of a series and for any window with a gap in it.
       "widthSeconds" -> io.circe.Json.fromLong(

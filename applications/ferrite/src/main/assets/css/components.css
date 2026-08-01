@@ -29,8 +29,18 @@
      duplicate it. A hard-coded hex in app.js is the one colour a scheme switch
      cannot reach, and it drifts from this file the first time either moves. */
   --chart-accent: #2f5bd0;
+  --chart-danger: #c2334d;
   --chart-grid: rgba(91, 100, 114, 0.16);
   --chart-axis: #5b6472;
+
+  /* Panel chrome. Named separately from --surface-raised because a panel is a
+     distinct object from a card: it has a header rule, it sits on the page
+     background rather than floating, and it is the unit a dashboard is made
+     of. Keeping them apart is what lets the panel look change without
+     dragging every raised surface with it. */
+  --panel-bg: #ffffff;
+  --panel-header-bg: #f2f4f8;
+  --panel-border: #d8dce3;
 
   --severity-debug: #7a8798;
   --severity-info: #2f7fd0;
@@ -60,8 +70,12 @@
     --accent: #6f9bff;
     --accent-contrast: #0b0e12;
     --chart-accent: #6f9bff;
-    --chart-grid: rgba(148, 163, 184, 0.18);
-    --chart-axis: #94a3b8;
+    --chart-danger: #f87171;
+    --chart-grid: rgba(148, 163, 184, 0.16);
+    --chart-axis: #8a93a3;
+    --panel-bg: #171b21;
+    --panel-header-bg: #1c222a;
+    --panel-border: #262c35;
     --focus: #6f9bff;
 
     --severity-debug: #7a8798;
@@ -1193,5 +1207,198 @@ body[data-density="compact"] {
 @media (prefers-reduced-motion: reduce) {
   .chart * {
     transition: none !important;
+  }
+}
+
+
+/* ---------------------------------------------------------------------------
+ * Dashboard chrome
+ *
+ * The visual language of a monitoring console rather than of a document:
+ * panels with a header rule, numbers in a tabular face so columns of digits
+ * line up and a changing value does not reflow its neighbours, and a density
+ * closer to Grafana's than to prose.
+ *
+ * All of it is layered over the existing structural rules rather than
+ * replacing them — the markup did not change, so a stylesheet that fails to
+ * load still leaves a readable page.
+ * ------------------------------------------------------------------------- */
+
+/* Every number on this UI is a measurement, and measurements are compared
+   vertically. A proportional face makes "1,041" narrower than "1,000" and the
+   column ragged; worse, a live value changing width nudges everything beside
+   it on every refresh. */
+.tile-value,
+.meter-count,
+.meter-errors,
+.chart-readout,
+.event-table td,
+.histogram-scale,
+.panel-metric {
+  font-variant-numeric: tabular-nums;
+  font-feature-settings: "tnum" 1;
+}
+
+/* --- panels --------------------------------------------------------------- */
+
+.panel,
+.volume,
+.histogram,
+.alerts {
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+/* The header rule is what makes a panel read as an instrument rather than as a
+   card. Grafana, Kibana and Home Assistant all draw it; it costs one border
+   and it is the single strongest signal that the thing below is a reading. */
+.panel > .panel-heading,
+.volume > .panel-heading,
+.alerts > .panel-heading {
+  margin: 0;
+  padding: 0.5rem 0.75rem;
+  background: var(--panel-header-bg);
+  border-bottom: 1px solid var(--panel-border);
+  font-size: 0.75rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+.panel > .meter-list,
+.panel > .panel-empty,
+.volume > .histogram-bars,
+.volume > .chart,
+.volume > .histogram-axis,
+.volume > .histogram-empty,
+.alerts > *:not(.panel-heading) {
+  padding-left: 0.75rem;
+  padding-right: 0.75rem;
+}
+
+.volume > .histogram-axis {
+  padding-bottom: 0.5rem;
+}
+
+/* --- stat tiles ----------------------------------------------------------- */
+
+.tile {
+  background: var(--panel-bg);
+  border: 1px solid var(--panel-border);
+  border-radius: var(--radius);
+  transition: border-color 120ms ease, transform 120ms ease;
+}
+
+.tile:hover,
+.tile:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 55%, var(--panel-border));
+}
+
+.tile-link {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  padding: 0.6rem 0.75rem;
+  text-decoration: none;
+  color: inherit;
+}
+
+.tile-label {
+  font-size: 0.6875rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+
+/* The value is the point of a stat tile, so it gets the whole size budget.
+   `line-height: 1` because a big number with prose leading leaves a gap that
+   reads as a layout bug. */
+.tile-value {
+  font-size: 1.75rem;
+  font-weight: 650;
+  line-height: 1;
+  letter-spacing: -0.02em;
+}
+
+.tile-detail {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+/* A tile carrying a severity gets a left rule in that colour rather than a
+   tinted background: the number stays on the panel surface at full contrast,
+   which a wash behind it would cost. */
+.tile.severity-error,
+.tile.severity-critical,
+.tile.severity-alert,
+.tile.severity-fatal {
+  border-left: 3px solid var(--severity-error);
+}
+
+.tile.severity-warn {
+  border-left: 3px solid var(--severity-warn);
+}
+
+/* --- meters --------------------------------------------------------------- */
+
+.meter-row {
+  align-items: center;
+  min-height: var(--row-height);
+}
+
+.meter-track {
+  background: color-mix(in srgb, var(--text-muted) 14%, transparent);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.meter-fill {
+  background: color-mix(in srgb, var(--accent) 75%, transparent);
+  border-radius: 2px;
+}
+
+.meter-errors {
+  color: var(--severity-error);
+  font-size: 0.75rem;
+}
+
+/* --- charts --------------------------------------------------------------- */
+
+/* A navigable chart says so with the cursor. Without it the canvas looks like
+   a picture, and the drill-down — the reason it is a control at all — goes
+   undiscovered. */
+.chart.is-navigable .chart-canvas {
+  cursor: pointer;
+}
+
+.chart .u-axis {
+  font-size: 0.6875rem;
+}
+
+/* uPlot's own legend is off; the readout below the canvas replaces it, and
+   these keep it from being mistaken for body copy. */
+.chart-readout {
+  letter-spacing: 0.01em;
+}
+
+/* --- the events table ----------------------------------------------------- */
+
+/* Row striping over row borders: at this density a border on every row draws
+   more lines than data, which is the failure mode of a dense table. */
+.event-table tbody tr:nth-child(even) {
+  background: color-mix(in srgb, var(--text-muted) 4%, transparent);
+}
+
+.event-table tbody tr:hover {
+  background: color-mix(in srgb, var(--accent) 10%, transparent);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tile {
+    transition: none;
   }
 }

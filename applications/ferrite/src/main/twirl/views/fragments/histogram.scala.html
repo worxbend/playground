@@ -19,6 +19,16 @@
   @if(histogram.empty) {
     <p class="histogram-empty">No events between @histogram.fromLabel and @histogram.untilLabel.</p>
   } else {
+    @* Same enhancement as the overview's volume chart: the <ol> below is the chart, and the canvas is layered over it
+     * once uPlot has drawn. Clicking a bucket here drills into it — the canvas is a control, not a picture, and the
+     * URL it navigates to is the one the fallback bar links to.
+     *@
+    <figure class="chart" data-chart="timeline" data-chart-navigate="true" hidden aria-hidden="true">
+      <div class="chart-canvas"></div>
+      <figcaption class="chart-readout" aria-live="off"></figcaption>
+    </figure>
+    <script type="application/json" data-chart-series="timeline">@Html(histogram.seriesJson)</script>
+
     <ol class="histogram-bars">
       @for(bar <- histogram.bars) {
         <li class="histogram-bar @bar.heightClass">

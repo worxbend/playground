@@ -154,7 +154,10 @@ object OverviewPresenter:
         countLabel = Format.count(point.events),
         heightPercent = height,
         heightClass = Presenter.heightClass(height),
-        url = Urls.events(bucketQuery(base, point.bucket, width))
+        url = Urls.events(bucketQuery(base, point.bucket, width)),
+        // The rollup computed this in the same pass as `events`, so the two describe the same rows. A second query
+        // would be a comparison between two populations, which is what makes "3 % of traffic is errors" a lie.
+        errors = Some(point.errors)
       )
     }
     Histogram(

@@ -27,11 +27,11 @@
      * `type="application/json"` is inert data, not script, so the CSP's script-src — which deliberately has no
      * 'unsafe-inline' — does not govern it. That is the whole reason the series travels this way.
      *@
-    <figure class="chart" data-chart="volume" hidden aria-hidden="true">
+    <figure class="chart" data-chart="volume" data-chart-navigate="true" hidden aria-hidden="true">
       <div class="chart-canvas"></div>
       <figcaption class="chart-readout" aria-live="off"></figcaption>
     </figure>
-    <script type="application/json" data-chart-series="volume">@Html(histogram.series.noSpaces)</script>
+    <script type="application/json" data-chart-series="volume">@Html(histogram.seriesJson)</script>
 
     <ol class="histogram-bars">
       @for(bar <- histogram.bars) {

@@ -221,6 +221,30 @@ final class OverviewSuite extends FunSuite:
     assertEquals(document.select(".volume .chart-canvas").size(), 1)
     assertEquals(document.select(".volume .chart-readout").size(), 1)
 
+  test("a filter value that tries to close the script element cannot"):
+    // The concrete attack: the drill-down URLs in the island are built from the user's own filter, so a value of
+    // `</script><img src=x onerror=alert(1)>` would terminate the element early and the rest would parse as markup.
+    // Escaping `<` and `>` as \uXXXX keeps it inside a JSON string. This asserts the *payload* is neutralised, not
+    // merely that the escape function was called.
+    val hostile = "</script><img src=x onerror=alert(1)>"
+    val bar = com.worxbend.ferrite.web.view.Bar(
+      start = "2026-08-01T00:00:00Z",
+      startLabel = "00:00",
+      count = 1L,
+      countLabel = "1",
+      heightPercent = 100,
+      heightClass = "h-100",
+      url = s"/events?v=1&device=$hostile",
+      errors = Some(0L)
+    )
+    val histogram = com.worxbend.ferrite.web.view.Histogram(Vector(bar), "1h", "a", "b", "1", empty = false)
+    val json = histogram.seriesJson
+    assert(!json.contains("</script"), json)
+    assert(!json.contains("<"), json)
+    // And it still decodes to the original string, so the chart navigates where the bar links.
+    val decoded = io.circe.parser.parse(json).flatMap(_.hcursor.get[Vector[String]]("u")).getOrElse(fail("bad JSON"))
+    assert(decoded.head.contains(hostile), decoded.head)
+
   test("the overview drives nothing through htmx, because it has no results region to swap"):
     // An hx-target that matches nothing is a click that silently does nothing — the worst possible failure for a
     // control, because it looks like the data is missing rather than like the page is wrong.

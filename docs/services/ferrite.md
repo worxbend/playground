@@ -178,6 +178,52 @@ guessing on the operator's behalf.
 
 ---
 
+## Charts
+
+Two canvas charts, both drawn by **uPlot** (~45 kB, no dependencies) served from ferrite's own assets jar. Chart.js
+and ECharts were the alternatives; the CSP allows no external host, so "every byte comes from our own jar" was the
+deciding constraint, and a time series of a few thousand points is the only shape this UI draws.
+
+| Chart | Series | Click |
+| --- | --- | --- |
+| Overview — *Events over time* | events **and errors**, from the hourly rollup | drills into that bucket |
+| Search — the timeline strip | events only | drills into that bucket, through htmx |
+
+**The bars are the chart; the canvas is layered over them.** Each fragment server-renders an `<ol>` of linked bars,
+and `app.js` hides it only once uPlot has actually drawn. Built the other way round — an empty `<div>` for a script
+to fill — the page's most informative element would be blank whenever JavaScript is off, blocked, or still loading.
+
+**Bars and not a line.** A line between hourly buckets implies values between them, and there are none: the series
+is a histogram.
+
+**The error overlay appears only where it was measured.** The overview reads the rollup, which computes events and
+errors in one pass over the same rows. The search timeline counts rows matching an arbitrary filter and has no error
+split, so it carries no `e` series — drawing a flat zero line there would assert something the query never measured.
+
+### The JSON island, and why it is escaped
+
+The series travels in a `<script type="application/json">` element. It cannot be an inline script literal: the CSP
+has no `'unsafe-inline'` in `script-src`. JSON is inert data and is not governed by that directive.
+
+`Histogram.seriesJson` escapes `<`, `>` and `&` as `\u003c`, `\u003e` and `\u0026`. **That is a security fix, not
+tidiness.** The island carries the per-bucket drill-down URLs, and those are built from the user's own filter
+values — so a filter containing the literal text `</script>` would terminate the element early and everything after
+it would parse as markup. Stored XSS, through a chart. The `\uXXXX` forms are valid JSON that decodes to the same
+string, so `JSON.parse` is unaffected and the element cannot be closed from inside it.
+
+`TemplateSuite` and `OverviewSuite` assert both halves: that no island contains a `<`, and that a hostile value
+round-trips intact through the escape.
+
+### Styling
+
+Panel chrome — a header rule, a border, uppercase small-caps headings — is what makes a reading look like an
+instrument rather than a card. Every number uses a tabular face (`font-variant-numeric: tabular-nums`), because
+measurements are compared vertically and a proportional face makes a column ragged and reflows its neighbours
+whenever a live value changes width.
+
+Colours come from custom properties declared once per scheme, and the chart reads them at runtime rather than
+duplicating hexes in JavaScript — a hard-coded colour in `app.js` is the one value a scheme switch cannot reach.
+
 ## The live tail
 
 A live mode on `/events`: newest-first, appending as events arrive, honouring the filter in the URL, with a visible
