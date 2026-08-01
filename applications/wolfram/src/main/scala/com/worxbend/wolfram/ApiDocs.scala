@@ -40,9 +40,9 @@ import sttp.tapir.swagger.SwaggerUIOptions
   * not a state this service can be in.
   *
   * **This replaced a hand-rolled walk of the Tapir endpoint ADT.** That version could describe paths, methods,
-  * parameters and status codes, but it emitted permissive placeholders where the body schemas belong, because
-  * deriving a JSON Schema from `Schema[T]` is the hard half and `tapir-openapi-docs` is the thing that does it. The
-  * placeholder version documented everything except the part a client generator needs most.
+  * parameters and status codes, but it emitted permissive placeholders where the body schemas belong, because deriving
+  * a JSON Schema from `Schema[T]` is the hard half and `tapir-openapi-docs` is the thing that does it. The placeholder
+  * version documented everything except the part a client generator needs most.
   *
   * **Both JSON and YAML are served.** They are the same document; code generators and `curl | jq` want the first,
   * humans and `git diff` want the second, and rendering both from one model costs one line.
@@ -116,12 +116,12 @@ object ApiDocs:
   /** Marks the bearer credential as **required**, which the generator alone will not do.
     *
     * The security input is `auth.bearer[Option[String]]`, and Tapir reads that `Option` literally: it emits
-    * `security: [{}, {httpAuth: []}]`, where the empty object means "no credential is also acceptable". That is
-    * false. The `Option` exists so a *missing* token becomes a documented 401 with the AIP-193 envelope instead of
-    * Tapir's bodyless 400 — a decision about error shape, not about whether the credential is optional.
+    * `security: [{}, {httpAuth: []}]`, where the empty object means "no credential is also acceptable". That is false.
+    * The `Option` exists so a *missing* token becomes a documented 401 with the AIP-193 envelope instead of Tapir's
+    * bodyless 400 — a decision about error shape, not about whether the credential is optional.
     *
-    * Left uncorrected, a generated client would treat the token as optional and every one of its unauthenticated
-    * calls would 401. So the empty alternative is dropped here, once, after generation.
+    * Left uncorrected, a generated client would treat the token as optional and every one of its unauthenticated calls
+    * would 401. So the empty alternative is dropped here, once, after generation.
     */
   private def required(document: OpenAPI): OpenAPI =
     // A ListMap, not a Map: path order in the rendered document is the order operations appear in Swagger UI, and
@@ -143,8 +143,8 @@ object ApiDocs:
     *
     * Mounted through the same Vert.x interpreter as the API rather than on a second listener: the UI's "Try it out"
     * button issues a same-origin request, so there is no CORS configuration to get wrong and no second port to expose
-    * in compose. The trade is that the docs share the API's lifecycle — if the service is down, so are its docs,
-    * which for a document generated from the running build is the honest behaviour anyway.
+    * in compose. The trade is that the docs share the API's lifecycle — if the service is down, so are its docs, which
+    * for a document generated from the running build is the honest behaviour anyway.
     */
   def routes: List[ServerEndpoint[Any, Future]] =
     SwaggerUI[Future](

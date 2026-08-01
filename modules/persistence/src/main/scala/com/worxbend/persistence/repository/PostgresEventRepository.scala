@@ -70,7 +70,17 @@ final private[repository] case class FacetRow(
   * find, and it is exactly the kind of defect that otherwise waits for an integration run on a Docker host.
   */
 final class PostgresEventRepository(read: Transactor, write: Transactor)(using ec: ExecutionContext)
-    extends EventRepository:
+    extends EventRepository,
+      CheckpointingWriter:
+
+  /** The checkpoint store this repository writes through, sharing its transactors.
+    *
+    * Constructed here rather than injected because it must use *this* repository's write transactor: a store handed in
+    * from outside could be pointed at a different pool, and then `insertAllCheckpointed` would open two transactions
+    * while claiming to open one — the exact failure the method exists to prevent, made invisible by the type checking
+    * out.
+    */
+  private val checkpoints: CheckpointStore = PostgresCheckpointStore(read, write)
 
   import PostgresEventRepository.*
 
@@ -98,13 +108,30 @@ final class PostgresEventRepository(read: Transactor, write: Transactor)(using e
   def insertAll(events: Vector[NewEvent]): Future[Long] =
     Future:
       if events.isEmpty then 0L
-      else
-        transact(write):
-          batchUpdate(events)(event => insertSql(event).update) match
-            case BatchUpdateResult.Success(rows) => rows
-            // The driver may report SUCCESS_NO_INFO for a batch. Assuming every row landed is the conservative
-            // direction: it can only under-report duplicates, never claim a write that did not happen.
-            case BatchUpdateResult.SuccessNoInfo => events.size.toLong
+      else transact(write)(write(events))
+
+  /** The same insert, with the consumer's position written inside the same transaction.
+    *
+    * `transact` opens one transaction and both statements run in it, so the rows and the offset that accounts for them
+    * commit together or not at all. That is the property `events.consumer_checkpoint` exists for; performing the two as
+    * separate calls would reintroduce exactly the window it removes.
+    *
+    * An empty batch still checkpoints. A poll that yielded only duplicates, or only dead letters, has still moved the
+    * consumer forward, and not recording that leaves a position the next start would rewind to.
+    */
+  def insertAllCheckpointed(events: Vector[NewEvent], commit: CheckpointCommit): Future[Long] =
+    Future:
+      transact(write):
+        val rows = if events.isEmpty then 0L else write(events)
+        checkpoints.record(commit.groupId, commit.owner, commit.positions)
+        rows
+
+  private def write(events: Vector[NewEvent])(using com.augustnagro.magnum.DbTx): Long =
+    batchUpdate(events)(event => insertSql(event).update) match
+      case BatchUpdateResult.Success(rows) => rows
+      // The driver may report SUCCESS_NO_INFO for a batch. Assuming every row landed is the conservative
+      // direction: it can only under-report duplicates, never claim a write that did not happen.
+      case BatchUpdateResult.SuccessNoInfo => events.size.toLong
 
   private def nextCursor(request: SearchRequest, rows: Vector[EventSummary]): Option[String] =
     if rows.sizeIs < request.limit then None

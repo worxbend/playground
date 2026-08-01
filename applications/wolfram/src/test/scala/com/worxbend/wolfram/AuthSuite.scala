@@ -28,8 +28,8 @@ import scala.concurrent.duration.DurationInt
   *
   * **Every test here signs a real token and verifies it with a real key.** A stubbed verifier would prove that the
   * plumbing calls something; it would not prove that a tampered signature, an expired token or a swapped algorithm is
-  * refused — and those are the only properties an auth layer has. The clock is fixed so `exp` sits deterministically
-  * on one side of "now" rather than depending on how long the suite took to get here.
+  * refused — and those are the only properties an auth layer has. The clock is fixed so `exp` sits deterministically on
+  * one side of "now" rather than depending on how long the suite took to get here.
   */
 final class AuthSuite extends FunSuite:
 

@@ -34,15 +34,17 @@ final class MigrationIT extends PostgresSuite:
 
   test("migrate applies the schema and validate agrees with it afterwards"):
     val report = PostgresSuite.migrated
-    assertEquals(report.targetVersion, Some("1"))
+    assertEquals(report.targetVersion, Some("2"))
     // validate() throws on drift. An edited-in-place migration is the failure it exists to catch, and it is a failure
     // that otherwise shows up as a production database whose shape does not match the file describing it.
     Migrations.validate(database.write.get())
 
   test("the applied-version list matches the committed baseline"):
-    // Pinned deliberately: adding V2 must be a conscious edit to this list, so a migration merged by accident fails
-    // CI rather than silently reshaping every environment it reaches (ADR §9.3).
-    assertEquals(Migrations.appliedVersions(database.write.get()), Vector("1"))
+    // Pinned deliberately: adding a migration must be a conscious edit to this list, so one merged by accident fails
+    // CI rather than silently reshaping every environment it reaches (ADR §9.3). It did its job when V2 landed.
+    //   V1 — the event store: the partitioned fact table, its indexes and the hourly rollup.
+    //   V2 — events.consumer_checkpoint: externalised consumer offsets, written in the insert's own transaction.
+    assertEquals(Migrations.appliedVersions(database.write.get()), Vector("1", "2"))
 
   test("a second migrate is a no-op, so every replica can run it at boot"):
     val second = Migrations.migrate(database.write.get())
@@ -50,8 +52,8 @@ final class MigrationIT extends PostgresSuite:
     // And still reports where the schema *is*. Flyway leaves `targetSchemaVersion` null when nothing was pending, so
     // reporting it verbatim made cobalt log "schema at <none>" on every boot after the first and made any
     // "is the schema applied" gate built on this field fail on a database that was already migrated.
-    assertEquals(second.targetVersion, Some("1"))
-    assertEquals(second.initialVersion, Some("1"))
+    assertEquals(second.targetVersion, Some("2"))
+    assertEquals(second.initialVersion, Some("2"))
 
   test("the fact table is partitioned by month with a default catch-all"):
     val partitions = query("SELECT c.relname FROM pg_inherits i JOIN pg_class c ON c.oid = i.inhrelid " +

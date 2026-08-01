@@ -53,7 +53,11 @@ final class EventConsumer private (
   control: AtomicReference[Consumer.Control],
   val streamCompletion: Future[Done]
 )(using ec: ExecutionContext)
-    extends StrictLogging:
+    extends ConsumerHandle,
+      StrictLogging:
+
+  /** The supervisor's view of this stream: one future that completes when it ends, however it ends. */
+  def completion: Future[Done] = streamCompletion
 
   /** Stops fetching, finishes what is in flight, commits it, then shuts the consumer down.
     *

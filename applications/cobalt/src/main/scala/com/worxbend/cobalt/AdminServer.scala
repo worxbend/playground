@@ -66,6 +66,38 @@ final class CobaltRoutes(handlers: AdminHandlers) extends cask.Routes:
   ): cask.Response[String] =
     CobaltRoutes.respond(handlers.dlqReplay(limit, reason, refs, dryRun))
 
+  // --- the consumer lifecycle ------------------------------------------------------------------------------------
+  //
+  // The colon in these paths is AIP-136's custom-method form, the same one wolfram uses. Cask matches the whole
+  // segment literally, so `/admin/consumer:pause` is one route and cannot collide with a sub-resource.
+
+  @cask.get("/admin/consumer")
+  def consumer(): cask.Response[String] = CobaltRoutes.respond(handlers.consumerStatus())
+
+  @cask.post("/admin/consumer:pause")
+  def consumerPause(): cask.Response[String] = CobaltRoutes.respond(handlers.consumerPause())
+
+  @cask.post("/admin/consumer:resume")
+  def consumerResume(): cask.Response[String] = CobaltRoutes.respond(handlers.consumerResume())
+
+  @cask.post("/admin/consumer:stop")
+  def consumerStop(): cask.Response[String] = CobaltRoutes.respond(handlers.consumerStop())
+
+  @cask.post("/admin/consumer:start")
+  def consumerStart(): cask.Response[String] = CobaltRoutes.respond(handlers.consumerStart())
+
+  @cask.post("/admin/consumer:restart")
+  def consumerRestart(
+    target: String = SeekTarget.Committed.name,
+    offsets: String = "",
+    dryRun: Boolean = true
+  ): cask.Response[String] =
+    CobaltRoutes.respond(handlers.consumerRestart(target, offsets, dryRun))
+
+  @cask.post("/admin/consumer:clearCheckpoints")
+  def consumerClearCheckpoints(): cask.Response[String] =
+    CobaltRoutes.respond(handlers.consumerClearCheckpoints())
+
   initialize()
 
 object CobaltRoutes:

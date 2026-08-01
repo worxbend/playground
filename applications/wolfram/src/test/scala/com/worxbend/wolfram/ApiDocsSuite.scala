@@ -27,10 +27,10 @@ import munit.FunSuite
 /** The generated OpenAPI document.
   *
   * **These assert on the document, not on the generator.** `tapir-openapi-docs` is a dependency and testing it is not
-  * this suite's job; what is this suite's job is that the *contract* the document describes is the one intended —
-  * that the AIP path shapes survived generation, that every operation is documented as authenticated, and that the
-  * response schemas are real rather than the permissive placeholders the previous hand-rolled generator produced.
-  * That last one is the regression this file exists for: a document that renders and describes nothing looks fine.
+  * this suite's job; what is this suite's job is that the *contract* the document describes is the one intended — that
+  * the AIP path shapes survived generation, that every operation is documented as authenticated, and that the response
+  * schemas are real rather than the permissive placeholders the previous hand-rolled generator produced. That last one
+  * is the regression this file exists for: a document that renders and describes nothing looks fine.
   */
 final class ApiDocsSuite extends FunSuite:
 

@@ -38,7 +38,12 @@ final case class AdminReply(status: Int, contentType: String, body: String)
   * the alternative is binding a port in a unit test. Here the routes are three one-line delegations and every decision
   * lives in a pure method.
   */
-final class AdminHandlers(telemetry: Telemetry, health: HealthChecks, deadLetters: DeadLetterAdmin):
+final class AdminHandlers(
+  telemetry: Telemetry,
+  health: HealthChecks,
+  deadLetters: DeadLetterAdmin,
+  consumer: SupervisorAdmin
+):
 
   /** The Prometheus exposition, served verbatim with the registry's own content type.
     *
@@ -91,6 +96,19 @@ final class AdminHandlers(telemetry: Telemetry, health: HealthChecks, deadLetter
   def dlqReplay(limit: Int, reason: String, refs: String, dryRun: Boolean): AdminReply =
     deadLetters.replay(limit, reason, refs, dryRun)
 
+  /** The consumer's lifecycle state and offsets. See [[SupervisorAdmin]]. */
+  def consumerStatus(): AdminReply = consumer.status()
+
+  def consumerPause(): AdminReply = consumer.pause()
+  def consumerResume(): AdminReply = consumer.resume()
+  def consumerStop(): AdminReply = consumer.stop()
+  def consumerStart(): AdminReply = consumer.start()
+
+  def consumerRestart(target: String, offsets: String, dryRun: Boolean): AdminReply =
+    consumer.restart(target, offsets, dryRun)
+
+  def consumerClearCheckpoints(): AdminReply = consumer.clearCheckpoints()
+
 object AdminRoutes:
 
   /** Under [[Meters.HealthPath]] so one Prometheus scrape config and one ingress rule cover all three services. */
@@ -111,6 +129,20 @@ object AdminRoutes:
   val DlqPath: String = "/admin/dlq"
   val DlqRecordsPath: String = DlqPath + "/records"
   val DlqReplayPath: String = DlqPath + "/replay"
+
+  /** The consumer lifecycle surface.
+    *
+    * **Custom methods use a colon**, matching wolfram's `/v1/events:batchCreate` and for the same reason (AIP-136):
+    * `/admin/consumer/pause` is indistinguishable from a sub-resource called `pause`, and the colon form cannot collide
+    * with one. Two services in one system should not disagree about how a verb is spelled.
+    */
+  val ConsumerPath: String = "/admin/consumer"
+  val ConsumerPausePath: String = ConsumerPath + ":pause"
+  val ConsumerResumePath: String = ConsumerPath + ":resume"
+  val ConsumerStopPath: String = ConsumerPath + ":stop"
+  val ConsumerStartPath: String = ConsumerPath + ":start"
+  val ConsumerRestartPath: String = ConsumerPath + ":restart"
+  val ConsumerClearCheckpointsPath: String = ConsumerPath + ":clearCheckpoints"
 
   val JsonContentType: String = "application/json; charset=utf-8"
 

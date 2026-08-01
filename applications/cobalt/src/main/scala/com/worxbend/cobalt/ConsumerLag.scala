@@ -28,6 +28,7 @@ import io.micrometer.core.instrument.Tags
 import java.util.concurrent.TimeUnit
 import org.apache.kafka.clients.admin.Admin
 import org.apache.kafka.clients.admin.OffsetSpec
+import org.apache.kafka.clients.consumer.OffsetAndMetadata
 import org.apache.kafka.common.TopicPartition
 import scala.concurrent.duration.FiniteDuration
 import scala.jdk.CollectionConverters.*
@@ -128,6 +129,53 @@ final class AdminOffsets(admin: Admin, timeout: FiniteDuration):
         .asScala
         .toMap
         .map((partition, info) => partition -> info.offset)
+
+  /** Log-start offsets — where the retained log actually begins.
+    *
+    * Needed for a seek to `earliest`, and needed *honestly*: a partition whose oldest record has aged out does not
+    * start at 0, and seeking to 0 there is silently corrected by the broker to the real start. Asking makes the
+    * position this service reports the position it actually set.
+    */
+  def logStarts(partitions: Set[TopicPartition]): Map[TopicPartition, Long] =
+    if partitions.isEmpty then Map.empty
+    else
+      admin
+        .listOffsets(partitions.iterator.map(partition => partition -> OffsetSpec.earliest()).toMap.asJava)
+        .all()
+        .get(timeout.toMillis, TimeUnit.MILLISECONDS)
+        .asScala
+        .toMap
+        .map((partition, info) => partition -> info.offset)
+
+  /** Every partition of a topic, from cluster metadata.
+    *
+    * The group's *own* assignment is not a substitute: a paused or stopped consumer has no assignment, and that is
+    * precisely when an operator asks where the offsets are.
+    */
+  def partitionsOf(topic: String): Set[TopicPartition] =
+    admin
+      .describeTopics(java.util.List.of(topic))
+      .allTopicNames()
+      .get(timeout.toMillis, TimeUnit.MILLISECONDS)
+      .asScala
+      .values
+      .flatMap(description => description.partitions().asScala.map(p => TopicPartition(topic, p.partition())))
+      .toSet
+
+  /** Moves a group's committed offsets.
+    *
+    * **The broker refuses this while the group has live members**, with `UnknownMemberIdException` — which is a feature
+    * and not an obstacle: an offset moved under a running consumer would be overwritten by that consumer's next commit,
+    * so the operation would appear to succeed and change nothing. The supervisor therefore stops the stream first and
+    * the failure, if it comes, means it did not stop.
+    */
+  def alterOffsets(groupId: String, offsets: Map[TopicPartition, Long]): Unit =
+    if offsets.nonEmpty then
+      val requested = offsets.iterator.map((partition, offset) => partition -> OffsetAndMetadata(offset)).toMap
+      val _ = admin
+        .alterConsumerGroupOffsets(groupId, requested.asJava)
+        .all()
+        .get(timeout.toMillis, TimeUnit.MILLISECONDS)
 
   /** Asks the cluster who its brokers are. Cheap, and the only reachability question readiness needs answered. */
   def clusterNodes(): Int =

@@ -29,6 +29,7 @@ import com.worxbend.persistence.DatabaseConfig
 import com.worxbend.persistence.Migrations
 import com.worxbend.persistence.maintenance.PartitionMaintenance
 import com.worxbend.persistence.maintenance.RollupRefresh
+import com.worxbend.persistence.repository.PostgresCheckpointStore
 import com.worxbend.persistence.repository.PostgresEventRepository
 import com.zaxxer.hikari.metrics.micrometer.MicrometerMetricsTrackerFactory
 import java.util.concurrent.Executors
@@ -40,6 +41,7 @@ import org.apache.pekko.actor.CoordinatedShutdown
 import org.apache.pekko.pattern.after
 import pureconfig.ConfigSource
 import pureconfig.error.ConfigReaderFailures
+import scala.concurrent.Await
 import scala.concurrent.ExecutionContext
 import scala.concurrent.Future
 import scala.jdk.CollectionConverters.*
@@ -67,7 +69,7 @@ import scala.util.control.NonFatal
   */
 final class CobaltApp private (
   val adminServer: AdminServer,
-  val consumer: EventConsumer,
+  val supervisor: ConsumerSupervisor,
   system: ActorSystem
 ):
 
@@ -148,7 +150,18 @@ object CobaltApp extends StrictLogging:
       backoff = () => after(config.consumer.retryDelay, system.scheduler)(Future.unit)
     )
 
-    val consumer = EventConsumer.start(config.consumer, config.restart, decoder, processor)
+    // The consumer behind a supervisor rather than started directly. `EventConsumer.start` is now a *factory* the
+    // supervisor calls once per start or resume — a drained stream is not restartable, so every resume needs a fresh
+    // one, and the supervisor is the thing that knows when.
+    val supervisor = ConsumerSupervisor(
+      factory = () => EventConsumer.start(config.consumer, config.restart, decoder, processor),
+      offsets = AdminOffsets(admin, config.lag.requestTimeout),
+      checkpoints = PostgresCheckpointStore(pools.read.transactor, pools.write.transactor)(using blocking),
+      groupId = config.consumer.groupId,
+      topic = config.consumer.topic
+    )
+    val started = Await.result(supervisor.start(), ConsumerSupervisor.DrainTimeout)
+    logger.info(s"consumer supervisor: ${started.status.state.name}")
 
     // The read/replay half of the DLQ, with its own consumer and producer. Built after the write half and closed
     // before it, so a replay can never outlive the publisher whose records it is putting back.
@@ -161,7 +174,9 @@ object CobaltApp extends StrictLogging:
       dlqTopic = config.consumer.dlqTopic
     )
 
-    val routes = CobaltRoutes(AdminHandlers(telemetry, health, deadLetterAdmin))
+    val routes = CobaltRoutes(
+      AdminHandlers(telemetry, health, deadLetterAdmin, SupervisorAdmin(supervisor, ConsumerSupervisor.DrainTimeout))
+    )
     val adminServer = AdminServer(routes, config.server.host, config.server.port)
     adminServer.start()
 
@@ -186,7 +201,7 @@ object CobaltApp extends StrictLogging:
         quietly("closing telemetry")(telemetry.close())
         Done
 
-    CobaltApp(adminServer, consumer, system)
+    CobaltApp(adminServer, supervisor, system)
 
   /** The admin client's settings. Only what it needs: this client exists for lag and reachability, and every extra
     * property is another way for a monitoring path to fail differently from the data path.

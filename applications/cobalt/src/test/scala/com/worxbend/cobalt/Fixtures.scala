@@ -21,6 +21,7 @@
 
 package com.worxbend.cobalt
 
+import com.augustnagro.magnum.DbTx
 import com.worxbend.eventing.ContentMode
 import com.worxbend.eventing.DeadLetter
 import com.worxbend.eventing.DecodeFailure
@@ -37,6 +38,7 @@ import com.worxbend.kernel.search.Filter
 import com.worxbend.observability.Telemetry
 import com.worxbend.observability.TelemetryConfig
 import com.worxbend.observability.Tracing
+import com.worxbend.persistence.repository.CheckpointWrite
 import com.worxbend.persistence.repository.EventDetail
 import com.worxbend.persistence.repository.EventRef
 import com.worxbend.persistence.repository.EventRepository
@@ -62,7 +64,10 @@ import org.apache.pekko.kafka.ConsumerMessage.Committable
 import org.apache.pekko.kafka.ConsumerMessage.CommittableMessage
 import org.apache.pekko.kafka.ConsumerMessage.CommittableOffset
 import org.apache.pekko.kafka.testkit.ConsumerResultFactory
+import scala.concurrent.ExecutionContext
 import scala.concurrent.Future
+import scala.concurrent.Promise
+import scala.concurrent.duration.DurationInt
 import scala.jdk.CollectionConverters.*
 
 /** Hand-built doubles for everything the consumer talks to.
@@ -253,3 +258,29 @@ object Fixtures:
     */
   def telemetry(): Telemetry =
     Telemetry.start(TelemetryConfig("cobalt-test", "0.0.0-test", "test"), Tracing.noop)
+
+  /** A supervisor whose stream never actually starts, and whose Kafka and checkpoint lookups answer nothing.
+    *
+    * For suites that need a supervisor to *exist* rather than to run — the admin-path constants, the route wiring. The
+    * lifecycle transitions themselves are covered in `SupervisorSuite` against the same seam, and against a real broker
+    * in `CobaltIngestIT`.
+    */
+  def idleSupervisor(using ExecutionContext): ConsumerSupervisor =
+    val handle = new ConsumerHandle:
+      def drain(): Future[org.apache.pekko.Done] = Future.successful(org.apache.pekko.Done)
+      def completion: Future[org.apache.pekko.Done] = Promise[org.apache.pekko.Done]().future
+    val checkpoints = new com.worxbend.persistence.repository.CheckpointStore:
+      def record(groupId: String, owner: Option[String], positions: Vector[CheckpointWrite])(using DbTx): Unit = ()
+      def load(groupId: String): Future[Vector[com.worxbend.persistence.repository.Checkpoint]] =
+        Future.successful(Vector.empty)
+      def clear(groupId: String): Future[Int] = Future.successful(0)
+    ConsumerSupervisor(
+      factory = () => handle,
+      offsets = AdminOffsets(
+        org.apache.kafka.clients.admin.Admin.create(java.util.Map.of("bootstrap.servers", "127.0.0.1:1")),
+        1.second
+      ),
+      checkpoints = checkpoints,
+      groupId = "test-group",
+      topic = Topic
+    )

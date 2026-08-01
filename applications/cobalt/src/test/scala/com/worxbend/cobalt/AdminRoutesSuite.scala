@@ -33,6 +33,8 @@ import scala.concurrent.duration.DurationInt
   */
 final class AdminRoutesSuite extends munit.FunSuite:
 
+  private given scala.concurrent.ExecutionContext = scala.concurrent.ExecutionContext.parasitic
+
   private def handlers(health: HealthChecks, telemetry: Telemetry): AdminHandlers =
     AdminHandlers(
       telemetry,
@@ -43,7 +45,10 @@ final class AdminRoutesSuite extends munit.FunSuite:
         ReplayConfig(enabled = true, maxRecords = 10, maxAttempts = 3, 1.second),
         Fixtures.Topic,
         "dlq"
-      )
+      ),
+      // A supervisor over a handle that never starts: this suite is about *paths*, and the lifecycle decisions have
+      // their own suite. Giving it a real consumer would make three constant assertions need a broker.
+      SupervisorAdmin(Fixtures.idleSupervisor, 5.seconds)
     )
 
   test("the paths match the shared vocabulary, so one scrape config covers all three services"):

@@ -41,9 +41,9 @@ import scala.util.control.NonFatal
 /** Who made the request, once the token has been verified.
   *
   * Deliberately small. Everything on it was *proved* by the signature check — the subject, the scopes and the issuer
-  * are copied out of a claim set that the verifier has already refused to return if the signature, `exp`, `nbf`,
-  * `iss` or `aud` were wrong. Nothing downstream re-checks, and nothing downstream can, because the raw token does not
-  * travel past [[JwtVerifier]]: a `Principal` in scope *is* the authorisation decision.
+  * are copied out of a claim set that the verifier has already refused to return if the signature, `exp`, `nbf`, `iss`
+  * or `aud` were wrong. Nothing downstream re-checks, and nothing downstream can, because the raw token does not travel
+  * past [[JwtVerifier]]: a `Principal` in scope *is* the authorisation decision.
   */
 final case class Principal(subject: String, scopes: Set[String], issuer: Option[String]):
 
@@ -51,10 +51,10 @@ final case class Principal(subject: String, scopes: Set[String], issuer: Option[
 
 /** Why a request was refused before it reached the ingestion service.
   *
-  * Two cases and not one, because they mean different things to a client and map to different status codes: 401 says
-  * "I do not know who you are, try again with a credential", 403 says "I know exactly who you are and the answer is
-  * still no". Collapsing them sends a client with an expired token into a permissions investigation and a client
-  * missing a scope into a token-refresh loop, and neither ever succeeds.
+  * Two cases and not one, because they mean different things to a client and map to different status codes: 401 says "I
+  * do not know who you are, try again with a credential", 403 says "I know exactly who you are and the answer is still
+  * no". Collapsing them sends a client with an expired token into a permissions investigation and a client missing a
+  * scope into a token-refresh loop, and neither ever succeeds.
   */
 enum AuthProblem(val detail: String):
 
@@ -68,9 +68,9 @@ enum AuthProblem(val detail: String):
   *
   * **`enabled` defaults to true and there is no key default.** A security layer whose default state is "off" is one
   * that ships off, because nothing fails when it is: the tests pass, the smoke test passes, and the first evidence is
-  * an unauthenticated write in production. So the only way to run without authentication is to say
-  * `AUTH_ENABLED=false` out loud, and the only way to run *with* it is to supply a key — a service configured for
-  * verification but given nothing to verify against refuses to boot rather than accepting everything.
+  * an unauthenticated write in production. So the only way to run without authentication is to say `AUTH_ENABLED=false`
+  * out loud, and the only way to run *with* it is to supply a key — a service configured for verification but given
+  * nothing to verify against refuses to boot rather than accepting everything.
   *
   * @param algorithm
   *   one of `HS256`/`HS384`/`HS512` (symmetric, needs `secret`) or `RS256`/`RS384`/`RS512` (asymmetric, needs
@@ -101,10 +101,10 @@ final case class AuthConfig(
 
 /** Verifies bearer tokens, or verifies nothing and says so.
   *
-  * **Constructed through [[JwtVerifier.from]], which returns an `Either`.** Every way a verifier can be misconfigured
-  * — an unknown algorithm, an HMAC algorithm with no secret, an RSA algorithm with an unparseable key — is a boot
-  * failure with a sentence naming the field, not a runtime 500 on the first authenticated request. That is the same
-  * discipline the rest of this service applies to its Kafka and time configuration.
+  * **Constructed through [[JwtVerifier.from]], which returns an `Either`.** Every way a verifier can be misconfigured —
+  * an unknown algorithm, an HMAC algorithm with no secret, an RSA algorithm with an unparseable key — is a boot failure
+  * with a sentence naming the field, not a runtime 500 on the first authenticated request. That is the same discipline
+  * the rest of this service applies to its Kafka and time configuration.
   */
 final class JwtVerifier private (
   config: AuthConfig,
@@ -121,11 +121,14 @@ final class JwtVerifier private (
     * `None` for the token is the *missing credential* case and is answered with 401 rather than with a decode error,
     * because "you sent no Authorization header" and "your token is corrupt" are different things to be told.
     */
-  def verify(token: Option[String], requiredScope: Option[String] = config.requiredScope): Either[AuthProblem, Principal] =
+  def verify(
+    token: Option[String],
+    requiredScope: Option[String] = config.requiredScope
+  ): Either[AuthProblem, Principal] =
     if !config.enabled then Right(JwtVerifier.Anonymous)
     else
       token.map(_.trim).filter(_.nonEmpty) match
-        case None        => Left(AuthProblem.Unauthenticated("no bearer token"))
+        case None         => Left(AuthProblem.Unauthenticated("no bearer token"))
         case Some(bearer) =>
           decode(bearer).flatMap(claim => check(claim).flatMap(principal => authorise(principal, requiredScope)))
 
@@ -148,7 +151,8 @@ final class JwtVerifier private (
     val issuerOk = config.issuer.forall(expected => claim.issuer.contains(expected))
     val audienceOk = config.audience.forall(expected => claim.audience.exists(_.contains(expected)))
     if !issuerOk then Left(AuthProblem.Unauthenticated(s"issuer is not ${config.issuer.getOrElse("")}"))
-    else if !audienceOk then Left(AuthProblem.Unauthenticated(s"audience does not include ${config.audience.getOrElse("")}"))
+    else if !audienceOk then
+      Left(AuthProblem.Unauthenticated(s"audience does not include ${config.audience.getOrElse("")}"))
     else
       claim.subject.map(_.trim).filter(_.nonEmpty) match
         case None          => Left(AuthProblem.Unauthenticated("the token carries no subject"))
@@ -164,11 +168,11 @@ object JwtVerifier:
 
   /** The principal a disabled verifier reports.
     *
-    * Not `Option[Principal]`: making the *absence* of authentication representable in the type would push a
-    * `match` onto every call site, and every one of them would take the same branch. A named anonymous principal with
-    * no scopes says the same thing and cannot be forgotten — and because it holds no scopes, a deployment that
-    * disables authentication while still requiring a scope refuses every request rather than allowing every request,
-    * which is the safe direction for that particular misconfiguration.
+    * Not `Option[Principal]`: making the *absence* of authentication representable in the type would push a `match`
+    * onto every call site, and every one of them would take the same branch. A named anonymous principal with no scopes
+    * says the same thing and cannot be forgotten — and because it holds no scopes, a deployment that disables
+    * authentication while still requiring a scope refuses every request rather than allowing every request, which is
+    * the safe direction for that particular misconfiguration.
     */
   val Anonymous: Principal = Principal("anonymous", Set.empty, None)
 
@@ -217,8 +221,8 @@ object JwtVerifier:
 
   /** Reads an X.509 `SubjectPublicKeyInfo` PEM, with or without its armour and with any line wrapping.
     *
-    * Environment variables cannot hold newlines portably, so the deployed form of this value is usually one long
-    * line — `\\n` sequences and stripped armour are both accepted for that reason, and neither changes the bytes.
+    * Environment variables cannot hold newlines portably, so the deployed form of this value is usually one long line —
+    * `\\n` sequences and stripped armour are both accepted for that reason, and neither changes the bytes.
     */
   def parsePublicKey(pem: String): Either[String, PublicKey] =
     try
@@ -237,8 +241,8 @@ object JwtVerifier:
   /** Extracts scopes from either shape an issuer might use.
     *
     * OAuth 2 says `scope` is one space-delimited string, and most issuers comply; a sizeable minority emit a JSON
-    * array, and Keycloak emits both under different names. Accepting the two shapes here costs six lines and removes
-    * an entire class of "the token is valid but the scope is empty" support question.
+    * array, and Keycloak emits both under different names. Accepting the two shapes here costs six lines and removes an
+    * entire class of "the token is valid but the scope is empty" support question.
     */
   def scopesOf(claim: JwtClaim): Set[String] =
     io.circe.parser.parse(claim.content).toOption.fold(Set.empty[String]): json =>

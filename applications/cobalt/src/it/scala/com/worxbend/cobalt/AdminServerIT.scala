@@ -49,7 +49,10 @@ final class AdminServerIT extends munit.FunSuite:
         Fixtures.Topic,
         "dlq"
       )
-      val server = AdminServer(CobaltRoutes(AdminHandlers(telemetry, health, deadLetters)), "127.0.0.1", 0)
+      given scala.concurrent.ExecutionContext = scala.concurrent.ExecutionContext.parasitic
+      val consumer = SupervisorAdmin(Fixtures.idleSupervisor, 5.seconds)
+      val server =
+        AdminServer(CobaltRoutes(AdminHandlers(telemetry, health, deadLetters, consumer)), "127.0.0.1", 0)
       server.start()
       (server, health, telemetry)
     ,
@@ -93,3 +96,44 @@ final class AdminServerIT extends munit.FunSuite:
     assert(defaulted.text().contains("\"dryRun\":true"), defaulted.text())
     // An over-limit request is refused rather than clamped, and the refusal survives the round trip as a 400.
     assertEquals(requests.post(base + "?limit=999", check = false).statusCode, 400)
+
+  fixture.test("the consumer lifecycle routes are served, and the colon in a custom method survives routing"):
+    (server, _, _) =>
+      // The colon is the AIP-136 custom-method form and Cask has to match it as a literal path segment. A framework
+      // that split on `:` would route `/admin/consumer:pause` to nothing, and the only way to find that out is to
+      // ask a bound port — which is why this assertion lives here and not in a unit test.
+      val status = requests.get(s"http://127.0.0.1:${server.boundPort}/admin/consumer", check = false)
+      assertEquals(status.statusCode, 200)
+      val body = io.circe.parser.parse(status.text()).getOrElse(fail("the status is not JSON"))
+      assertEquals(body.hcursor.get[String]("state").toOption, Some("stopped"))
+      assertEquals(body.hcursor.get[Boolean]("consuming").toOption, Some(false))
+
+      // A lifecycle command over a real socket, reporting the state on both sides of itself.
+      val paused = requests.post(s"http://127.0.0.1:${server.boundPort}/admin/consumer:pause", check = false)
+      assertEquals(paused.statusCode, 200)
+      val result = io.circe.parser.parse(paused.text()).getOrElse(fail("not JSON"))
+      assertEquals(result.hcursor.get[String]("command").toOption, Some("pause"))
+      assertEquals(result.hcursor.downField("status").get[String]("state").toOption, Some("paused"))
+
+  fixture.test("restart plans by default and refuses an unknown target"): (server, _, _) =>
+    val base = s"http://127.0.0.1:${server.boundPort}/admin/consumer:restart"
+    // Default dryRun: the most destructive operation in this service must not fire because somebody omitted a flag.
+    val planned = requests.post(s"$base?target=committed", check = false)
+    assertEquals(planned.statusCode, 200)
+    val plan = io.circe.parser.parse(planned.text()).getOrElse(fail("not JSON"))
+    assertEquals(plan.hcursor.get[Boolean]("dryRun").toOption, Some(true))
+    assertEquals(plan.hcursor.get[Boolean]("committed").toOption, Some(false))
+
+    // A typo in the target is a 400 rather than a silent fallback to `committed`, which would be a different
+    // operation performed under the name of the one that was asked for.
+    val unknown = requests.post(s"$base?target=yesterday", check = false)
+    assertEquals(unknown.statusCode, 400)
+    assert(unknown.text().contains("yesterday"), unknown.text())
+
+    // Coordinates supplied with the wrong target are refused, not ignored.
+    val mismatched = requests.post(s"$base?target=latest&offsets=t/0/5", check = false)
+    assertEquals(mismatched.statusCode, 400)
+
+  fixture.test("a POST-only route refuses a GET"): (server, _, _) =>
+    val response = requests.get(s"http://127.0.0.1:${server.boundPort}/admin/consumer:pause", check = false)
+    assert(response.statusCode == 404 || response.statusCode == 405, response.statusCode.toString)
