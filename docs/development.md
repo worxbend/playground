@@ -13,7 +13,7 @@ work inside it.
 | JDK | **25** (`25.0.1-tem`) | Pinned in `.sdkmanrc`. CI asks for `25` and the base image is `eclipse-temurin:25-jre-alpine`, both of which float to the newest 25.x — deliberately, so a JDK security release is picked up without a commit. `.sdkmanrc` is the only exact pin. |
 | sbt | **2.0.3** | Pinned in `.sdkmanrc` and `project/build.properties`. sbt 1 will not load this build. |
 | Docker | any recent daemon | Required for `sbt verifyIt` (Testcontainers) and for the images. Not needed for `sbt verify`. |
-| Python + MkDocs | 3.12, `mkdocs` 1.6.1 + `mkdocs-material` 9.7.7 | Only for building the docs site locally. |
+| Python + MkDocs | 3.12, `mkdocs` 1.6.1 + `mkdocs-material` 9.7.7 | Only for building the docs site locally. A ` ```mermaid ` fence needs no plugin — `pymdownx.superfences` hands it to Material, which loads mermaid 11 from unpkg **at page load**. So a syntax error renders as raw text rather than failing `--strict`, and an offline reader sees the source. Check a diagram in a browser, not in the build log. |
 | Tailwind CSS CLI | **4.3.3** standalone binary | Only for `ferrite/tailwind` — see §8. Absent, the task warns and leaves the committed stylesheet alone. |
 | osv-scanner | **2.4.0** | Only for the dependency gate — see §9. Not needed by `verify`. |
 
@@ -98,6 +98,38 @@ integration sources.
 `IT/parallelExecution` is `false` (containers bind host ports and would collide) and `IT/fork` is `true`.
 The root project carries `.configs(IT)` so `IT/testFull` aggregates to every module; without it, it silently
 tests nothing.
+
+**Which tier touches which tree, and what is checked by neither.** The interesting edges are the two dashed ones:
+`verify` reads `src/it` without ever running it, and one tree is verified by nothing at all.
+
+```mermaid
+flowchart LR
+  main["src/main/scala<br/>src/main/twirl"]
+  test["src/test/scala"]
+  it["src/it/scala"]
+  css["public/css/app.css<br/>committed Tailwind output"]
+  dep["deploy/*.yml<br/>observability/rules"]
+  js["public/js/app.js"]
+
+  verify["sbt verify<br/>JDK only — laptop, air-gapped box and CI alike"]
+  verifyIt["sbt verifyIt<br/>needs a Docker daemon"]
+  ci1["stylesheet job<br/>CI only: the CLI is 112 MB and not on Maven"]
+  ci2["deploy-config job<br/>CI only: needs docker and promtool"]
+  nothing["nothing"]
+
+  main --> verify
+  test --> verify
+  it -. "format, headers, compile — never executed" .-> verify
+  it --> verifyIt
+  main --> verifyIt
+  css --> ci1
+  dep --> ci2
+  js -. "read, not run" .-> nothing
+```
+
+`verify` compiling `src/it` without running it is not a half-measure — it is the cheap half. scalafmt once rewrote
+a block lambda's braces off, leaving `ps => val _ = …` in an integration suite, and nothing said so until somebody
+with a Docker daemon ran `verifyIt` three merges later. §11 has what CI does with each of these.
 
 ---
 
@@ -513,6 +545,83 @@ the "missing members" section — that is the part that matters — and ignore t
 - Scala 3 has known `-Wunused` false positives for givens resolved inside the `sql` macro. Keep given-imports at
   the narrowest scope; a targeted `@nowarn` is permitted **only** with a comment naming the false positive.
 - Don't commit. The orchestrator commits.
+
+---
+
+## 11. What CI runs, and what it gates
+
+Four workflows. **Two of them are the real gates** — `scala.yml` builds and tests, `supply-chain.yml` scans the
+dependencies — and both run on pushes and pull requests to `main`.
+
+**What runs when, and what a red result actually prevents.**
+
+```mermaid
+flowchart LR
+  trig(["push or pull_request on main"])
+  wk(["schedule: Mondays 06:17 UTC"])
+  pushonly(["push to main only"])
+
+  subgraph scala["scala.yml — the build gate"]
+    verify["verify<br/>fmtCheck · headerCheck · IT lint · IT/compile · Test/testFull"]
+    integration["integration<br/>IT/testFull on Testcontainers"]
+    stylesheet["stylesheet<br/>ferrite/tailwindCheck with the pinned CLI"]
+    deployconf["deploy-config<br/>docker compose config · promtool check rules and config"]
+    package["package<br/>Docker/stage for all three images"]
+  end
+  subgraph supply["supply-chain.yml — the dependency gate"]
+    deps["dependencies<br/>sbt sbom · osv-scanner, fails on any advisory"]
+  end
+  subgraph docsw["docs.yml"]
+    build["build<br/>mkdocs --strict · scaladocSite · per-module assertions"]
+    pages["deploy<br/>GitHub Pages"]
+  end
+
+  merge(["a merge to main"])
+
+  trig --> verify
+  trig --> integration
+  trig --> stylesheet
+  trig --> deployconf
+  trig --> deps
+  wk --> deps
+  pushonly --> package
+  verify --> package
+  pushonly --> build
+  build --> pages
+  verify -. advisory .-> merge
+  deps -. advisory .-> merge
+```
+
+The two dashed edges are the honest part. **`main` has no branch protection**, so no job result blocks anything —
+a red build merges, and the gates gate a *notification*, not the branch. That is a repository setting nobody can
+fix from a file in the tree; `docs/operations.md` §8 tracks it.
+
+| Workflow | Trigger | What it is for |
+| --- | --- | --- |
+| `scala.yml` | push, PR | The build. Five jobs, deliberately not chained: a formatting failure must not hide a broken migration, and only `package` has a `needs:` because staging an image you have not compiled proves nothing. |
+| `supply-chain.yml` | push, PR, weekly cron, manual | One CycloneDX SBOM per deployable, scanned against OSV. The cron is the point of the weekly run: an advisory is published without anyone pushing a commit. |
+| `docs.yml` | push to `main`, manual | Builds this site with `--strict` plus Scaladoc, and deploys to Pages. It gates nothing on a PR, so a broken doc link on a branch is found after the merge. |
+| `stale.yml` | nightly cron | Labels and closes dormant issues and pull requests. Touches no code and gates nothing. |
+
+Three security workflows used to sit beside these and were **deleted rather than fixed**: `scala-snyk.yml` failed
+on every push because Snyk's Scala integration cannot read an sbt 2 build, `sonar.yml` failed in 1.1 s on a token
+from 2020, and `security.yml` ran a ZAP baseline scan against `https://www.zaproxy.org` — someone else's website —
+using a rules file that was never committed. Between them they had produced zero findings and a permanently red
+`main`, which is worse than no scanner: it teaches everyone to ignore red. `supply-chain.yml` replaced all three,
+needs no account, and fails the job on any advisory (§9).
+
+Two jobs carry a guard worth knowing about, because both would otherwise be decorative:
+
+- **`stylesheet`** verifies the Tailwind CLI downloaded and then greps the sbt log for `was not found`.
+  `tailwindCheck` *warns and succeeds* when the CLI is absent — right for a developer, useless for CI — so without
+  both halves the job is a green tick that checked nothing.
+- **`deploy-config`** derives the mandatory compose variables by grepping `${VAR:?…}` out of the file rather than
+  listing them. The list *was* listed, and it went stale the day wolfram gained `AUTH_SECRET`: every push then
+  failed on a missing variable, in a job whose subject was unrelated to whatever the pusher had changed.
+
+Every job carries `timeout-minutes`. The default is six hours, and the failure that runs into it is never a test
+failure — it is an sbt server that never answers or a container that never becomes healthy, which is exactly the
+case where nobody is watching.
 
 ---
 
