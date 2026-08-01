@@ -83,6 +83,28 @@ final class CobaltConfigSuite extends munit.FunSuite:
     // discovered at boot.
     assertEquals(config.maintenance.policy.monthsAhead, config.maintenance.monthsAhead)
 
+  test("admin authentication is on by default, and the shipped configuration carries no key"):
+    // Both halves matter. A security layer whose default is "off" ships off — nothing fails when it is, so the first
+    // evidence is somebody else's POST /admin/consumer:restart. And with no key default, a deployment that leaves
+    // ADMIN_AUTH_SECRET unset does not quietly accept every token: it refuses to boot, naming the field.
+    assert(config.auth.enabled, "the admin surface must be authenticated unless a deployment says otherwise")
+    assertEquals(config.auth.secret, None)
+    assertEquals(config.auth.publicKey, None)
+    val problem = JwtVerifier.from(config.auth).swap.getOrElse(fail("a keyless verifier was accepted"))
+    assert(problem.contains("cobalt.auth.secret"), problem)
+
+  test("the two scopes are distinct, and neither is wolfram's ingestion scope"):
+    // An operator with one issuer may give both services the same signing key. A producer token must still not open
+    // the door that skips unconsumed events.
+    assertEquals(config.auth.scopeFor(AdminScope.Read), Some("admin:read"))
+    assertEquals(config.auth.scopeFor(AdminScope.Write), Some("admin:write"))
+    assertNotEquals(config.auth.scopeFor(AdminScope.Read), config.auth.scopeFor(AdminScope.Write))
+    assert(!Set(config.auth.readScope, config.auth.writeScope).contains("events:write"))
+
+  test("the auth leeway is a skew tolerance, not an amnesty"):
+    // This is the window in which a revoked token still works, and there is no revocation list anywhere in this system.
+    assert(config.auth.leeway <= 60.seconds, s"${config.auth.leeway} is a long time to honour a withdrawn credential")
+
   test("the database namespace resolves from modules/persistence's reference.conf"):
     val database = DatabaseConfig
       .load(ConfigSource.default)

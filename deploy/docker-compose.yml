@@ -281,6 +281,17 @@ services:
       DATABASE_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
       HTTP_HOST: 0.0.0.0
       HTTP_PORT: 8080
+      # Bearer-token verification for every /admin route. `ADMIN_AUTH_ENABLED` defaults to true in the image, so
+      # leaving ADMIN_AUTH_SECRET unset is a boot failure and not an open admin API — which is the point: the routes
+      # behind this include one that skips every unconsumed event permanently and one that re-publishes onto the
+      # production topic. /metrics and /health stay open for Prometheus and for the healthcheck below.
+      #
+      # ADMIN_AUTH_SECRET is deliberately NOT wolfram's AUTH_SECRET. Both services read this same .env, so one
+      # variable would mean one key, and a leaked ingestion secret would mint admin tokens. Mint an operator token
+      # with this secret and the `admin:read` or `admin:write` scope; see docs/services/cobalt.md.
+      ADMIN_AUTH_ENABLED: ${ADMIN_AUTH_ENABLED:-true}
+      ADMIN_AUTH_ALGORITHM: ${ADMIN_AUTH_ALGORITHM:-HS256}
+      ADMIN_AUTH_SECRET: ${ADMIN_AUTH_SECRET:?ADMIN_AUTH_SECRET is required; set ADMIN_AUTH_ENABLED=false to run the admin API without authentication}
       # DLQ replay. Passed explicitly rather than left to the application defaults so that the one setting an
       # operator may want to change under pressure — whether a replay can be *committed* at all — is visible in the
       # deployment rather than buried in a jar. Dry runs and the two read endpoints stay available with

@@ -86,7 +86,14 @@ object CobaltApiDocs:
       |
       |`GET /admin/consumer` reports `committed` (what Kafka has) beside `stored` (what
       |`events.consumer_checkpoint` has, written in the same transaction as the rows). When they disagree, one of the
-      |two commits did not happen — and which one tells you whether events will be replayed or were lost.""".stripMargin
+      |two commits did not happen — and which one tells you whether events will be replayed or were lost.
+      |
+      |### Everything under `/admin` needs a bearer token
+      |
+      |Reads need the `admin:read` scope, the mutating operations need `admin:write`, and a token carrying
+      |`admin:write` satisfies both. `/metrics` and `/health/*` are open because Prometheus and the container
+      |orchestrator cannot hold a token; this document and the Swagger page are open because they describe the build
+      |rather than the data.""".stripMargin
 
   // --- the shapes, described ----------------------------------------------------------------------------------
 
@@ -138,17 +145,38 @@ object CobaltApiDocs:
 
   private val jsonError = jsonBody[ErrorDoc]
 
+  /** The `Authorization: Bearer` header every `/admin` operation requires.
+    *
+    * **Optional in the codec, and that is deliberate** — the same choice wolfram's endpoints make. A mandatory bearer
+    * input rejects a missing header inside the codec and produces a bare 400 with no body; an `Option` moves the
+    * decision to [[AdminAuth]], where "no credential" becomes a 401 carrying `WWW-Authenticate` like every other
+    * refusal on this surface.
+    */
+  val bearer: EndpointInput.Auth[Option[String], EndpointInput.AuthType.Http] =
+    auth
+      .bearer[Option[String]]()
+      .description(
+        s"A JWT bearer token. Reads need the `${JwtVerifier.ReadScope}` scope and the mutating operations need " +
+          s"`${JwtVerifier.WriteScope}`; a token carrying the write scope satisfies both. Verification covers the " +
+          "signature, a **mandatory** `exp`, `nbf`, and — when the deployment configures them — `iss` and `aud`. " +
+          "The algorithm is pinned by configuration and the token's own `alg` header is checked against it, never " +
+          "trusted."
+      )
+
   /** The base every operation shares. `/admin` is a prefix and not a tag: an ingress can expose `/metrics` and
     * `/health` to the platform while keeping everything under `/admin` on the inside, without enumerating paths.
+    *
+    * The bearer input lives here rather than on each operation, which is what makes "every admin route is
+    * authenticated" a property of one value instead of ten call sites that each have to remember.
     */
-  private val admin: PublicEndpoint[Unit, ErrorDoc, Unit, Any] =
-    endpoint.in("admin").errorOut(jsonError)
+  private val admin: Endpoint[Option[String], Unit, ErrorDoc, Unit, Any] =
+    endpoint.securityIn(bearer).in("admin").errorOut(jsonError)
 
   // --- the consumer lifecycle ---------------------------------------------------------------------------------
 
   private val consumerTag = "consumer"
 
-  val consumerStatus: PublicEndpoint[Unit, ErrorDoc, ConsumerStatusDoc, Any] =
+  val consumerStatus: Endpoint[Option[String], Unit, ErrorDoc, ConsumerStatusDoc, Any] =
     admin.get
       .in("consumer")
       .out(jsonBody[ConsumerStatusDoc])
@@ -197,7 +225,7 @@ object CobaltApiDocs:
 
   val consumerStart = lifecycle("start", "Start consumption", "Idempotent; a running consumer is left alone.")
 
-  val consumerRestart: PublicEndpoint[(String, String, Boolean), ErrorDoc, Json, Any] =
+  val consumerRestart: Endpoint[Option[String], (String, String, Boolean), ErrorDoc, Json, Any] =
     admin.post
       .in("consumer:restart")
       .in(
@@ -239,7 +267,7 @@ object CobaltApiDocs:
       )
       .tag(consumerTag)
 
-  val consumerClearCheckpoints: PublicEndpoint[Unit, ErrorDoc, Json, Any] =
+  val consumerClearCheckpoints: Endpoint[Option[String], Unit, ErrorDoc, Json, Any] =
     admin.post
       .in("consumer:clearCheckpoints")
       .out(jsonBody[Json])
@@ -256,7 +284,7 @@ object CobaltApiDocs:
 
   private val dlqTag = "dead-letters"
 
-  val dlqSummary: PublicEndpoint[Unit, ErrorDoc, Json, Any] =
+  val dlqSummary: Endpoint[Option[String], Unit, ErrorDoc, Json, Any] =
     admin.get
       .in("dlq")
       .out(jsonBody[Json])
@@ -268,7 +296,7 @@ object CobaltApiDocs:
       )
       .tag(dlqTag)
 
-  val dlqRecords: PublicEndpoint[(Int, String), ErrorDoc, Json, Any] =
+  val dlqRecords: Endpoint[Option[String], (Int, String), ErrorDoc, Json, Any] =
     admin.get
       .in("dlq" / "records")
       .in(query[Int](
@@ -286,7 +314,7 @@ object CobaltApiDocs:
       )
       .tag(dlqTag)
 
-  val dlqReplay: PublicEndpoint[(Int, String, String, Boolean), ErrorDoc, Json, Any] =
+  val dlqReplay: Endpoint[Option[String], (Int, String, String, Boolean), ErrorDoc, Json, Any] =
     admin.post
       .in("dlq:replay")
       .in(query[Int]("limit").default(0).description("How many to replay. Refused above `REPLAY_MAX_RECORDS`."))

@@ -26,20 +26,35 @@ import io.undertow.Undertow
 import java.net.InetSocketAddress
 import scala.jdk.CollectionConverters.*
 
-/** The Cask route table. Six routes, each a one-line delegation to [[AdminHandlers]].
+/** The Cask route table: a one-line delegation to [[AdminHandlers]] per route, through one of two doors.
+  *
+  * **Every route under `/admin` is authenticated and scoped; the three platform routes are not.** Which door a route
+  * uses is declared in [[AdminRoutes.Access]] and checked from both ends — see that table for what is open and why, and
+  * for the two tests that make it impossible for a new route to be added without an answer.
   *
   * The paths are string literals because Cask's annotations are macros and want a constant; `AdminRoutesSuite` asserts
   * each one against the corresponding constant in `modules/observability` or [[AdminRoutes]], so a divergence between
   * this file and the shared vocabulary fails a test rather than silently giving Prometheus a 404.
   *
-  * **The replay route is the only `@cask.post` in this build, and the only one that changes anything.** It is a POST
-  * because it is not safe and not repeatable-without-effect at the broker (each call appends records to the topic);
-  * `dryRun` defaults to `true` so the *default* POST is the one that publishes nothing. Everything the operation needs
-  * arrives as query parameters rather than a JSON body: the request has four scalar fields, a body parser would mean
-  * either upickle — a second JSON stack alongside circe, which ADR §3.3 keeps off the classpath — or hand-rolled
-  * parsing, and a query string is what someone can actually type into `curl` mid-incident.
+  * **Every route that changes anything is a `@cask.post`**, because none of them is safe or repeatable-without-effect —
+  * the replay appends records to the topic on each call, and the lifecycle routes move a consumer group. `dryRun`
+  * defaults to `true` on the two destructive ones so the *default* POST is the one that publishes and moves nothing.
+  * Everything the operation needs arrives as query parameters rather than a JSON body: the request has four scalar
+  * fields, a body parser would mean either upickle — a second JSON stack alongside circe, which ADR §3.3 keeps off the
+  * classpath — or hand-rolled parsing, and a query string is what someone can actually type into `curl` mid-incident.
   */
-final class CobaltRoutes(handlers: AdminHandlers) extends cask.Routes:
+final class CobaltRoutes(handlers: AdminHandlers, auth: AdminAuth) extends cask.Routes:
+
+  /** Authorises, then answers. Every route under `/admin` goes through this and none of them can forget to, because the
+    * only other way to build a response here is [[CobaltRoutes.respond]] — and `AdminAccessSuite` asserts that every
+    * path the router serves has an entry in [[AdminRoutes.Access]] stating which of the two it uses.
+    *
+    * The refusal is produced before `answer` is evaluated: it is a by-name parameter, so an unauthenticated request
+    * never reaches a Kafka admin client, a database or the DLQ consumer. That matters beyond authorisation — it is what
+    * stops an unauthenticated caller costing the service a broker round trip per request.
+    */
+  private def guard(request: cask.Request, scope: AdminScope)(answer: => AdminReply): cask.Response[String] =
+    CobaltRoutes.respond(auth.authorise(request.headers, scope).fold(identity, _ => answer))
 
   @cask.get("/metrics")
   def metrics(): cask.Response[String] = CobaltRoutes.respond(handlers.metrics())
@@ -51,20 +66,26 @@ final class CobaltRoutes(handlers: AdminHandlers) extends cask.Routes:
   def ready(): cask.Response[String] = CobaltRoutes.respond(handlers.ready())
 
   @cask.get("/admin/dlq")
-  def dlq(): cask.Response[String] = CobaltRoutes.respond(handlers.dlq())
+  def dlq(request: cask.Request): cask.Response[String] =
+    guard(request, AdminScope.Read)(handlers.dlq())
 
   @cask.get("/admin/dlq/records")
-  def dlqRecords(limit: Int = ReplayRequest.UnspecifiedLimit, reason: String = ""): cask.Response[String] =
-    CobaltRoutes.respond(handlers.dlqRecords(limit, reason))
+  def dlqRecords(
+    request: cask.Request,
+    limit: Int = ReplayRequest.UnspecifiedLimit,
+    reason: String = ""
+  ): cask.Response[String] =
+    guard(request, AdminScope.Read)(handlers.dlqRecords(limit, reason))
 
   @cask.post("/admin/dlq:replay")
   def dlqReplay(
+    request: cask.Request,
     limit: Int = ReplayRequest.UnspecifiedLimit,
     reason: String = "",
     refs: String = "",
     dryRun: Boolean = true
   ): cask.Response[String] =
-    CobaltRoutes.respond(handlers.dlqReplay(limit, reason, refs, dryRun))
+    guard(request, AdminScope.Write)(handlers.dlqReplay(limit, reason, refs, dryRun))
 
   // --- the consumer lifecycle ------------------------------------------------------------------------------------
   //
@@ -72,31 +93,37 @@ final class CobaltRoutes(handlers: AdminHandlers) extends cask.Routes:
   // segment literally, so `/admin/consumer:pause` is one route and cannot collide with a sub-resource.
 
   @cask.get("/admin/consumer")
-  def consumer(): cask.Response[String] = CobaltRoutes.respond(handlers.consumerStatus())
+  def consumer(request: cask.Request): cask.Response[String] =
+    guard(request, AdminScope.Read)(handlers.consumerStatus())
 
   @cask.post("/admin/consumer:pause")
-  def consumerPause(): cask.Response[String] = CobaltRoutes.respond(handlers.consumerPause())
+  def consumerPause(request: cask.Request): cask.Response[String] =
+    guard(request, AdminScope.Write)(handlers.consumerPause())
 
   @cask.post("/admin/consumer:resume")
-  def consumerResume(): cask.Response[String] = CobaltRoutes.respond(handlers.consumerResume())
+  def consumerResume(request: cask.Request): cask.Response[String] =
+    guard(request, AdminScope.Write)(handlers.consumerResume())
 
   @cask.post("/admin/consumer:stop")
-  def consumerStop(): cask.Response[String] = CobaltRoutes.respond(handlers.consumerStop())
+  def consumerStop(request: cask.Request): cask.Response[String] =
+    guard(request, AdminScope.Write)(handlers.consumerStop())
 
   @cask.post("/admin/consumer:start")
-  def consumerStart(): cask.Response[String] = CobaltRoutes.respond(handlers.consumerStart())
+  def consumerStart(request: cask.Request): cask.Response[String] =
+    guard(request, AdminScope.Write)(handlers.consumerStart())
 
   @cask.post("/admin/consumer:restart")
   def consumerRestart(
+    request: cask.Request,
     target: String = SeekTarget.Committed.name,
     offsets: String = "",
     dryRun: Boolean = true
   ): cask.Response[String] =
-    CobaltRoutes.respond(handlers.consumerRestart(target, offsets, dryRun))
+    guard(request, AdminScope.Write)(handlers.consumerRestart(target, offsets, dryRun))
 
   @cask.post("/admin/consumer:clearCheckpoints")
-  def consumerClearCheckpoints(): cask.Response[String] =
-    CobaltRoutes.respond(handlers.consumerClearCheckpoints())
+  def consumerClearCheckpoints(request: cask.Request): cask.Response[String] =
+    guard(request, AdminScope.Write)(handlers.consumerClearCheckpoints())
 
   // --- documentation ---------------------------------------------------------------------------------------------
 
@@ -149,7 +176,11 @@ object CobaltRoutes:
     discovered.fold(base)(version => s"$base/$version")
 
   def respond(reply: AdminReply): cask.Response[String] =
-    cask.Response(reply.body, statusCode = reply.status, headers = Seq("content-type" -> reply.contentType))
+    cask.Response(
+      reply.body,
+      statusCode = reply.status,
+      headers = Seq("content-type" -> reply.contentType) ++ reply.headers
+    )
 
 /** cobalt's HTTP listener: Cask's routing, Undertow's lifecycle, owned explicitly.
   *

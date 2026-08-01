@@ -65,7 +65,7 @@ final class CobaltApiDocsSuite extends FunSuite:
         ),
         SupervisorAdmin(Fixtures.idleSupervisor, 5.seconds)
       )
-      CobaltRoutes(handlers).caskMetadata.value.map(_.endpoint.path).toSet
+      CobaltRoutes(handlers, Tokens.admin()).caskMetadata.value.map(_.endpoint.path).toSet
     finally telemetry.close()
 
   // --- the two directions -----------------------------------------------------------------------------------

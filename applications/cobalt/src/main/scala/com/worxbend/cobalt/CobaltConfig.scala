@@ -246,7 +246,8 @@ final case class CobaltConfig(
   restart: RestartConfig,
   lag: LagConfig,
   maintenance: MaintenanceConfig,
-  replay: ReplayConfig
+  replay: ReplayConfig,
+  auth: AuthConfig
 )
 
 object CobaltConfig:
@@ -254,8 +255,27 @@ object CobaltConfig:
   /** The config namespace. */
   val Namespace: String = "cobalt"
 
+  /** Written out rather than derived for the same reason wolfram's is: [[AuthConfig]] is the one section with optional
+    * fields, and a derived reader would turn a missing `secret` into a parse error instead of the boot failure
+    * [[JwtVerifier.from]] produces with a sentence naming the field.
+    */
+  given authReader: ConfigReader[AuthConfig] =
+    ConfigReader.forProduct9(
+      "enabled",
+      "algorithm",
+      "secret",
+      "public-key",
+      "issuer",
+      "audience",
+      "read-scope",
+      "write-scope",
+      "leeway"
+    )(AuthConfig.apply)
+
   given reader: ConfigReader[CobaltConfig] =
-    ConfigReader.forProduct6("server", "consumer", "restart", "lag", "maintenance", "replay")(CobaltConfig.apply)
+    ConfigReader.forProduct7("server", "consumer", "restart", "lag", "maintenance", "replay", "auth")(
+      CobaltConfig.apply
+    )
 
   /** Loads from the ambient config, returning failures rather than throwing.
     *

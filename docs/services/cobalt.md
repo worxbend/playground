@@ -41,14 +41,19 @@ serving nothing but `/metrics` and the two health probes. Source: `applications/
 
 ### HTTP (Cask on Undertow)
 
-| Route | Response |
-| --- | --- |
-| `GET /metrics` | Prometheus text exposition, `text/plain; version=0.0.4; charset=utf-8` |
-| `GET /health/live` | Always `200 {"status":"UP"}` |
-| `GET /health/ready` | `200`/`503` with `{"status":…,"dependencies":{"kafka":{"status","detail"},"postgresql":{…}}}` |
-| `GET /admin/dlq` | DLQ depth per partition, plus the replay limits in force |
-| `GET /admin/dlq/records?limit&reason` | Bounded, newest-first listing of dead letters |
-| `POST /admin/dlq:replay?limit&reason&refs&dryRun` | Plans a replay; publishes only with `dryRun=false` |
+| Route | Scope | Response |
+| --- | --- | --- |
+| `GET /metrics` | — | Prometheus text exposition, `text/plain; version=0.0.4; charset=utf-8` |
+| `GET /health/live` | — | Always `200 {"status":"UP"}` |
+| `GET /health/ready` | — | `200`/`503` with `{"status":…,"dependencies":{"kafka":{"status","detail"},"postgresql":{…}}}` |
+| `GET /openapi.json`, `/openapi.yaml`, `/docs` | — | The generated document and Swagger UI |
+| `GET /admin/dlq` | `admin:read` | DLQ depth per partition, plus the replay limits in force |
+| `GET /admin/dlq/records?limit&reason` | `admin:read` | Bounded, newest-first listing of dead letters |
+| `GET /admin/consumer` | `admin:read` | The consumer's state, plus committed/stored/end offsets per partition |
+| `POST /admin/dlq:replay?limit&reason&refs&dryRun` | `admin:write` | Plans a replay; publishes only with `dryRun=false` |
+| `POST /admin/consumer:pause`, `:resume`, `:stop`, `:start` | `admin:write` | Lifecycle transitions |
+| `POST /admin/consumer:restart?target&offsets&dryRun` | `admin:write` | Moves the group's committed offsets; plans by default |
+| `POST /admin/consumer:clearCheckpoints` | `admin:write` | Forgets the externalised offsets; Kafka's own are untouched |
 
 Cask does the routing (`cask.main.Main.defaultHandler` is its dispatch trie); Undertow is built explicitly in
 `AdminServer` rather than by `cask.main.Main.main`, for two reasons. Cask's own `main` does not expose the bound
@@ -66,6 +71,63 @@ path through the consumer, and the database never hears from this endpoint.
 
 **cobalt publishes no `http.server.requests` family.** Its only HTTP traffic is scrapes and probes, which ADR §7.1
 excludes from that meter anyway; there is no metrics filter in front of Cask.
+
+### Authentication
+
+**Every `/admin` route requires a JWT bearer token. This was not true until recently, and the gap was the worst
+one in this repository:** anyone who could reach the port could `POST /admin/consumer:restart?target=latest&
+dryRun=false` and permanently skip every unconsumed event, halt ingestion, re-publish dead letters onto the
+production topic, destroy the externalised checkpoints, or read every dead letter's payload — with no credential
+of any kind. `deploy/docker-compose.yml` publishes this listener on host port 8082.
+
+Verification is `com.worxbend.cobalt.JwtVerifier`: signature against a **pinned** algorithm (the token's own `alg`
+header is compared, never adopted), a **mandatory** `exp`, `nbf`, and `iss`/`aud` when the deployment configures
+them. A `crit` header is refused, per RFC 7515 §4.1.11. A missing or unverifiable credential is `401` with
+`WWW-Authenticate: Bearer`; a verified token without the scope is `403`, because re-presenting the same token
+cannot help and a client that retries on a 401 loops forever.
+
+Two scopes, because looking and acting are different risks. `admin:read` covers the `GET` routes — which disclose
+event payloads and the group's offsets. `admin:write` covers everything that changes the pipeline. **A token
+carrying `admin:write` also satisfies a read route:** the mutating routes already return the state the read routes
+return, so refusing the `GET` while permitting the `POST` would be a distinction with no security content.
+
+`/metrics` and `/health/live|ready` stay **open**, and must: Prometheus scrapes one, the compose healthcheck and
+the orchestrator probe the others, and none of them can hold a bearer token. `/openapi.json`, `/openapi.yaml`,
+`/docs` and the Swagger assets are open too, deliberately — the document is a static description of this build's
+routes, identical in every deployment and already readable in this repository; it carries no data and no
+configuration. Closing it would also break the Swagger page outright, because the UI fetches `/openapi.json` from
+the browser with no `Authorization` header. That trade is "remove the operator's tool during an incident in order
+to hide paths an attacker can read on GitHub".
+
+`AdminRoutes.Access` is the single declaration of which route needs what. `AdminAccessSuite` compares it against
+Cask's own dispatch table in both directions, so a route added without an access decision fails a unit test;
+`AdminAuthIT` drives every entry over a real socket and asserts the served status matches the declaration. The
+failure this pair exists to catch is silent otherwise: an unguarded route answers `200` to anybody, and nothing
+compiles differently, no test fails and no log line appears.
+
+Minting an operator token, for a deployment using the default `HS256`:
+
+```bash
+# header.payload, then the HMAC — no dependency beyond openssl and base64
+b64() { openssl base64 -A | tr '+/' '-_' | tr -d '='; }
+H=$(printf '%s' '{"alg":"HS256","typ":"JWT"}' | b64)
+P=$(printf '%s' "{\"sub\":\"$USER\",\"scope\":\"admin:read admin:write\",\"exp\":$(( $(date +%s) + 3600 ))}" | b64)
+S=$(printf '%s' "$H.$P" | openssl dgst -sha256 -hmac "$ADMIN_AUTH_SECRET" -binary | b64)
+export COBALT_TOKEN="$H.$P.$S"
+
+curl -s -H "Authorization: Bearer $COBALT_TOKEN" localhost:8080/admin/dlq | jq
+```
+
+`exp` is mandatory and one hour is a sensible ceiling: nothing in this system can revoke a credential, so a token
+without an expiry is valid until somebody rotates `ADMIN_AUTH_SECRET`, which nobody does on a schedule.
+
+> **Known gap — the verifier is duplicated.** wolfram has a verifier with the same contract, built on jwt-scala.
+> That library is on wolfram's classpath and not on cobalt's, and `build.sbt` was outside the change that added
+> this, so cobalt's is a second implementation on the JDK's own JCA primitives (`javax.crypto.Mac`,
+> `java.security.Signature`) rather than a shared one. Two verifiers that drift apart is a real risk. The fix is a
+> `modules/security` library holding one `JwtVerifier`, with `cobalt` and `wolfram` both depending on it;
+> `CobaltAuthSuite` is written as the conformance suite that survivor has to pass. cobalt's is deliberately
+> *stricter* in two places (`exp` mandatory, `crit` refused), and those are the properties to keep.
 
 ### Kafka
 
@@ -352,7 +414,16 @@ failure in this system, because it starts cleanly, reports itself live, and rece
 | `CONSUMER_DRAIN_TIMEOUT` | `cobalt.consumer.drain-timeout` | `30 seconds` | Consumer stop timeout; also the DLQ producer's close timeout. |
 | `LAG_REFRESH_INTERVAL` | `cobalt.lag.refresh-interval` | `20 seconds` | Two admin round trips per interval per replica. Lag is a trend; sampling faster than Prometheus scrapes buys only broker load. |
 | `LAG_REQUEST_TIMEOUT` | `cobalt.lag.request-timeout` | `5 seconds` | Bounds each admin call, and doubles as the broker-reachability probe timeout. |
-| `REPLAY_ENABLED` | `cobalt.replay.enabled` | `true` | Whether a replay may be **committed**. Dry runs and the read endpoints stay available either way. |
+| `ADMIN_AUTH_ENABLED` | `cobalt.auth.enabled` | `true` | On by default. A security layer whose default is "off" ships off. Turning it off opens every `/admin` route to anyone who can reach the port, and says so at boot in capitals. |
+| `ADMIN_AUTH_ALGORITHM` | `cobalt.auth.algorithm` | `HS256` | `HS256/384/512` or `RS256/384/512`. **Pinned** — the token's own `alg` is compared against this, never adopted. |
+| `ADMIN_AUTH_SECRET` | `cobalt.auth.secret` | *(none)* | **Mandatory with `HS*`.** At least 32 characters, or the boot fails. Deliberately *not* wolfram's `AUTH_SECRET`: both services read one `.env`, so one variable would mean one key and a leaked ingestion secret would mint admin tokens. |
+| `ADMIN_AUTH_PUBLIC_KEY` | `cobalt.auth.public-key` | *(none)* | **Mandatory with `RS*`.** X.509 SPKI PEM; armour and `\n` escapes both accepted. |
+| `ADMIN_AUTH_ISSUER` | `cobalt.auth.issuer` | *(unset)* | When set, `iss` must equal it. Unset is right for one issuer and wrong the moment a second can reach this port. |
+| `ADMIN_AUTH_AUDIENCE` | `cobalt.auth.audience` | *(unset)* | When set, `aud` must contain it. |
+| `ADMIN_AUTH_READ_SCOPE` | `cobalt.auth.read-scope` | `admin:read` | Empty drops the scope check on reads and keeps signature verification. |
+| `ADMIN_AUTH_WRITE_SCOPE` | `cobalt.auth.write-scope` | `admin:write` | Also satisfies a read route. |
+| `ADMIN_AUTH_LEEWAY` | `cobalt.auth.leeway` | `30 seconds` | Skew tolerance on `exp`/`nbf`. This is the window in which a withdrawn token still works, and there is no revocation list. |
+| `REPLAY_ENABLED` | `cobalt.replay.enabled` | `true` | Whether a replay may be **committed**. Dry runs and the read endpoints stay available either way. **Not a substitute for a scope** — it bounds what an already-authorised caller may do. |
 | `REPLAY_MAX_RECORDS` | `cobalt.replay.max-records` | `200` | Ceiling on one listing or one replay. A request above it is refused, never clamped. Bounds the fetch as well as the produce. |
 | `REPLAY_MAX_ATTEMPTS` | `cobalt.replay.max-attempts` | `3` | Generations of replay any one record may survive. The bound on the poison loop. |
 | `REPLAY_POLL_TIMEOUT` | `cobalt.replay.poll-timeout` | `5 seconds` | How long one read of the DLQ may take before it answers with what it has. |
@@ -491,8 +562,12 @@ DATABASE_URL=jdbc:postgresql://localhost:5432/observatory \
 DATABASE_USER=observatory \
 DATABASE_PASSWORD=... \
 KAFKA_BOOTSTRAP_SERVERS=localhost:9092 \
+ADMIN_AUTH_SECRET=$(openssl rand -base64 48) \
 sbt cobalt/run                  # admin endpoints on :8080; override with HTTP_PORT
 ```
+
+`ADMIN_AUTH_SECRET` is not optional: the boot fails without it, naming the field. `ADMIN_AUTH_ENABLED=false` is the
+way to run a local instance with the admin API open, and it is spelled out for that reason.
 
 cobalt applies the migrations itself, so this is also how the schema gets created for a local ferrite.
 
@@ -500,11 +575,13 @@ cobalt applies the migrations itself, so this is also how the schema gets create
 curl -s localhost:8080/health/ready | jq
 curl -s localhost:8080/metrics | grep consume_
 
-# the DLQ, without a console consumer
-curl -s localhost:8080/admin/dlq | jq
-curl -s 'localhost:8080/admin/dlq/records?limit=10' | jq '.records[] | {ref, reason, event}'
-curl -sX POST 'localhost:8080/admin/dlq:replay?limit=10' | jq        # dry run: the default
-curl -sX POST 'localhost:8080/admin/dlq:replay?limit=10&dryRun=false' | jq
+# the DLQ, without a console consumer. $COBALT_TOKEN is minted under "Authentication" above;
+# without it every /admin route answers 401.
+A=(-H "Authorization: Bearer $COBALT_TOKEN")
+curl -s "${A[@]}" localhost:8080/admin/dlq | jq
+curl -s "${A[@]}" 'localhost:8080/admin/dlq/records?limit=10' | jq '.records[] | {ref, reason, event}'
+curl -sX POST "${A[@]}" 'localhost:8080/admin/dlq:replay?limit=10' | jq        # dry run: the default
+curl -sX POST "${A[@]}" 'localhost:8080/admin/dlq:replay?limit=10&dryRun=false' | jq
 
 # still there, and still the right tool for anything deeper than max-records
 docker compose -f deploy/docker-compose.yml exec kafka \
@@ -517,7 +594,9 @@ admin surface is published on host port **8082**.
 
 Tests: `sbt cobalt/test` needs no Docker — the broker is behind `DeadLetterPublisher`, commit ordering is tested
 with a substituted committer flow, and the lag arithmetic is a pure function over two maps.
-`sbt "cobalt/IT/testFull"` runs the Testcontainers suites (`CobaltIngestIT`, `AdminServerIT`, `DlqReplayIT`).
+`sbt "cobalt/IT/testFull"` runs the Testcontainers suites (`CobaltIngestIT`, `AdminServerIT`, `AdminAuthIT`,
+`DlqReplayIT`). `AdminAuthIT` needs no container at all — it binds an ephemeral port and walks
+`AdminRoutes.Access` with no credential, a forged one, a read token and a write token.
 `DlqReplayIT` is the one that matters for the DLQ surface: a replay tool that has never replayed anything is not a
 tool, so it dead-letters a record for real, replays it into a row, and separately proves that a record which fails
 again comes back one generation on and is then refused.

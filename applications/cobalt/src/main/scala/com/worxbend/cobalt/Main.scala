@@ -179,11 +179,26 @@ object CobaltApp extends StrictLogging:
       dlqTopic = config.consumer.dlqTopic
     )
 
+    // Boot fails here, not on the first authenticated request. Every way a verifier can be misconfigured — an unknown
+    // algorithm, an HMAC algorithm with no secret, an RSA algorithm with an unparseable key — is a sentence naming the
+    // field. There is no path through this that starts the listener with the /admin routes open.
+    val verifier = JwtVerifier
+      .from(config.auth)
+      .fold(problem => throw IllegalStateException(s"cobalt auth configuration is unusable: $problem"), identity)
+    val auth = AdminAuth(verifier, config.auth)
     val routes = CobaltRoutes(
-      AdminHandlers(telemetry, health, deadLetterAdmin, SupervisorAdmin(supervisor, ConsumerSupervisor.DrainTimeout))
+      AdminHandlers(telemetry, health, deadLetterAdmin, SupervisorAdmin(supervisor, ConsumerSupervisor.DrainTimeout)),
+      auth
     )
     val adminServer = AdminServer(routes, config.server.host, config.server.port)
     adminServer.start()
+    logger.info(
+      if config.auth.enabled then
+        s"admin authentication: ${config.auth.algorithm}, scopes " +
+          s"${config.auth.scopeFor(AdminScope.Read).getOrElse("<any>")}/" +
+          s"${config.auth.scopeFor(AdminScope.Write).getOrElse("<any>")}"
+      else "admin authentication: DISABLED — /admin is open to anyone who can reach this port"
+    )
 
     val shutdown = CoordinatedShutdown(system)
     shutdown.addTask(CoordinatedShutdown.PhaseServiceUnbind, "stop-admin-server"): () =>
