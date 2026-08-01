@@ -178,3 +178,77 @@ final class SupervisorSuite extends FunSuite:
       Fixtures.pendingWrite("b", partition = 0, offset = 2L)
     )
     assertEquals(BatchProcessor.Checkpointing("g", None).commit(records).positions.map(_.records), Vector(2L))
+
+  // --- the supervisor's own metrics -------------------------------------------------------------------------------
+
+  private def status(positions: List[PartitionPosition], consuming: Boolean = true): ConsumerStatus =
+    ConsumerStatus(
+      state = if consuming then RunState.Running else RunState.Paused,
+      since = java.time.Instant.EPOCH,
+      generation = 1,
+      groupId = "g",
+      topic = "t",
+      consuming = consuming,
+      lastError = None,
+      restarts = 0,
+      positions = positions,
+      totalLag = None
+    )
+
+  test("checkpoint divergence is the largest gap between Kafka and the external store"):
+    // Zero is the only healthy value: the two are written in one transaction, so a persistent gap means one of the
+    // commits is failing — and which side is ahead says whether events replay or their durability is unprovable.
+    val positions = List(
+      PartitionPosition("t", 0, committed = Some(100L), stored = Some(100L), endOffset = Some(100L), lag = Some(0L)),
+      PartitionPosition("t", 1, committed = Some(50L), stored = Some(63L), endOffset = Some(63L), lag = Some(13L)),
+      PartitionPosition("t", 2, committed = Some(90L), stored = Some(88L), endOffset = Some(90L), lag = Some(0L))
+    )
+    assertEquals(SupervisorMetrics.divergenceOf(status(positions)), 13L)
+
+  test("a partition with either side unknown contributes nothing, not its whole offset"):
+    // Every group has committed-but-not-yet-checkpointed partitions for the first seconds after a deploy. Counting
+    // those would report a divergence the size of the log and page somebody on every rollout.
+    val positions = List(
+      PartitionPosition("t", 0, committed = Some(9_000_000L), stored = None, endOffset = Some(9_000_000L), lag = None),
+      PartitionPosition("t", 1, committed = None, stored = Some(42L), endOffset = None, lag = None)
+    )
+    assertEquals(SupervisorMetrics.divergenceOf(status(positions)), 0L)
+
+  test("divergence is absolute — either side being ahead is a defect"):
+    val ahead = List(PartitionPosition("t", 0, Some(10L), Some(4L), Some(10L), Some(0L)))
+    val behind = List(PartitionPosition("t", 0, Some(4L), Some(10L), Some(10L), Some(6L)))
+    assertEquals(SupervisorMetrics.divergenceOf(status(ahead)), 6L)
+    assertEquals(SupervisorMetrics.divergenceOf(status(behind)), 6L)
+
+  test("the running gauge is what separates a deliberate pause from an outage"):
+    // Lag rising with this at 1 is a consumer that cannot keep up; at 0 it is somebody's maintenance window.
+    // Alerting on lag alone cannot tell them apart, which is how a planned pause pages the on-call.
+    val registry = io.micrometer.core.instrument.simple.SimpleMeterRegistry()
+    val metrics = SupervisorMetrics(registry)
+    def gauge(name: String): Double = Option(registry.find(name).gauge()).map(_.value()).getOrElse(Double.NaN)
+
+    metrics.observe(status(Nil, consuming = true))
+    assertEquals(gauge(com.worxbend.observability.Meters.ConsumeRunning), 1.0)
+    metrics.observe(status(Nil, consuming = false))
+    assertEquals(gauge(com.worxbend.observability.Meters.ConsumeRunning), 0.0)
+
+  test("lifecycle commands record whether they changed anything"):
+    // "pause" on an already-paused consumer is a success that changed nothing, and an operator who issued it twice
+    // needs the counter to say so. `skipped` is the same convention the maintenance jobs use for a lost lock race.
+    val registry = io.micrometer.core.instrument.simple.SimpleMeterRegistry()
+    val metrics = SupervisorMetrics(registry)
+    def counted(command: String, outcome: String): Double =
+      Option(
+        registry
+          .find(com.worxbend.observability.Meters.ConsumeLifecycle)
+          .tag(com.worxbend.observability.Meters.TagKeys.Command, command)
+          .tag(com.worxbend.observability.Meters.TagKeys.Outcome, outcome)
+          .counter()
+      ).map(_.count()).getOrElse(0.0)
+
+    metrics.command(com.worxbend.observability.Meters.Commands.Pause, changed = true)
+    metrics.command(com.worxbend.observability.Meters.Commands.Pause, changed = false)
+    metrics.commandFailed(com.worxbend.observability.Meters.Commands.Restart)
+    assertEquals(counted(com.worxbend.observability.Meters.Commands.Pause, "success"), 1.0)
+    assertEquals(counted(com.worxbend.observability.Meters.Commands.Pause, "skipped"), 1.0)
+    assertEquals(counted(com.worxbend.observability.Meters.Commands.Restart, "failure"), 1.0)

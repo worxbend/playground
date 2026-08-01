@@ -55,7 +55,7 @@ final class AdminAuthIT extends munit.FunSuite:
         telemetry,
         HealthChecks.create(),
         deadLetters,
-        SupervisorAdmin(Fixtures.idleSupervisor, 5.seconds)
+        SupervisorAdmin(Fixtures.idleSupervisor, 5.seconds, SupervisorMetrics(telemetry.registry))
       )
       val server = AdminServer(CobaltRoutes(handlers, Tokens.admin()), "127.0.0.1", 0)
       server.start()
@@ -149,7 +149,7 @@ final class AdminAuthIT extends munit.FunSuite:
         Fixtures.Topic,
         "dlq"
       ),
-      SupervisorAdmin(Fixtures.idleSupervisor, 5.seconds)
+      SupervisorAdmin(Fixtures.idleSupervisor, 5.seconds, SupervisorMetrics(telemetry.registry))
     )
     val anonymous = AdminServer(CobaltRoutes(handlers, Tokens.admin(off)), "127.0.0.1", 0)
     anonymous.start()

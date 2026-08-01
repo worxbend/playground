@@ -81,11 +81,15 @@ final case class DecodedRecord(
   * consumer hold one live span per in-flight record — up to `batchSize` of them — with no way to end them if the stream
   * is torn down mid-batch.
   */
-final class RecordDecoder(source: Source, tracer: Tracer):
+final class RecordDecoder(source: Source, tracer: Tracer, metrics: Option[ConsumerMetrics] = None):
 
   def decode(message: CommittableMessage[String, Array[Byte]]): DecodedRecord =
     val record = message.record
+    val started = System.nanoTime()
     val outcome = KafkaTrace.withConsumerSpan(record, tracer)(_ => LogContext.withCurrentSpan(decodeRecord(record)))
+    // Timed whether it decoded or dead-lettered: a poison record that takes a millisecond to *fail* is still a
+    // millisecond of the stream's thread, and excluding failures would hide exactly the case worth seeing.
+    metrics.foreach(_.decoded(System.nanoTime() - started))
     DecodedRecord(record, message.committableOffset, outcome)
 
   /** The pure part: no span, no offset, no Pekko. Kept separate so its totality is testable on its own. */

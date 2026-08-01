@@ -46,7 +46,8 @@ final class Probes(
   groupId: String,
   dataSource: DataSource,
   health: HealthChecks,
-  validationTimeout: FiniteDuration
+  validationTimeout: FiniteDuration,
+  supervisorState: Option[() => Unit] = None
 ) extends StrictLogging:
 
   /** One round: broker reachability, lag, then database reachability. Public so a test — and the composition root's
@@ -55,6 +56,19 @@ final class Probes(
   def probe(): Unit =
     probeBroker()
     probeDatabase()
+    // The supervisor's gauges ride this tick rather than owning a scheduler. They are read from the same admin
+    // round trips lag already makes, and a second timer would double the load on the broker to answer a question
+    // that changes at the same rate.
+    supervisorState.foreach(observe => quietly("reading the supervisor state")(observe()))
+
+  /** Runs a best-effort reading, logging rather than propagating. A gauge that could not be read must not take the
+    * probe's other two readings — broker and database reachability — down with it.
+    */
+  private def quietly(what: String)(act: => Unit): Unit =
+    try act
+    catch
+      case scala.util.control.NonFatal(error) =>
+        logger.warn(s"$what failed: ${Option(error.getMessage).getOrElse(error.getClass.getName)}")
 
   private def probeBroker(): Unit =
     try

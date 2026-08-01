@@ -48,7 +48,7 @@ final class AdminRoutesSuite extends munit.FunSuite:
       ),
       // A supervisor over a handle that never starts: this suite is about *paths*, and the lifecycle decisions have
       // their own suite. Giving it a real consumer would make three constant assertions need a broker.
-      SupervisorAdmin(Fixtures.idleSupervisor, 5.seconds)
+      SupervisorAdmin(Fixtures.idleSupervisor, 5.seconds, SupervisorMetrics(telemetry.registry))
     )
 
   test("the paths match the shared vocabulary, so one scrape config covers all three services"):

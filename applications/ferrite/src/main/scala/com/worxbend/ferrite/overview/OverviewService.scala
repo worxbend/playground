@@ -112,10 +112,40 @@ final case class Overview(
 final class OverviewService @Inject() (
   rollup: OverviewRepository,
   events: EventRepository,
-  clock: Clock
+  clock: Clock,
+  telemetry: com.worxbend.observability.Telemetry
 )(using ec: SearchExecutionContext):
 
   import OverviewService.*
+
+  /** How stale the overview's numbers are, in seconds.
+    *
+    * **The reader's-eye view of a maintenance job that has stopped.** `maintenance.job.duration` says whether the
+    * rollup refresh is still running; this says what it costs when it is not — because the overview keeps serving
+    * numbers, they are simply old, and nothing anywhere raises an error. A page that quietly reports yesterday is the
+    * failure mode a dashboard is least able to detect about itself.
+    *
+    * Fed from the freshness reading the page already computes, so it costs no extra query. `-1` when the rollup is
+    * empty: distinguishable from "fresh" (0) and from any real age, which a 0 would not be.
+    */
+  private val staleness = java.util.concurrent.atomic.AtomicLong(-1L)
+
+  private val stalenessGauge =
+    io.micrometer.core.instrument.Gauge
+      .builder(
+        com.worxbend.observability.Meters.RollupStaleness,
+        staleness,
+        (value: java.util.concurrent.atomic.AtomicLong) => value.get().toDouble
+      )
+      .register(telemetry.registry)
+
+  private def recordStaleness(freshness: Option[java.time.OffsetDateTime]): Unit =
+    val _ = stalenessGauge
+    staleness.set(
+      freshness.fold(-1L)(at =>
+        math.max(0L, java.time.Duration.between(at, java.time.OffsetDateTime.now(clock)).getSeconds)
+      )
+    )
 
   /** The whole page.
     *
@@ -145,21 +175,23 @@ final class OverviewService @Inject() (
           totals <- totalsF
           freshness <- freshnessF
           recent <- alertsF
-        yield Right(
-          Overview(
-            range = range,
-            // The window reported to the UI is the *aligned* one the queries actually ran, not the raw `now - span`.
-            // A chart labelled with a start it did not use is a chart whose first bar is a lie about its own bounds.
-            window = TimeWindow(request.from, until),
-            totals = totals,
-            volume = volume,
-            types = types,
-            sources = sources,
-            severities = severities,
-            alerts = recent,
-            freshness = freshness
+        yield
+          recordStaleness(freshness)
+          Right(
+            Overview(
+              range = range,
+              // The window reported to the UI is the *aligned* one the queries actually ran, not the raw `now - span`.
+              // A chart labelled with a start it did not use is a chart whose first bar is a lie about its own bounds.
+              window = TimeWindow(request.from, until),
+              totals = totals,
+              volume = volume,
+              types = types,
+              sources = sources,
+              severities = severities,
+              alerts = recent,
+              freshness = freshness
+            )
           )
-        )
 
   /** The newest few events at error severity or worse, inside the window.
     *

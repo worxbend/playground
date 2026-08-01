@@ -24,11 +24,14 @@ package com.worxbend.ferrite.tail
 import com.worxbend.ferrite.search.SearchExecutionContext
 import com.worxbend.kernel.Rfc3339
 import com.worxbend.kernel.search.Filter
+import com.worxbend.observability.Meters
+import com.worxbend.observability.Telemetry
 import com.worxbend.persistence.repository.EventRepository
 import com.worxbend.persistence.repository.EventSummary
 import com.worxbend.persistence.repository.SearchRequest
 import com.worxbend.persistence.search.Cursor
 import com.worxbend.persistence.search.SortDirection
+import io.micrometer.core.instrument.Gauge
 import jakarta.inject.Inject
 import jakarta.inject.Singleton
 import java.time.Clock
@@ -103,11 +106,37 @@ final case class TailBatch(cursor: TailCursor, rows: Vector[EventSummary])
   * tail, surfaced in the UI, and not a bug that would be fixed by trying harder here.
   */
 @Singleton
-final class TailService @Inject() (repository: EventRepository, clock: Clock)(using ec: SearchExecutionContext):
+final class TailService @Inject() (repository: EventRepository, clock: Clock, telemetry: Telemetry)(using
+  ec: SearchExecutionContext
+):
 
   import TailService.*
 
   private val open: AtomicInteger = AtomicInteger(0)
+
+  /** Tails currently connected, as a gauge.
+    *
+    * **This reverses an earlier decision, which said the tail needed no meter of its own because `MetricsFilter` times
+    * it like any other request.** That was true about *latency* and wrong about *occupancy*: an SSE connection is a
+    * long-lived poller, not a request, so `http.server.requests` records one observation when it opens and nothing at
+    * all while it holds a share of the read pool for an hour. This number is the direct read on how much of that pool
+    * the tail is holding, and it is the one to look at when search gets slow for reasons the search meters cannot
+    * explain.
+    *
+    * A gauge over the same `AtomicInteger` the cap already reads, so there is one counter and no way for the meter and
+    * the admission check to disagree.
+    */
+  private val connections =
+    Gauge
+      .builder(Meters.TailConnections, open, (value: AtomicInteger) => value.get().toDouble)
+      .register(telemetry.registry)
+
+  private val delivered = telemetry.registry.counter(Meters.TailEvents)
+
+  /** Rows pushed to a live-tail client. The tail's own throughput, independent of ingest — a tail delivering nothing
+    * while ingest is healthy is a cursor that has stopped advancing.
+    */
+  def deliver(rows: Int): Unit = if rows > 0 then delivered.increment(rows.toDouble)
 
   /** Whether another tail may be admitted.
     *
@@ -135,10 +164,10 @@ final class TailService @Inject() (repository: EventRepository, clock: Clock)(us
   def closed(): Unit =
     val _ = open.decrementAndGet()
 
-  /** Tails currently connected. Exposed for tests, not as a meter — see `TailController` for why the stream is timed by
-    * `MetricsFilter` like any other request and gets no meter family of its own.
-    */
-  def openTails: Int = open.get()
+  /** Tails currently connected. Exposed for tests; the meter is [[connections]] above. */
+  def openTails: Int =
+    val _ = connections
+    open.get()
 
   /** Where a tail with no client-supplied position should start: after the newest row matching the filter *now*.
     *
@@ -172,6 +201,9 @@ final class TailService @Inject() (repository: EventRepository, clock: Clock)(us
       case Left(_)      => Future.successful(TailBatch(cursor, Vector.empty))
       case Right(built) =>
         repository.search(built).map { page =>
+          // Counted here, where the rows are produced, rather than where they are framed: one site, and a future
+          // caller of `poll` cannot forget it.
+          deliver(page.rows.size)
           TailBatch(page.rows.lastOption.fold(cursor)(cursorOf), page.rows)
         }
 

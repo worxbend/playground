@@ -91,6 +91,34 @@ final class IngestMetrics(registry: MeterRegistry):
           .increment()
       case _ => ()
 
+  /** The shape of what a producer actually sent: body size, and how far its clock is from ours.
+    *
+    * Recorded on the **accepted** path only. A rejected request's size is already visible as
+    * `ingest.events.rejected{reason=too-large}`, and mixing refused bodies into the size distribution would make the
+    * p99 a statement about attackers rather than about producers.
+    *
+    * The skew's sign is a tag rather than a negative value: Micrometer's summaries reject negatives, and folding the
+    * sign away would make a fleet uniformly ten seconds fast look identical to one where half the devices are fast and
+    * half are slow — which need different responses.
+    */
+  def shape(mode: ContentMode, bodyBytes: Int, occurredAt: java.time.OffsetDateTime, now: java.time.Instant): Unit =
+    registry
+      .summary(Meters.IngestPayloadBytes, Tags.of(Meters.TagKeys.Mode, IngestMetrics.modeTag(mode)))
+      .record(bodyBytes.toDouble)
+    val skewSeconds = java.time.Duration.between(now, occurredAt.toInstant).getSeconds
+    val direction = if skewSeconds >= 0 then Meters.Skews.Future else Meters.Skews.Past
+    registry
+      .summary(Meters.IngestTimeSkew, Tags.of(Meters.TagKeys.Direction, direction))
+      .record(math.abs(skewSeconds).toDouble)
+
+  /** How many elements one `events:batchCreate` document carried.
+    *
+    * Distinct from the byte size because a batch of one large event and a batch of two hundred small ones are the same
+    * bytes and completely different work — the second is two hundred sequential produces.
+    */
+  def batch(elements: Int): Unit =
+    registry.summary(Meters.IngestBatchEvents).record(elements.toDouble)
+
   /** Broker acknowledgement latency for one produce. The p99 is the signal this exists for (see [[Meters]]): a rising
     * median is broker pressure, a rising p99 over a flat median is one slow partition leader.
     */

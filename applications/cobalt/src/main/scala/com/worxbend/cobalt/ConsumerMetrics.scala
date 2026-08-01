@@ -67,6 +67,15 @@ final class ConsumerMetrics(registry: MeterRegistry):
   def batchSize(size: Int): Unit =
     registry.summary(Meters.ConsumeBatchSize).record(size.toDouble)
 
+  /** How long decoding one record from Kafka bytes to a domain envelope took.
+    *
+    * Separate from [[batchWrite]] so a slow consumer can be *attributed*. Decode is CPU on the stream's own thread; the
+    * batch write is a blocking round trip on a pool. When throughput drops, exactly one of the two moved, and without
+    * both numbers the answer is a guess.
+    */
+  def decoded(elapsedNanos: Long): Unit =
+    registry.timer(Meters.ConsumeDecodeDuration).record(elapsedNanos, TimeUnit.NANOSECONDS)
+
   /** Wall-clock latency of one batch insert, tagged by outcome.
     *
     * A timer and not a counter for the same reason `kafka.produce.latency` is one: a rising median is database

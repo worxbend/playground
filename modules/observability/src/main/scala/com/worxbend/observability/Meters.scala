@@ -96,6 +96,23 @@ object Meters:
       */
     val Job: String = "job"
 
+    /** Which lifecycle command an operator issued — see [[Commands]]. A closed set of six. */
+    val Command: String = "command"
+
+    /** Which direction a producer's clock is wrong in — see [[Skews]]. Two values, ever.
+      *
+      * A *signed* skew cannot be a distribution summary: Micrometer's summaries reject negatives, and folding the sign
+      * away would make a fleet that is uniformly ten seconds fast look identical to one where half the devices are fast
+      * and half are slow. Those need different responses, so the sign is a tag and the magnitude is the value.
+      */
+    val Direction: String = "direction"
+
+    /** Whether a credential was accepted, and if not, which check refused it — see [[AuthReasons]]. */
+    val AuthReason: String = "reason"
+
+    /** Whether a search was a first page or a continuation — see [[Pages]]. Two values, ever. */
+    val Page: String = "page"
+
   /** Closed value set for [[TagKeys.Mode]]: the CloudEvents Kafka content modes. */
   object Modes:
     val Binary: String = "binary"
@@ -114,6 +131,67 @@ object Meters:
     val Failure: String = "failure"
     val Duplicate: String = "duplicate"
     val Skipped: String = "skipped"
+
+  /** Closed value set for [[TagKeys.Page]]. */
+  object Pages:
+    val First: String = "first"
+    val Continuation: String = "continuation"
+
+  /** Closed value set for [[TagKeys.Command]] — the consumer supervisor's verbs. */
+  object Commands:
+    val Start: String = "start"
+    val Stop: String = "stop"
+    val Pause: String = "pause"
+    val Resume: String = "resume"
+    val Restart: String = "restart"
+    val ClearCheckpoints: String = "clear-checkpoints"
+
+  /** Closed value set for [[TagKeys.Direction]]. */
+  object Skews:
+    /** The producer's clock is ahead of this service's. */
+    val Future: String = "future"
+
+    /** Behind — the ordinary case, since it also covers ingest lag and buffered offline devices. */
+    val Past: String = "past"
+
+  /** Closed value set for [[TagKeys.AuthReason]].
+    *
+    * **Why a credential was refused is a security signal, and it was invisible.** Before this, a service under a
+    * token-guessing attempt and a service with one misconfigured client looked identical from outside: both showed 401s
+    * in `http.server.requests` and nothing else. The distinction is entirely in *which check* failed — `bad-signature`
+    * at volume is an attack, `expired` at volume is a client that has stopped refreshing, and `scope-missing` at volume
+    * is a deployment that granted the wrong role.
+    *
+    * Every value is a category, never the exception message: a malformed token is attacker-controlled input and putting
+    * it in a label is how a Prometheus instance is taken down by a loop of random garbage.
+    */
+  object AuthReasons:
+    /** No `Authorization` header at all. Usually a client that has not been configured yet. */
+    val Absent: String = "absent"
+
+    /** Present but not a bearer token, not three segments, or not decodable. */
+    val Malformed: String = "malformed"
+
+    /** Well-formed and the signature did not verify. **At volume this is an attack.** */
+    val BadSignature: String = "bad-signature"
+
+    /** `exp` is in the past. At volume, a client that has stopped refreshing. */
+    val Expired: String = "expired"
+
+    /** `nbf` is in the future — usually clock skew at the issuer. */
+    val NotYetValid: String = "not-yet-valid"
+
+    /** `iss` or `aud` did not match what this deployment accepts. A token for a different system. */
+    val WrongAudience: String = "wrong-audience"
+
+    /** Verified, but carrying no scope this operation accepts. A permissions problem, not a credential one. */
+    val ScopeMissing: String = "scope-missing"
+
+    /** Accepted. Counted so the *rate* of failures is expressible as a fraction rather than as an absolute. */
+    val Accepted: String = "accepted"
+
+    /** Admitted without a check because verification is switched off. Non-zero here in production is an alert. */
+    val Disabled: String = "disabled"
 
   /** Closed value set for [[TagKeys.Job]]. */
   object Jobs:
@@ -312,6 +390,130 @@ object Meters:
     */
   val MaintenancePartitionsBlocked: String = "maintenance.partitions.blocked"
 
+  // --- shared: authentication ---------------------------------------------------------------------------------
+
+  /** Counter. Every credential decision, tagged [[TagKeys.AuthReason]] and [[TagKeys.Outcome]].
+    *
+    * Emitted by wolfram's ingestion API and cobalt's admin API, which is why it lives here rather than under a service
+    * prefix: one panel answers "is anything being refused, anywhere" for the whole fleet.
+    *
+    * **Accepted decisions are counted too.** A failure count alone cannot distinguish "forty refusals out of forty
+    * requests" from "forty out of four hundred thousand", and only one of those is an incident.
+    */
+  val AuthDecisions: String = "auth.decisions"
+
+  // --- wolfram: the shape of what producers send ----------------------------------------------------------------
+
+  /** Distribution summary. Accepted request body size in bytes, tagged [[TagKeys.Mode]].
+    *
+    * The number that decides whether `max-event-bytes` is set anywhere near reality. A p99 pressed against the ceiling
+    * means producers are being refused; a p99 at a hundredth of it means the ceiling is protecting nothing and the
+    * broker's own limit is the real constraint.
+    */
+  val IngestPayloadBytes: String = "ingest.payload.bytes"
+
+  /** Distribution summary. Elements per `events:batchCreate` document.
+    *
+    * Distinct from [[IngestPayloadBytes]] because a batch of one large event and a batch of two hundred small ones are
+    * the same bytes and completely different work — the second is two hundred sequential produces.
+    */
+  val IngestBatchEvents: String = "ingest.batch.events"
+
+  /** Distribution summary. How far a producer's `time` is from this service's clock, in seconds, tagged
+    * [[TagKeys.Direction]].
+    *
+    * **This is the leading indicator for the partition-maintenance failure**, and it is the only one available before
+    * rows start landing in the DEFAULT partition. `occurred_at` decides which monthly partition a row goes to, so a
+    * fleet drifting toward the time clamp's boundary is a fleet about to be rejected wholesale — and the rejection
+    * arrives as `ingest.events.rejected{reason=invalid-attributes}` with no hint that a clock is the cause. Watching
+    * the p99 of this instead gives weeks of warning.
+    */
+  val IngestTimeSkew: String = "ingest.time.skew"
+
+  // --- cobalt: the consumer's own state -------------------------------------------------------------------------
+
+  /** Gauge. 1 when the consumer is consuming, 0 otherwise.
+    *
+    * **The metric that makes a deliberate pause distinguishable from an outage.** Lag rising with this at 1 is a
+    * consumer that cannot keep up; lag rising with it at 0 is somebody's maintenance window. Alerting on lag alone
+    * cannot tell them apart, which is how a planned pause pages the on-call.
+    */
+  val ConsumeRunning: String = "consume.running"
+
+  /** Counter. Lifecycle commands, tagged [[TagKeys.Command]] and [[TagKeys.Outcome]].
+    *
+    * The audit trail for an API that can stop ingestion and move offsets. `http.server.requests` records that a POST
+    * happened; this records *which* verb and whether it changed anything — and an unexpected non-zero rate here is the
+    * first sign that something automated is driving the pipeline.
+    */
+  val ConsumeLifecycle: String = "consume.lifecycle.commands"
+
+  /** Gauge. The largest gap, across partitions, between Kafka's committed offset and the externalised checkpoint.
+    *
+    * **Zero is the only healthy value and it is the whole reason `events.consumer_checkpoint` exists.** The two are
+    * written in one transaction, so a persistent non-zero gap means one of the two commits is failing: checkpoint ahead
+    * of Kafka is events that will be replayed, Kafka ahead of checkpoint is events whose durability nobody can prove.
+    * Both are silent everywhere else.
+    */
+  val ConsumeCheckpointDivergence: String = "consume.checkpoint.divergence"
+
+  /** Timer. Decoding one record from Kafka bytes to a domain envelope.
+    *
+    * Separate from [[ConsumeBatchLatency]] so a slow consumer can be attributed. Decode is CPU on the stream's thread;
+    * the batch write is a blocking round trip on a pool. When throughput drops, exactly one of them moved.
+    */
+  val ConsumeDecodeDuration: String = "consume.decode.duration"
+
+  /** Gauge. Dead letters outstanding on the DLQ topic, as an upper bound.
+    *
+    * An **upper bound** and labelled as one: it is computed from partition offsets, and the DLQ is compacted by key, so
+    * some of those offsets may be superseded. `consume.records.poison` gives the rate; this gives the backlog, which is
+    * what says whether a fix worked.
+    */
+  val DlqDepth: String = "dlq.depth"
+
+  // --- ferrite: what the UI is actually doing --------------------------------------------------------------------
+
+  /** Distribution summary. Rows returned by one search, tagged [[TagKeys.Shape]].
+    *
+    * Reads against [[SearchQueryDuration]]: a slow query returning three rows and a slow query returning a full page
+    * are different problems, and duration alone cannot separate them.
+    */
+  val SearchResults: String = "search.results.returned"
+
+  /** Counter. Searches, split into first pages and continuations, tagged [[TagKeys.Page]].
+    *
+    * **Deliberately not a page *depth*.** The obvious metric is "how many pages deep did the reader go", and this
+    * service cannot measure it: the cursor is an opaque keyset token carrying a sort key, not an ordinal, so the only
+    * thing knowable from a request is whether a cursor was presented. Emitting a depth derived from that would report
+    * every continuation as page two, which is a number that looks precise and is false — and a false number on a
+    * dashboard is worse than an absent one.
+    *
+    * What this does measure is still the product signal worth having: the ratio of continuations to first pages is how
+    * often the first page fails to answer the question, which is a thing to fix in the default sort or the facets
+    * rather than in the query. Keyset pagination is cheap at any depth, so there is no cost reading here.
+    */
+  val SearchPages: String = "search.pages"
+
+  /** Gauge. Live-tail connections currently open.
+    *
+    * Each one is a repeating query against a read pool of eight, so this is a direct read on how much of the pool the
+    * tail is holding. The cap that bounds it is in ferrite's configuration; this is what says how close to it the
+    * service is running.
+    */
+  val TailConnections: String = "tail.connections"
+
+  /** Counter. Rows pushed to live-tail clients. The tail's own throughput, independent of ingest. */
+  val TailEvents: String = "tail.events.delivered"
+
+  /** Gauge. Age of the hourly rollup in seconds — how stale the overview page's numbers are.
+    *
+    * The overview reads a materialized view refreshed on cobalt's schedule. If that job stops, the page keeps serving
+    * numbers that are merely old, with no error anywhere: `maintenance.job.duration` says the job stopped running, and
+    * this says what that costs the reader.
+    */
+  val RollupStaleness: String = "rollup.staleness"
+
   // --- shared: HTTP ------------------------------------------------------------------------------------------------
 
   /** Micrometer's HTTP server timer name.
@@ -450,6 +652,39 @@ object Meters:
     val MaintenanceDuration: Seq[FiniteDuration] =
       Seq(100.millis, 500.millis, 1.second, 5.seconds, 15.seconds, 30.seconds, 1.minute, 5.minutes, 15.minutes)
 
+    /** [[ConsumeDecodeDuration]]. Microseconds to low milliseconds: this is CPU over bytes already in memory, and
+      * anything above the top boundary means a payload large enough to be its own problem.
+      */
+    val ConsumeDecodeDuration: Seq[FiniteDuration] =
+      Seq(50.micros, 100.micros, 250.micros, 500.micros, 1.milli, 2500.micros, 5.millis, 10.millis, 50.millis)
+
+    /** [[IngestPayloadBytes]] — bytes, not durations. Dense below 64 KiB, where almost every IoT event sits, and
+      * extending to 1 MiB because that is `max-event-bytes` and the bucket next to a limit is the interesting one.
+      */
+    val IngestPayloadBytes: Seq[Double] =
+      Seq(256, 1024, 4096, 16384, 65536, 262144, 524288, 1048576)
+
+    /** [[IngestBatchEvents]] — elements per batch document, up to `max-batch-events`. */
+    val IngestBatchEvents: Seq[Double] = Seq(1, 2, 5, 10, 25, 50, 100, 256)
+
+    /** [[IngestTimeSkew]] — seconds of clock error, on a log-ish ladder from one second to the 90-day clamp.
+      *
+      * The top boundaries are the point: the time clamp rejects at 24 h future and 90 d past, so the buckets either
+      * side of those are what turn "producers are drifting" into "producers are about to be refused".
+      */
+    val IngestTimeSkew: Seq[Double] =
+      Seq(1, 5, 30, 300, 3600, 86400, 604800, 2592000, 7776000)
+
+    /** [[SearchResults]] — rows per search, bounded by the page limit.
+      *
+      * **Starts at 1 and not at 0.** Micrometer rejects a non-positive service-level objective, and a summary whose
+      * ladder contains 0 throws at *registration* — inside `Future.andThen`, which swallows it. The result was a meter
+      * that never appeared, on a code path every test said was running: the unit suite used a `SimpleMeterRegistry`
+      * with no filters and passed, and the Prometheus registry silently registered nothing. The empty case is not lost
+      * — a search returning no rows records 0, which the `le="1"` bucket counts.
+      */
+    val SearchResults: Seq[Double] = Seq(1, 5, 10, 25, 50, 100, 250)
+
     /** [[ConsumeBatchSize]] — a distribution summary, so these are record counts, not durations.
       *
       * Deliberately dense at the low end. The reading this meter exists for is "the consumer is starved, not
@@ -469,9 +704,16 @@ object Meters:
         Meters.SearchQueryDuration -> SearchQueryDuration,
         Meters.KafkaProduceLatency -> KafkaProduceLatency,
         Meters.ConsumeBatchLatency -> ConsumeBatchLatency,
-        Meters.MaintenanceDuration -> MaintenanceDuration
+        Meters.MaintenanceDuration -> MaintenanceDuration,
+        Meters.ConsumeDecodeDuration -> ConsumeDecodeDuration
       )
 
     /** Every distribution summary family and its ladder. */
     val summaries: Map[String, Seq[Double]] =
-      Map(Meters.ConsumeBatchSize -> ConsumeBatchSize)
+      Map(
+        Meters.ConsumeBatchSize -> ConsumeBatchSize,
+        Meters.IngestPayloadBytes -> IngestPayloadBytes,
+        Meters.IngestBatchEvents -> IngestBatchEvents,
+        Meters.IngestTimeSkew -> IngestTimeSkew,
+        Meters.SearchResults -> SearchResults
+      )

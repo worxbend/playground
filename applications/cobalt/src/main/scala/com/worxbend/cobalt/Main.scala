@@ -117,13 +117,25 @@ object CobaltApp extends StrictLogging:
     val health = HealthChecks.create()
     val metrics = ConsumerMetrics(telemetry.registry)
     val admin = Admin.create(adminProperties(config).asJava)
+    val supervisorMetrics = SupervisorMetrics(telemetry.registry)
+
+    // A late binding rather than reordering construction: the supervisor needs the admin client the probes are
+    // built around, and the probes need a way to read the supervisor. One `var` visible in this scope alone is
+    // smaller than the alternative, which is a second admin client or a lazily-initialised holder type.
+    var supervisorRef: Option[ConsumerSupervisor] = None
+    def supervisorReading(): Unit =
+      supervisorRef.foreach: active =>
+        supervisorMetrics.observe(Await.result(active.status, config.lag.requestTimeout))
+
     val probes = Probes(
       offsets = AdminOffsets(admin, config.lag.requestTimeout),
       gauge = ConsumerLagGauge(telemetry.registry, config.consumer.groupId),
       groupId = config.consumer.groupId,
       dataSource = pools.read.get(),
       health = health,
-      validationTimeout = database.read.validationTimeout
+      validationTimeout = database.read.validationTimeout,
+      // Deferred: the supervisor does not exist yet at this point, and the probe only ever runs it later.
+      supervisorState = Some(() => supervisorReading())
     )
     val poller = Probes.start(probes, config.lag.refreshInterval)
 
@@ -140,7 +152,7 @@ object CobaltApp extends StrictLogging:
     )(using blocking)
 
     val deadLetters = KafkaDeadLetterPublisher.start(config.consumer)
-    val decoder = RecordDecoder(DeadLetterSource, telemetry.tracing.tracer)
+    val decoder = RecordDecoder(DeadLetterSource, telemetry.tracing.tracer, Some(metrics))
     val processor = BatchProcessor(
       repository = repository,
       deadLetters = deadLetters,
@@ -165,6 +177,7 @@ object CobaltApp extends StrictLogging:
       groupId = config.consumer.groupId,
       topic = config.consumer.topic
     )
+    supervisorRef = Some(supervisor)
     val started = Await.result(supervisor.start(), ConsumerSupervisor.DrainTimeout)
     logger.info(s"consumer supervisor: ${started.status.state.name}")
 
@@ -187,7 +200,12 @@ object CobaltApp extends StrictLogging:
       .fold(problem => throw IllegalStateException(s"cobalt auth configuration is unusable: $problem"), identity)
     val auth = AdminAuth(verifier, config.auth)
     val routes = CobaltRoutes(
-      AdminHandlers(telemetry, health, deadLetterAdmin, SupervisorAdmin(supervisor, ConsumerSupervisor.DrainTimeout)),
+      AdminHandlers(
+        telemetry,
+        health,
+        deadLetterAdmin,
+        SupervisorAdmin(supervisor, ConsumerSupervisor.DrainTimeout, supervisorMetrics)
+      ),
       auth
     )
     val adminServer = AdminServer(routes, config.server.host, config.server.port)

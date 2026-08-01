@@ -53,7 +53,7 @@ final class AdminServerIT extends munit.FunSuite:
         "dlq"
       )
       given scala.concurrent.ExecutionContext = scala.concurrent.ExecutionContext.parasitic
-      val consumer = SupervisorAdmin(Fixtures.idleSupervisor, 5.seconds)
+      val consumer = SupervisorAdmin(Fixtures.idleSupervisor, 5.seconds, SupervisorMetrics(telemetry.registry))
       val server =
         AdminServer(
           CobaltRoutes(AdminHandlers(telemetry, health, deadLetters, consumer), Tokens.admin()),

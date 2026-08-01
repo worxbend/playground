@@ -22,6 +22,7 @@
 package com.worxbend.wolfram
 
 import com.typesafe.scalalogging.StrictLogging
+import com.worxbend.observability.AuthMetrics
 import com.worxbend.observability.Telemetry
 import io.vertx.core.Vertx
 import io.vertx.core.http.HttpServer
@@ -104,7 +105,7 @@ object WolframApp:
     val verifier = JwtVerifier
       .from(config.auth)
       .fold(problem => throw IllegalStateException(s"wolfram auth configuration is unusable: $problem"), identity)
-    val api = IngestApi(service, verifier)
+    val api = IngestApi(service, verifier, AuthMetrics(telemetry.registry, telemetry.config.serviceName))
 
     // The tracing interceptor is prepended so the SERVER span is open before anything else — including the metrics
     // interceptor — runs, which is what puts `trace_id` in the MDC of every log line the request produces (ADR §7.2).

@@ -63,7 +63,7 @@ final class CobaltApiDocsSuite extends FunSuite:
           Fixtures.Topic,
           "dlq"
         ),
-        SupervisorAdmin(Fixtures.idleSupervisor, 5.seconds)
+        SupervisorAdmin(Fixtures.idleSupervisor, 5.seconds, SupervisorMetrics(telemetry.registry))
       )
       CobaltRoutes(handlers, Tokens.admin()).caskMetadata.value.map(_.endpoint.path).toSet
     finally telemetry.close()

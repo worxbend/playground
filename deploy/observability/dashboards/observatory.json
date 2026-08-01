@@ -2266,6 +2266,1032 @@
     },
     {
       "type": "row",
+      "id": 34,
+      "title": "Security — credential decisions",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 72
+      },
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "id": 35,
+      "title": "Auth decisions by reason",
+      "description": "`auth.decisions` from wolfram and cobalt. **`bad-signature` at volume is an attack**; `expired` at volume is a client that stopped refreshing; `scope-missing` is a deployment that granted the wrong role. All three arrive as a bare 401/403 in `http.server.requests`, which is why this exists. `disabled` non-zero means AUTH_ENABLED=false reached an environment nobody intended.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "observatory-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 73
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "pointSize": 8,
+            "showPoints": "never",
+            "spanNulls": false,
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "mappings": [],
+          "min": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": ".*(failure|refused|bad-signature|error).*"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "observatory-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (service, reason) (rate(auth_decisions_total{outcome=\"failure\"}[$__rate_interval]) * 60)",
+          "legendFormat": "refused {{service}}/{{reason}}",
+          "range": true,
+          "instant": false,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "observatory-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (service) (rate(auth_decisions_total{outcome=\"success\"}[$__rate_interval]) * 60)",
+          "legendFormat": "accepted {{service}}",
+          "range": true,
+          "instant": false,
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 36,
+      "title": "Refusal ratio",
+      "description": "Refusals as a fraction of all credential decisions. Forty refusals out of forty requests and forty out of four hundred thousand are not the same event — which is the whole reason accepted decisions are counted.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "observatory-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 73
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "pointSize": 8,
+            "showPoints": "never",
+            "spanNulls": false,
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "mappings": [],
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "observatory-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (service) (rate(auth_decisions_total{outcome=\"failure\"}[$__rate_interval])) / clamp_min(sum by (service) (rate(auth_decisions_total[$__rate_interval])), 0.001)",
+          "legendFormat": "{{service}}",
+          "range": true,
+          "instant": false,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "id": 53,
+      "title": "Consumer state and lifecycle",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 81
+      },
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "id": 41,
+      "title": "Consumer state and checkpoint divergence",
+      "description": "`consume.running` is 0/1 and is what separates a **deliberate pause** from an outage: lag rising with it at 1 is a consumer that cannot keep up, at 0 it is somebody's maintenance window. `consume.checkpoint.divergence` must be **zero** — the offset and the rows it accounts for are written in one transaction, so a persistent gap means one of the two commits is failing.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "observatory-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 82
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "pointSize": 8,
+            "showPoints": "never",
+            "spanNulls": false,
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "mappings": [],
+          "min": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "checkpoint divergence"
+            },
+            "properties": [
+              {
+                "id": "color",
+                "value": {
+                  "mode": "fixed",
+                  "fixedColor": "red"
+                }
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "observatory-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (service) (consume_running)",
+          "legendFormat": "running (0/1)",
+          "range": true,
+          "instant": false,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "observatory-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (service) (consume_checkpoint_divergence)",
+          "legendFormat": "checkpoint divergence",
+          "range": true,
+          "instant": false,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "observatory-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (service) (dlq_depth)",
+          "legendFormat": "DLQ depth",
+          "range": true,
+          "instant": false,
+          "refId": "C"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 42,
+      "title": "Lifecycle commands and decode cost",
+      "description": "`consume.lifecycle.commands` is the audit trail for an API that can stop ingestion and move offsets — an unexpected rate here is the first sign something automated is driving the pipeline. `skipped` means the command was a no-op. The decode p99 separates CPU on the stream's thread from the batch write's blocking round trip: when throughput drops, exactly one of them moved.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "observatory-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 82
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "pointSize": 8,
+            "showPoints": "never",
+            "spanNulls": false,
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "mappings": [],
+          "min": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "p99 decode"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "custom.axisPlacement",
+                "value": "right"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "observatory-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum by (command, outcome) (rate(consume_lifecycle_commands_total[$__rate_interval]) * 60)",
+          "legendFormat": "{{command}}/{{outcome}}/min",
+          "range": true,
+          "instant": false,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "observatory-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(consume_decode_duration_seconds_bucket[$__rate_interval])))",
+          "legendFormat": "p99 decode",
+          "range": true,
+          "instant": false,
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "id": 37,
+      "title": "Producers — what is actually being sent",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 90
+      },
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "id": 38,
+      "title": "Payload size",
+      "description": "`ingest.payload.bytes` percentiles, accepted events only. A p99 pressed against `max-event-bytes` (1 MiB) means producers are being refused; a p99 at a hundredth of it means the ceiling protects nothing and the broker's own limit is the real constraint.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "observatory-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 91
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "pointSize": 8,
+            "showPoints": "never",
+            "spanNulls": false,
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "mappings": [],
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "observatory-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(ingest_payload_bytes_bucket[$__rate_interval])))",
+          "legendFormat": "p50",
+          "range": true,
+          "instant": false,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "observatory-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(ingest_payload_bytes_bucket[$__rate_interval])))",
+          "legendFormat": "p99",
+          "range": true,
+          "instant": false,
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 39,
+      "title": "Producer clock skew",
+      "description": "`ingest.time.skew` — how far producers' `time` is from the ingest clock, split by direction. **This is the leading indicator for the partition failure.** `occurred_at` decides which monthly partition a row lands in, so a fleet drifting toward the clamp (24 h future / 90 d past) is a fleet about to be rejected wholesale — and that arrives as `invalid-attributes` with no hint that a clock is the cause.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "observatory-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 91
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "pointSize": 8,
+            "showPoints": "never",
+            "spanNulls": false,
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "mappings": [],
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "observatory-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.99, sum by (le, direction) (rate(ingest_time_skew_bucket[$__rate_interval])))",
+          "legendFormat": "p99 {{direction}}",
+          "range": true,
+          "instant": false,
+          "refId": "A"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 40,
+      "title": "Batch document size",
+      "description": "`ingest.batch.events`. Distinct from payload bytes because one large event and two hundred small ones are the same bytes and completely different work — the second is two hundred sequential produces.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "observatory-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 91
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "pointSize": 8,
+            "showPoints": "never",
+            "spanNulls": false,
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "mappings": [],
+          "min": 0
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "observatory-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(ingest_batch_events_bucket[$__rate_interval])))",
+          "legendFormat": "p50",
+          "range": true,
+          "instant": false,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "observatory-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.99, sum by (le) (rate(ingest_batch_events_bucket[$__rate_interval])))",
+          "legendFormat": "p99",
+          "range": true,
+          "instant": false,
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "type": "row",
+      "id": 43,
+      "title": "UI — what readers are doing",
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 99
+      },
+      "panels": []
+    },
+    {
+      "type": "timeseries",
+      "id": 44,
+      "title": "Search results and pagination",
+      "description": "`search.results.returned` against `search.query.duration`: a slow query returning three rows and a slow query returning a full page are different problems. The continuation ratio says how often the *first* page failed to answer the question — a product signal, since keyset pagination is cheap at any depth.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "observatory-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 100
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "pointSize": 8,
+            "showPoints": "never",
+            "spanNulls": false,
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "mappings": [],
+          "min": 0
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "continuation ratio"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "percentunit"
+              },
+              {
+                "id": "custom.axisPlacement",
+                "value": "right"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "observatory-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "histogram_quantile(0.5, sum by (le) (rate(search_results_returned_bucket[$__rate_interval])))",
+          "legendFormat": "p50 rows",
+          "range": true,
+          "instant": false,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "observatory-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(search_pages_total{page=\"continuation\"}[$__rate_interval])) / clamp_min(sum(rate(search_pages_total[$__rate_interval])), 0.001)",
+          "legendFormat": "continuation ratio",
+          "range": true,
+          "instant": false,
+          "refId": "B"
+        }
+      ]
+    },
+    {
+      "type": "timeseries",
+      "id": 45,
+      "title": "Live tail and rollup freshness",
+      "description": "`tail.connections` is a direct read on how much of the eight-connection read pool the live tail is holding — the thing to look at when search gets slow for reasons the search meters cannot explain. `rollup.staleness` is the reader's-eye view of a maintenance job that has stopped: the overview keeps serving numbers, they are simply old, and nothing raises an error. `-1` means the rollup is empty.",
+      "datasource": {
+        "type": "prometheus",
+        "uid": "observatory-prometheus"
+      },
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 100
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "color": {
+            "mode": "palette-classic"
+          },
+          "custom": {
+            "drawStyle": "line",
+            "lineInterpolation": "linear",
+            "lineWidth": 2,
+            "fillOpacity": 0,
+            "gradientMode": "none",
+            "pointSize": 8,
+            "showPoints": "never",
+            "spanNulls": false,
+            "axisPlacement": "auto",
+            "axisLabel": "",
+            "scaleDistribution": {
+              "type": "linear"
+            },
+            "stacking": {
+              "mode": "none",
+              "group": "A"
+            },
+            "thresholdsStyle": {
+              "mode": "off"
+            }
+          },
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "text",
+                "value": null
+              }
+            ]
+          },
+          "mappings": [],
+          "min": null
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byRegexp",
+              "options": "rollup staleness"
+            },
+            "properties": [
+              {
+                "id": "unit",
+                "value": "s"
+              },
+              {
+                "id": "custom.axisPlacement",
+                "value": "right"
+              }
+            ]
+          }
+        ]
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "showLegend": true,
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "observatory-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (service) (tail_connections)",
+          "legendFormat": "open tails",
+          "range": true,
+          "instant": false,
+          "refId": "A"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "observatory-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "sum(rate(tail_events_delivered_total[$__rate_interval]) * 60)",
+          "legendFormat": "rows delivered/min",
+          "range": true,
+          "instant": false,
+          "refId": "B"
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "observatory-prometheus"
+          },
+          "editorMode": "code",
+          "expr": "max by (service) (rollup_staleness)",
+          "legendFormat": "rollup staleness",
+          "range": true,
+          "instant": false,
+          "refId": "C"
+        }
+      ]
+    },
+    {
+      "type": "row",
       "id": 23,
       "title": "JVM health — all three services",
       "collapsed": false,
@@ -2273,7 +3299,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 72
+        "y": 108
       },
       "panels": []
     },
@@ -2290,7 +3316,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 73
+        "y": 109
       },
       "fieldConfig": {
         "defaults": {
@@ -2389,7 +3415,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 73
+        "y": 109
       },
       "fieldConfig": {
         "defaults": {
@@ -2488,7 +3514,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 73
+        "y": 109
       },
       "fieldConfig": {
         "defaults": {
@@ -2587,7 +3613,7 @@
         "h": 8,
         "w": 8,
         "x": 0,
-        "y": 81
+        "y": 117
       },
       "fieldConfig": {
         "defaults": {
@@ -2686,7 +3712,7 @@
         "h": 8,
         "w": 8,
         "x": 8,
-        "y": 81
+        "y": 117
       },
       "fieldConfig": {
         "defaults": {
@@ -2773,7 +3799,7 @@
         "h": 8,
         "w": 8,
         "x": 16,
-        "y": 81
+        "y": 117
       },
       "fieldConfig": {
         "defaults": {

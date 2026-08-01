@@ -244,11 +244,22 @@ object Fixtures:
 
     def freshness(): Future[Option[OffsetDateTime]] = Future.successful(newest)
 
+  /** A telemetry instance per call, so a suite asserting on a gauge sees only its own writes.
+    *
+    * `Tracing.noop` because none of these suites reads a span, and starting the OTel SDK per test would open a JFR
+    * stream and a batch exporter for nothing.
+    */
+  def telemetry(): com.worxbend.observability.Telemetry =
+    com.worxbend.observability.Telemetry.start(
+      com.worxbend.observability.TelemetryConfig("ferrite", "test", "test"),
+      com.worxbend.observability.Tracing.noop
+    )
+
   def overviewService(
     rollup: OverviewRepository = StubOverviewRepository(),
     events: EventRepository = StubRepository()
   ): OverviewService =
-    OverviewService(rollup, events, clock)(using searchExecutionContext)
+    OverviewService(rollup, events, clock, telemetry())(using searchExecutionContext)
 
   def overviewController(
     rollup: OverviewRepository = StubOverviewRepository(),
@@ -259,7 +270,7 @@ object Fixtures:
     )
 
   def tailService(repository: EventRepository = StubRepository()): TailService =
-    TailService(repository, clock)(using searchExecutionContext)
+    TailService(repository, clock, telemetry())(using searchExecutionContext)
 
   def tailController(service: TailService = tailService()): TailController =
     TailController(Helpers.stubControllerComponents(), service, clock)(using

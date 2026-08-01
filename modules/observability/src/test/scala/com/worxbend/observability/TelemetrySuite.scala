@@ -199,6 +199,34 @@ final class TelemetrySuite extends munit.FunSuite:
       assertEquals(counted, 1.0d, s"the 1ms sample did not land in the 5ms bucket: ${firstBucket.get}")
     }
 
+  test("every declared ladder registers on the real registry, not just on a SimpleMeterRegistry"):
+    // The regression this exists for: `search.results.returned` was given a ladder starting at 0. Micrometer rejects
+    // a non-positive service-level objective and throws at *registration* — which happened inside `Future.andThen`,
+    // where the exception is swallowed. The meter simply never appeared. Every unit test passed, because they use a
+    // SimpleMeterRegistry with no meter filters and therefore never apply the ladder at all.
+    //
+    // Registering each declared family here, against the Prometheus registry with the filters installed, is the
+    // cheapest way to make that class of mistake fail at build time rather than in a dashboard nobody is watching.
+    withTelemetry() { telemetry =>
+      Meters.Buckets.timers.keys.foreach: name =>
+        telemetry.registry.timer(name).record(1L, TimeUnit.MILLISECONDS)
+      Meters.Buckets.summaries.keys.foreach: name =>
+        telemetry.registry.summary(name).record(1.0)
+      val exposition = telemetry.scrape()
+      (Meters.Buckets.timers.keys ++ Meters.Buckets.summaries.keys).foreach: name =>
+        val prometheus = name.replace('.', '_')
+        assert(
+          exposition.contains(s"${prometheus}_bucket") || exposition.contains(s"${prometheus}_seconds_bucket"),
+          s"$name declares a ladder but registered no buckets — is a boundary non-positive?"
+        )
+    }
+
+  test("a non-positive bucket boundary is rejected loudly rather than silently"):
+    // Naming the failure mode directly, so the reason the ladders start above zero survives somebody 'tidying' one.
+    val boundaries = Meters.Buckets.summaries.values ++ Meters.Buckets.timers.values.map(_.map(_.toNanos.toDouble))
+    boundaries.foreach: ladder =>
+      assert(ladder.forall(_ > 0), s"a ladder contains a non-positive boundary: $ladder")
+
   test("a timer with no declared ladder is left alone"):
     withTelemetry() { telemetry =>
       telemetry.registry.timer("probe.unladdered").record(1L, TimeUnit.MILLISECONDS)

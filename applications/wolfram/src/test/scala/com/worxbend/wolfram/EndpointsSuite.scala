@@ -22,8 +22,10 @@
 package com.worxbend.wolfram
 
 import com.worxbend.kernel.Rfc3339
+import com.worxbend.observability.AuthMetrics
 import io.circe.Json
 import io.circe.parser
+import io.micrometer.core.instrument.MeterRegistry
 import io.micrometer.core.instrument.simple.SimpleMeterRegistry
 import java.nio.charset.StandardCharsets.UTF_8
 import java.time.Duration
@@ -56,16 +58,19 @@ final class EndpointsSuite extends FunSuite:
   private val batch: Uri = uri"http://wolfram.test/v1/events:batchCreate"
   private val validate: Uri = uri"http://wolfram.test/v1/events:validate"
 
-  private def backend(publisher: EventPublisher): SttpBackend[Future, WebSockets] =
+  private def backend(
+    publisher: EventPublisher,
+    registry: MeterRegistry = SimpleMeterRegistry()
+  ): SttpBackend[Future, WebSockets] =
     val service = IngestionService(
       publisher,
       TimeClamp.from(Fixtures.ingest),
       Fixtures.ingest,
-      IngestMetrics(SimpleMeterRegistry()),
+      IngestMetrics(registry),
       () => Fixtures.now
     )
     TapirStubInterpreter(SttpBackendStub.asynchronousFuture)
-      .whenServerEndpointsRunLogic(IngestApi(service, Tokens.verifier).routes)
+      .whenServerEndpointsRunLogic(IngestApi(service, Tokens.verifier, AuthMetrics(registry, "wolfram")).routes)
       .backend()
 
   private def post(

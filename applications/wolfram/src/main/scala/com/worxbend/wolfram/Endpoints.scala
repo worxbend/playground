@@ -21,6 +21,8 @@
 
 package com.worxbend.wolfram
 
+import com.worxbend.observability.AuthMetrics
+import com.worxbend.observability.Meters
 import scala.concurrent.ExecutionContext
 import scala.concurrent.Future
 import sttp.model.Header
@@ -304,7 +306,7 @@ object Endpoints:
   * A class rather than an object because both are constructor dependencies: wolfram has no global state, and a
   * singleton holding a Kafka producer would make the whole HTTP layer untestable and un-restartable.
   */
-final class IngestApi(service: IngestionService, verifier: JwtVerifier)(using ExecutionContext):
+final class IngestApi(service: IngestionService, verifier: JwtVerifier, auth: AuthMetrics)(using ExecutionContext):
 
   /** Authentication, applied once.
     *
@@ -314,9 +316,16 @@ final class IngestApi(service: IngestionService, verifier: JwtVerifier)(using Ex
   private def secured[I, O](
     description: Endpoint[Option[String], I, ApiError, O, Any]
   ): PartialServerEndpoint[Option[String], Principal, I, ApiError, O, Any, Future] =
-    description.serverSecurityLogicPure(token =>
-      verifier.verify(token, Some(JwtVerifier.PublishScope)).left.map(ApiModel.authFailure)
-    )
+    description.serverSecurityLogicPure: token =>
+      // Counted here rather than inside the verifier: the verifier is a pure decision function and a metric is an
+      // effect, so the composition root is where the two meet. It also means one counting site for three endpoints.
+      val decision = verifier.verify(token, Some(JwtVerifier.PublishScope))
+      decision match
+        case Right(principal) if principal == JwtVerifier.Anonymous => auth.disabled()
+        case Right(_)                                               => auth.accepted()
+        case Left(AuthProblem.Forbidden(_))                         => auth.refusedAs(Meters.AuthReasons.ScopeMissing)
+        case Left(problem)                                          => auth.refused(problem.detail)
+      decision.left.map(ApiModel.authFailure)
 
   /** Server endpoints, ready for any Tapir interpreter. */
   val routes: List[ServerEndpoint[Any, Future]] =

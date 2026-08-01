@@ -72,7 +72,10 @@ final class IngestionService(
   def ingest(headers: Map[String, String], body: Array[Byte]): Future[Either[Rejection, Receipt]] =
     validate(headers, body) match
       case Left(rejection)  => Future.successful(Left(record(rejection)))
-      case Right(candidate) => publish(candidate)
+      case Right(candidate) =>
+        // Body size and producer clock skew, recorded on the accepted path only — see `IngestMetrics.shape`.
+        metrics.shape(candidate.mode, body.length, candidate.occurredAt, now())
+        publish(candidate)
 
   /** Ingests an `application/cloudevents-batch+json` document.
     *
@@ -97,6 +100,7 @@ final class IngestionService(
             )
           else
             val instant = now()
+            metrics.batch(elements.size)
             elements
               .foldLeft(Future.successful(Vector.empty[Either[Rejection, Receipt]])): (acc, element) =>
                 acc.flatMap: results =>

@@ -22,6 +22,7 @@
 package com.worxbend.cobalt
 
 import com.typesafe.scalalogging.StrictLogging
+import com.worxbend.observability.Meters
 import io.circe.Encoder
 import io.circe.Json
 import scala.concurrent.Await
@@ -44,23 +45,27 @@ import scala.util.control.NonFatal
   * wants the response to mean *stopped* — a 202 with an opaque promise would put them straight back into polling the
   * status endpoint. The timeout is what keeps a hung drain from holding the worker forever.
   */
-final class SupervisorAdmin(supervisor: ConsumerSupervisor, timeout: FiniteDuration) extends StrictLogging:
+final class SupervisorAdmin(
+  supervisor: ConsumerSupervisor,
+  timeout: FiniteDuration,
+  metrics: SupervisorMetrics
+) extends StrictLogging:
 
   /** `GET /admin/consumer` — the state machine plus committed, stored and end offsets per partition. */
   def status(): AdminReply =
     respond(supervisor.status)(status => Encoder[ConsumerStatus].apply(status))
 
   /** `POST /admin/consumer:pause` — drain, commit, leave the group, and stay out. */
-  def pause(): AdminReply = lifecycle(supervisor.pause())
+  def pause(): AdminReply = lifecycle(Meters.Commands.Pause)(supervisor.pause())
 
   /** `POST /admin/consumer:resume` — materialise a fresh stream and rejoin the group. */
-  def resume(): AdminReply = lifecycle(supervisor.resume())
+  def resume(): AdminReply = lifecycle(Meters.Commands.Resume)(supervisor.resume())
 
   /** `POST /admin/consumer:stop` — the same as pause, reported as an outage rather than as intent. */
-  def stop(): AdminReply = lifecycle(supervisor.stop())
+  def stop(): AdminReply = lifecycle(Meters.Commands.Stop)(supervisor.stop())
 
   /** `POST /admin/consumer:start` */
-  def start(): AdminReply = lifecycle(supervisor.start())
+  def start(): AdminReply = lifecycle(Meters.Commands.Start)(supervisor.start())
 
   /** `POST /admin/consumer:restart` — stop, move the group's offsets, start.
     *
@@ -97,9 +102,12 @@ final class SupervisorAdmin(supervisor: ConsumerSupervisor, timeout: FiniteDurat
           )
       case Right((seekTarget, explicit)) =>
         attempt(Await.result(supervisor.restart(seekTarget, explicit), timeout)) match
-          case Left(problem)  => AdminRoutes.json(409, error(problem))
+          case Left(problem) =>
+            metrics.commandFailed(Meters.Commands.Restart)
+            AdminRoutes.json(409, error(problem))
           case Right(outcome) =>
             respond(supervisor.status): status =>
+              metrics.command(Meters.Commands.Restart, changed = true)
               Json.obj(
                 "dryRun" -> Json.fromBoolean(false),
                 "committed" -> Json.fromBoolean(true),
@@ -117,6 +125,7 @@ final class SupervisorAdmin(supervisor: ConsumerSupervisor, timeout: FiniteDurat
     */
   def clearCheckpoints(): AdminReply =
     respond(supervisor.clearCheckpoints()): cleared =>
+      metrics.command(Meters.Commands.ClearCheckpoints, changed = cleared > 0)
       Json.obj(
         "cleared" -> Json.fromInt(cleared),
         "note" -> Json.fromString("Kafka's own committed offsets are untouched; only the external checkpoints are gone")
@@ -124,8 +133,18 @@ final class SupervisorAdmin(supervisor: ConsumerSupervisor, timeout: FiniteDurat
 
   // --- plumbing ------------------------------------------------------------------------------------------------
 
-  private def lifecycle(action: => scala.concurrent.Future[LifecycleResult]): AdminReply =
-    respond(action)(result => Encoder[LifecycleResult].apply(result))
+  /** Runs a lifecycle command and counts it.
+    *
+    * Counted here rather than in the supervisor because this is where an *operator* asked for something — the
+    * supervisor also transitions on its own (a stream that fails, a drain at shutdown), and folding those into the same
+    * counter would make the audit trail unable to answer "did a person do this".
+    */
+  private def lifecycle(name: String)(action: => scala.concurrent.Future[LifecycleResult]): AdminReply =
+    val reply = respond(action): result =>
+      metrics.command(name, result.changed)
+      Encoder[LifecycleResult].apply(result)
+    if reply.status >= 500 then metrics.commandFailed(name)
+    reply
 
   /** Awaits a supervisor call and renders it, turning a timeout or a failure into a status code rather than a stack
     * trace. 504 for a timeout specifically: it says "the operation may still be in progress", which for a drain that

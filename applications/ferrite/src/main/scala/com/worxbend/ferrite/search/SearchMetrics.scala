@@ -120,6 +120,23 @@ final class SearchMetrics(registry: MeterRegistry):
       .timer(Meters.SearchQueryDuration, Tags.of(Meters.TagKeys.Shape, shape))
       .record(elapsedNanos, TimeUnit.NANOSECONDS)
 
+  /** How many rows one search returned, and how deep the reader had paged to get them.
+    *
+    * **`results` reads against [[Meters.SearchQueryDuration]].** A slow query returning three rows and a slow query
+    * returning a full page are different problems — the first is a filter that cannot use an index, the second is
+    * honest work — and duration alone cannot separate them.
+    *
+    * **`continuation` is a ratio, not a depth.** The cursor is an opaque keyset token carrying a sort key, not an
+    * ordinal, so this service cannot know that a request is page seven — only that a cursor was presented. A "depth"
+    * derived from that would report every continuation as page two: precise-looking and false. The ratio of
+    * continuations to first pages is the signal that *is* knowable, and it says how often the first page failed to
+    * answer the question.
+    */
+  def returned(shape: String, rows: Int, continuation: Boolean): Unit =
+    registry.summary(Meters.SearchResults, Tags.of(Meters.TagKeys.Shape, shape)).record(rows.toDouble)
+    val page = if continuation then Meters.Pages.Continuation else Meters.Pages.First
+    registry.counter(Meters.SearchPages, Tags.of(Meters.TagKeys.Page, page)).increment()
+
   /** The facet counts for this search hit the candidate cap and are therefore lower bounds.
     *
     * Untagged, deliberately. This is a product signal — "the cap is now hiding information users need" — not a

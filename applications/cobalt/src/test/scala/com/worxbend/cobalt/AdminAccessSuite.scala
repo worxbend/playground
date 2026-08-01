@@ -50,7 +50,7 @@ final class AdminAccessSuite extends FunSuite:
           Fixtures.Topic,
           "dlq"
         ),
-        SupervisorAdmin(Fixtures.idleSupervisor, 5.seconds)
+        SupervisorAdmin(Fixtures.idleSupervisor, 5.seconds, SupervisorMetrics(telemetry.registry))
       )
       CobaltRoutes(handlers, Tokens.admin()).caskMetadata.value
         .map(entry => entry.endpoint.path -> entry.endpoint.methods.toSet)

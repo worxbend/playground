@@ -21,6 +21,7 @@
 
 package com.worxbend.ferrite
 
+import com.worxbend.ferrite.search.SearchMetrics
 import com.worxbend.ferrite.search.SearchQuery
 import com.worxbend.ferrite.search.SearchShape
 import com.worxbend.kernel.search.Filter
@@ -105,3 +106,30 @@ final class SearchMetricsSuite extends FunSuite:
     val service = Fixtures.service(Fixtures.StubRepository(), registry)
     assert(Await.result(service.search(query), 5.seconds).isRight)
     assertEquals(Option(registry.find(Meters.SearchFacetsCapped).counter()), None)
+
+  test("a completed search records how many rows it returned and whether it was a continuation"):
+    val registry = SimpleMeterRegistry()
+    val query = SearchQuery.parse("").getOrElse(fail("unparseable"))
+    val service = Fixtures.service(Fixtures.StubRepository(), registry)
+    assert(Await.result(service.search(query), 5.seconds).isRight)
+
+    val rows = Option(registry.find(Meters.SearchResults).tag(Meters.TagKeys.Shape, SearchShape.Unfiltered).summary())
+    assertEquals(rows.map(_.count()), Some(1L), "the result-count summary was never recorded")
+    assertEquals(rows.map(_.totalAmount()), Some(1.0), "the stub returns one row")
+
+    val first = Option(registry.find(Meters.SearchPages).tag(Meters.TagKeys.Page, Meters.Pages.First).counter())
+    assertEquals(first.map(_.count()), Some(1.0), "a search with no cursor is a first page")
+
+  test("a continuation is labelled as one, and never as a page number"):
+    // Asserted on the metrics façade rather than through the service, because a continuation needs a *real* encoded
+    // keyset cursor and the repository stub cannot mint one — `?cursor=abc` fails to decode and the search
+    // short-circuits before any metric is recorded, which is correct behaviour and a useless test. The service
+    // wiring is covered by the first-page case above; this covers the labelling.
+    val registry = SimpleMeterRegistry()
+    SearchMetrics(registry).returned(SearchShape.Unfiltered, rows = 50, continuation = true)
+    val continued =
+      Option(registry.find(Meters.SearchPages).tag(Meters.TagKeys.Page, Meters.Pages.Continuation).counter())
+    assertEquals(continued.map(_.count()), Some(1.0))
+    // And no page *number* is emitted anywhere — the cursor is an opaque keyset token, not an ordinal, so a depth
+    // derived from it would call every continuation page two: precise-looking and false.
+    assert(registry.find("search.page.depth").summary() == null, "a page-depth meter reappeared")

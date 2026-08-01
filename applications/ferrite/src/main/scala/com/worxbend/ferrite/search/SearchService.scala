@@ -117,7 +117,9 @@ final class SearchService @Inject() (repository: EventRepository, metrics: Searc
         // search there is, and dropping it would make the p99 improve as the service got worse.
         outcome.andThen { case attempt =>
           metrics.searched(shape, System.nanoTime() - startedAt)
-          attempt.foreach(result => if result.facets.capped then metrics.facetsCapped())
+          attempt.foreach: result =>
+            if result.facets.capped then metrics.facetsCapped()
+            metrics.returned(shape, result.page.rows.size, continuation = query.cursor.isDefined)
         }.map(Right.apply)
 
   /** A continuation page only. No facets, no histogram, no count: the filter has not changed, so neither have they, and
