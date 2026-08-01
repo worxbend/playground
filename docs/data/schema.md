@@ -1,9 +1,9 @@
 # The database schema
 
-PostgreSQL 18. One migration, `V1__events.sql`, in
-`modules/persistence/src/main/resources/db/migration/`, owned by ferrite and run by Flyway with
-`-Duser.timezone=UTC`. Everything on this page is transcribed from that file; where it and ADR-0000 §5 differ, the
-migration is right and the differences are called out.
+PostgreSQL 18. Two migrations, `V1__events.sql` and `V2__consumer_checkpoints.sql`, in
+`modules/persistence/src/main/resources/db/migration/`, run by Flyway with `-Duser.timezone=UTC` from cobalt's
+startup. Everything on this page is transcribed from those files; where they and ADR-0000 §5 differ, the migration
+is right and the differences are called out.
 
 The schema is `events`. `pg_trgm` is installed for the dimension tables **only**.
 
@@ -13,7 +13,85 @@ The schema is `events`. `pg_trgm` is installed for the dimension tables **only**
 | `events.cloud_event_2026_07`, `…_2026_08`, `…_default` | partitions | one month each, plus a safety net |
 | `events.device`, `events.room`, `events.person`, `events.dim_event_type` | dimension tables | thousands |
 | `events.event_rollup_hourly` | materialized view | one row per (hour, type, source, severity) |
+| `events.consumer_checkpoint` | table | one row per (group, topic, partition) |
 | `events.saved_search` | table | content-addressed filter ASTs |
+
+## What is related to what
+
+**What question this answers:** which of these objects actually constrain each other, and which only *look* related?
+
+```mermaid
+erDiagram
+    cloud_event {
+        timestamptz occurred_at PK "partition key; NOT generated"
+        uuid event_uid PK "surrogate, gen_random_uuid()"
+        jsonb raw "the CloudEvent, verbatim"
+        bytea payload_sha256 "over the canonical rendering"
+        timestamptz ingested_at "DEFAULT now(); BRIN"
+        text ce_id "GENERATED from raw"
+        text ce_source "GENERATED from raw"
+        text ce_type "GENERATED from raw"
+        jsonb data "GENERATED: raw of data"
+        jsonb extensions "GENERATED: raw minus the reserved keys"
+        text device_id "GENERATED from data.deviceId"
+        smallint severity_rank "GENERATED via events.severity_rank"
+        tsvector search_doc "GENERATED, four weighted passes"
+    }
+
+    event_rollup_hourly {
+        timestamptz bucket UK "date_trunc hour"
+        text ce_type UK
+        text ce_source UK
+        text severity UK "coalesce(severity, none)"
+        bigint event_count
+        bigint error_count "FILTER severity_rank at least 50"
+        bigint device_count "count DISTINCT device_id"
+    }
+
+    consumer_checkpoint {
+        text group_id PK
+        text topic PK
+        int partition PK
+        bigint next_offset "Kafka convention: last processed plus one"
+        bigint records "cumulative, not per batch"
+        text owner "which replica wrote it"
+        timestamptz updated_at
+    }
+
+    saved_search {
+        text slug PK "base32 of sha256 of the AST"
+        jsonb ast
+        text label
+        timestamptz created_at
+    }
+
+    flyway_schema_history {
+        text version "Flyway owns this table's shape"
+        int checksum "what validateOnMigrate compares"
+        boolean success
+    }
+
+    cloud_event ||..o{ event_rollup_hourly : "recomputed from, by REFRESH; no constraint"
+    cloud_event ||..o| consumer_checkpoint : "same transaction as the insert; no constraint"
+```
+
+Two things this is meant to make unmissable.
+
+**There is not one foreign key in this schema.** The dotted edges are the only relationships that exist, and both are
+behavioural rather than declared: the rollup is a materialized view over the fact table, and the checkpoint row is
+written inside the *same transaction* as the batch of events it accounts for. `saved_search` and
+`flyway_schema_history` connect to nothing at all, and `flyway_schema_history` is not even in the `events` schema — it
+lands in the connection's default schema, `public`, because `V1__events.sql` is what creates `events` and a history
+table inside the schema its own migrations create is a chicken-and-egg problem.
+
+**`cloud_event` here shows thirteen of its columns and it has more.** The ones omitted are the rest of the generated
+projections (`ce_specversion`, `ce_subject`, `ce_dataschema`, `ce_datacontenttype`, `room_id`, `person_id`, `site_id`,
+`severity`, `metric_value`, `tags`) — they are the same idea repeated and the full list is in
+[the table below](#raw-jsonb-plus-generated-columns). The four dimension tables (`device`, `room`, `person`,
+`dim_event_type`) are left out because nothing writes them yet; see [open items](#open-items).
+
+The partitions are also absent, because an ER diagram cannot say what a partition is. They are
+[below](#monthly-partitioning).
 
 ---
 
@@ -148,6 +226,41 @@ which the histogram always applies — eliminates whole partitions at plan time.
 **Bounds carry an explicit `+00`.** Partition bounds are parsed in the *session* timezone, so a bare date silently
 shifts every partition by the server's offset. This is why Flyway runs with `-Duser.timezone=UTC` as well.
 
+### Where a row physically lands
+
+**What question this answers:** an insert arrives — which table does the tuple go in, who guaranteed that table
+exists, and what happens when nobody did?
+
+```mermaid
+flowchart TB
+    I["INSERT from cobalt<br/>occurred_at = the producer's CloudEvents time"]
+    R{"is occurred_at inside<br/>a declared month range?"}
+    L1["events.cloud_event_2026_07"]
+    L2["events.cloud_event_2026_08"]
+    LN["events.cloud_event_YYYY_MM<br/>created ahead by the job"]
+    DF["events.cloud_event_default<br/>tripwire, must stay empty"]
+    AL["alarm: partition.default.rows is gauged"]
+    J["PartitionMaintenance, on a schedule<br/>under pg_try_advisory_lock"]
+    C["CREATE TABLE IF NOT EXISTS ... PARTITION OF<br/>for monthsAhead months, plus both autovacuum reloptions"]
+    D["ALTER TABLE ... DETACH PARTITION CONCURRENTLY<br/>then DROP — retention is metadata, never a DELETE"]
+
+    I --> R
+    R -- yes --> L1
+    R -- yes --> L2
+    R -- yes --> LN
+    R -- no --> DF
+    DF --> AL
+    J --> C
+    C -.->|"makes the range exist before a row needs it"| LN
+    J --> D
+    D -.->|"retires months past retainMonths"| L1
+```
+
+The parent `events.cloud_event` stores no tuples at all, which is why the autovacuum reloptions are set on each leaf
+and why the maintenance job has to repeat them on every partition it creates — they are not inherited, so the newest
+month, the only one actually being written to, would otherwise be the one month that never gets an insert-driven
+vacuum.
+
 ### The default partition is a tripwire, not a fallback
 
 It exists so a clock-skewed producer cannot fail an insert outright, and it **must stay empty**. `partition.default.rows`
@@ -231,7 +344,8 @@ Three details:
   duplicated, and it can only under-report, never claim a write that did not happen.
 
 Because `Committer.flow` sits strictly downstream of the write, an offset is a receipt for a durable effect. The
-combination — commit after the write, dedup on the CloudEvents identity — is the whole delivery story.
+combination — commit after the write, dedup on the CloudEvents identity — is the whole delivery story, and it is
+drawn stage by stage in [flows](../architecture/flows.md#2-consume-and-persist).
 
 ---
 
