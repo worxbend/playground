@@ -72,3 +72,11 @@ and a `require` in `build.sbt` fails the build at *load* time if that ever chang
 - [Architecture decision record](adr/0000-architecture.md) — the full contract: dependency table, schema DDL,
   index rationale, and the risks with their fallbacks.
 - [Scaladoc](api/index.html) — generated API documentation for every module.
+
+### If you are here to change something
+
+- [Maintainer's handbook](architecture/maintainers.md) — where each kind of change goes, what it will break, and
+  the traps that have already caught somebody. Start here for "add an endpoint", "add a filter", "add a metric",
+  "add a migration".
+- [Class index](architecture/classes.md) — all 245 types, grouped by the module that owns them, answering the
+  question Scaladoc cannot: which of these do I need, and what does it sit next to.

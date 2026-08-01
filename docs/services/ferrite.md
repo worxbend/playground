@@ -3,6 +3,31 @@
 Play 3 with SIRD routing, server-rendered Twirl templates, htmx and Alpine over PostgreSQL. Source:
 `applications/ferrite/`.
 
+```mermaid
+flowchart TD
+  BROW["browser<br/>full page or htmx fragment"] --> RT["AppRouter — SIRD<br/>no conf/routes file"]
+  RT --> CTL["EventsController<br/>OverviewController<br/>TailController"]
+  CTL --> SQ["SearchQuery<br/>parse — total, collects errors"]
+  SQ --> SVC["SearchService / OverviewService / TailService"]
+  SVC -->|blocking read| SEC["SearchExecutionContext<br/>bounded pool, 8 connections"]
+  SEC --> REPO["EventRepository<br/>OverviewRepository"]
+  REPO --> PG[("PostgreSQL")]
+  SVC --> PRES["Presenter"]
+  PRES --> VM["ViewModels<br/>no domain type past here"]
+  VM --> TW["Twirl templates"]
+  TW -->|Hx.isFragment| FRAG["fragment only"]
+  TW --> PAGE["full page"]
+  style BROW fill:transparent
+  style PG fill:transparent
+  style SEC fill:transparent
+```
+
+*Two boundaries carry the design. **`SearchExecutionContext` is a bounded pool separate from Play's default**, so
+a slow query queues behind itself rather than starving request handling — which is also why the live tail's open
+connections are a metric. And **`ViewModels` is the last place a domain type appears**: a template that could
+reach an `Observation` would be a template making product decisions, and the presenter layer exists to keep that
+testable without rendering HTML.*
+
 ---
 
 ## What it is responsible for

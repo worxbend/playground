@@ -3,6 +3,30 @@
 Tapir endpoint descriptions served by a Vert.x 5 HTTP server, publishing validated CloudEvents to Kafka with a
 plain `KafkaProducer`. Source: `applications/wolfram/`.
 
+```mermaid
+flowchart TD
+  REQ["POST /v1/events<br/>binary or structured"] --> SEC{"JwtVerifier<br/>bearer token"}
+  SEC -->|refused| E401["401 / 403<br/>AIP-193 envelope"]
+  SEC -->|Principal| DEC["CloudEventAdapter<br/>decode both content modes"]
+  DEC -->|DecodeFailure| E400["400 invalid-argument"]
+  DEC --> VAL["IngestionService<br/>validate + TimeClamp"]
+  VAL -->|Rejection| E400
+  VAL --> PUB["KafkaEventPublisher"]
+  PUB -->|broker refused| E503["503 unavailable"]
+  PUB --> OK["200 with the created resource<br/>and its log destination"]
+  SEC -.-> AM["AuthMetrics<br/>auth.decisions"]
+  VAL -.-> IM["IngestMetrics<br/>payload bytes, batch size, time skew"]
+  style REQ fill:transparent
+  style OK fill:transparent
+  style E400 fill:transparent
+  style E401 fill:transparent
+  style E503 fill:transparent
+```
+
+*One request, every branch. **The service never invents an event id or a timestamp on a producer's behalf** — a
+refusal is always a refusal, which is what makes `ingest.time.skew` a real reading of the fleet's clocks rather
+than a measure of how often wolfram papered over one. Dotted arrows are instrumentation, not control flow.*
+
 ---
 
 ## What it is responsible for

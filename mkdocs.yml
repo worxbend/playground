@@ -66,6 +66,12 @@ nav:
       - Shared types: architecture/domain.md
       - Service composition: architecture/services.md
       - Flows over time: architecture/flows.md
+      - Class index: architecture/classes.md
       - Decision record: adr/0000-architecture.md
+  - Maintaining it:
+      # Separate from "Architecture" on purpose. The pages above answer "what is this and why"; this one answers
+      # "I have to change it, where does the change go and what will it break" — a different question, asked by
+      # somebody who is no longer new, and burying it under Architecture is how it goes unread.
+      - Maintainer's handbook: architecture/maintainers.md
   - API docs:
       - Scaladoc: api/index.html

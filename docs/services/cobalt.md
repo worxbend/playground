@@ -3,6 +3,36 @@
 A `pekko-connectors-kafka` committable source feeding batched idempotent inserts into PostgreSQL, with Cask
 serving nothing but `/metrics` and the two health probes. Source: `applications/cobalt/`.
 
+```mermaid
+flowchart TD
+  subgraph stream["the stream — ConsumerStream"]
+    SRC["Consumer.committableSource"] --> DEC["RecordDecoder"]
+    DEC -->|DecodeFailure| DLQ["DeadLetterPublisher<br/>events.deadletter.v1"]
+    DEC --> BATCH["batch by size / time"]
+    BATCH --> WRITE["BatchProcessor.Checkpointing<br/>rows + offset, one transaction"]
+    WRITE -->|batch rejected| BISECT["bisect by SQLSTATE<br/>isolate the poison pill"]
+    BISECT --> DLQ
+    WRITE --> COMMIT["commit to Kafka"]
+  end
+  subgraph admin["the admin surface — Cask"]
+    API["/admin/*<br/>AdminAuth + scopes"] --> SUP["ConsumerSupervisor"]
+    API --> DLA["DeadLetterAdmin<br/>browse + :replay"]
+    API --> JOBS["MaintenanceJobs<br/>partitions, rollup"]
+  end
+  SUP -->|start / stop / restart / seek| stream
+  DLA -.->|reads| DLQ
+  DLA -->|replay| SRC
+  style COMMIT fill:transparent
+  style WRITE fill:transparent
+  style API fill:transparent
+```
+
+***The commit is downstream of the write, and that single ordering is at-least-once delivery.*** Moving it above
+`WRITE` is one line and turns the guarantee into at-most-once with no other visible symptom — the stream keeps
+running, throughput is unchanged, and rows quietly go missing on every restart. The supervisor can stop and seek
+this graph at runtime, which is why `consume.running` is a metric: lag rising with it at `1` is a consumer that
+cannot keep up, at `0` it is somebody's maintenance window.
+
 ---
 
 ## What it is responsible for
