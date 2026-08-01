@@ -136,6 +136,22 @@ final class CheckpointStoreIT extends PostgresSuite:
       await(repository.insertAllCheckpointed(Vector.empty, CheckpointCommit(group, Some("r2"), positions(0 -> 5L))))
     assertEquals(stored.get(0), Some(11L))
 
+  test("every partition of a commit is written, and the guard still applies row by row"):
+    // A consumer checkpoints one row per assigned partition on every batch. These used to be sent one statement at a
+    // time — a round trip each, inside the write transaction, so the checkpoint's cost grew with the partition count
+    // while the insert beside it stayed one batch. They are now a single JDBC batch; what this pins is that batching
+    // lost neither a row nor the per-row monotonicity guard.
+    val advanced = CheckpointCommit(group, Some("r3"), positions(4 -> 70L, 5 -> 80L, 6 -> 90L))
+    val _ = await(repository.insertAllCheckpointed(Vector.empty, advanced))
+    assertEquals(stored.get(4), Some(70L))
+    assertEquals(stored.get(5), Some(80L))
+    assertEquals(stored.get(6), Some(90L))
+    // One batch carrying an advance and a stale rewind together: each row is judged on its own.
+    val mixed = CheckpointCommit(group, Some("r3"), positions(4 -> 71L, 5 -> 79L))
+    val _ = await(repository.insertAllCheckpointed(Vector.empty, mixed))
+    assertEquals(stored.get(4), Some(71L))
+    assertEquals(stored.get(5), Some(80L), "a stale position inside a batch rewound a partition")
+
   test("records accumulate rather than being overwritten"):
     val counted = await(store.load(group)).find(_.partition == 0).map(_.records).getOrElse(0L)
     assert(counted >= 2L, s"expected the counter to have accumulated across writes, got $counted")

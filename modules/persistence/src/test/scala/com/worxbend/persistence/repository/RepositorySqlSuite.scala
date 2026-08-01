@@ -63,8 +63,7 @@ final class RepositorySqlSuite extends munit.ScalaCheckSuite:
   test("every read statement names the table it reads"):
     Vector(
       PostgresEventRepository.searchSql(request),
-      PostgresEventRepository.facetDimensionsSql(force(FacetRequest.of(Some(filter)))),
-      PostgresEventRepository.facetTagsSql(force(FacetRequest.of(Some(filter)))),
+      PostgresEventRepository.facetsSql(force(FacetRequest.of(Some(filter)))),
       PostgresEventRepository.histogramSql(force(HistogramRequest.of(Some(filter), at, at.plusDays(1)))),
       PostgresEventRepository.findSql(EventRef(at, UUID.randomUUID())),
       PostgresEventRepository.countSql(Some(filter), 100)
@@ -74,8 +73,8 @@ final class RepositorySqlSuite extends munit.ScalaCheckSuite:
     Vector(
       PostgresEventRepository.searchSql(request),
       PostgresEventRepository.searchSql(force(SearchRequest.first(None, SortDirection.Oldest, 10))),
-      PostgresEventRepository.facetDimensionsSql(force(FacetRequest.of(Some(filter)))),
-      PostgresEventRepository.facetTagsSql(force(FacetRequest.of(None))),
+      PostgresEventRepository.facetsSql(force(FacetRequest.of(Some(filter)))),
+      PostgresEventRepository.facetsSql(force(FacetRequest.of(None))),
       PostgresEventRepository.histogramSql(force(HistogramRequest.of(Some(filter), at, at.plusDays(7)))),
       PostgresEventRepository.findSql(EventRef(at, UUID.randomUUID())),
       PostgresEventRepository.countSql(None, 10000),
@@ -128,15 +127,29 @@ final class RepositorySqlSuite extends munit.ScalaCheckSuite:
     assert(detail.contains(", raw FROM"), detail)
 
   test("the facet pass materialises its candidate set and asks for every grouping set in one query"):
-    val sql = PostgresEventRepository.facetDimensionsSql(force(FacetRequest.of(Some(filter)))).sqlString
+    val sql = PostgresEventRepository.facetsSql(force(FacetRequest.of(Some(filter)))).sqlString
     assert(sql.contains("WITH cand AS MATERIALIZED"), sql)
     assert(sql.contains("GROUP BY GROUPING SETS"), sql)
     // The trailing `()` set is the grand total the cap flag is derived from; without it the cap is unreportable.
     assert(sql.contains("(severity), ())"), sql)
     FacetDimension.values.foreach(dimension => assert(sql.contains(s"(${columnOf(dimension)})"), dimension.label))
 
+  test("the tag facet rides on the same candidate set rather than spliced into a second statement"):
+    // The regression this pins is a performance one: two statements each carrying `WITH cand AS MATERIALIZED (...)`
+    // ran the capped fact-table scan twice per page view. One statement referencing the CTE twice runs it once.
+    val sql = PostgresEventRepository.facetsSql(force(FacetRequest.of(Some(filter)))).sqlString
+    assertEquals("WITH cand AS MATERIALIZED".r.findAllMatchIn(sql).size, 1, sql)
+    assertEquals("FROM cand".r.findAllMatchIn(sql).size, 2, sql)
+    assert(sql.contains("UNION ALL"), sql)
+    assert(sql.contains("unnest(cand.tags)"), sql)
+    // The candidate cap is bound once, not once per pass, and the tag cap follows it.
+    assertEquals(
+      PostgresEventRepository.facetsSql(force(FacetRequest.of(Some(filter)))).params.toVector,
+      Vector[Any](Vector("kitchen-1"), FacetRequest.DefaultCandidateCap, FacetRequest.DefaultPerDimension)
+    )
+
   test("the grouping() argument order is the order the masks were computed for"):
-    val sql = PostgresEventRepository.facetDimensionsSql(force(FacetRequest.of(None))).sqlString
+    val sql = PostgresEventRepository.facetsSql(force(FacetRequest.of(None))).sqlString
     val arguments = "grouping\\(([^)]+)\\)".r.findFirstMatchIn(sql).map(_.group(1).split(',').map(_.trim).toVector)
     assertEquals(arguments, Some(FacetDimension.values.toVector.map(columnOf)))
 
@@ -161,6 +174,10 @@ final class RepositorySqlSuite extends munit.ScalaCheckSuite:
     val frag = PostgresEventRepository.insertSql(NewEvent.of(at, Json.obj("id" -> Json.fromString("x"))))
     assert(frag.sqlString.contains("ON CONFLICT (occurred_at, ce_source, ce_id) DO NOTHING"), frag.sqlString)
     assertEquals(frag.params.size, 3)
+    // The bound document is the rendering NewEvent already hashed, not a second one produced at bind time.
+    val event = NewEvent.of(at, Json.obj("id" -> Json.fromString("x")))
+    assertEquals(PostgresEventRepository.insertSql(event).params.toVector(1), event.canonical)
+    assertEquals(event.canonical, event.raw.noSpaces)
 
   private def columnOf(dimension: FacetDimension): String = dimension match
     case FacetDimension.Type     => "ce_type"

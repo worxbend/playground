@@ -116,8 +116,22 @@ final case class FacetValue(value: String, count: Long) derives DbCodec
   * `occurredAt` is passed separately from `raw` even though it is *in* `raw`, because it is the partition key and ADR
   * §5 forbids generating a partition key column (`text::timestamptz` is only `STABLE`). The ingestion layer is what
   * validated and clamped it; the database takes it on trust and files the row accordingly.
+  *
+  * @param canonical
+  *   `raw.noSpaces`, rendered once. It is a field and not a method because it is needed twice per record on the consume
+  *   path — to compute [[payloadSha256]] and to bind the `jsonb` parameter — and rendering a CloudEvent is the most
+  *   expensive pure operation in that path. It also makes the two uses provably the same bytes: the digest is over the
+  *   string that is sent, not over a second rendering that merely ought to be equal to it.
+  *
+  * The constructor is private so those three fields cannot be assembled inconsistently. There is one way to build a
+  * `NewEvent` and it derives all three from the document.
   */
-final case class NewEvent(occurredAt: OffsetDateTime, raw: Json, payloadSha256: IArray[Byte])
+final case class NewEvent private (
+  occurredAt: OffsetDateTime,
+  raw: Json,
+  canonical: String,
+  payloadSha256: IArray[Byte]
+)
 
 object NewEvent:
 
@@ -129,8 +143,9 @@ object NewEvent:
     * the stored row, which is what makes it useful for detecting silent corruption and cross-partition duplicates.
     */
   def of(occurredAt: OffsetDateTime, raw: Json): NewEvent =
-    val digest = MessageDigest.getInstance("SHA-256").digest(raw.noSpaces.getBytes(UTF_8))
-    NewEvent(occurredAt, raw, IArray.unsafeFromArray(digest))
+    val canonical = raw.noSpaces
+    val digest = MessageDigest.getInstance("SHA-256").digest(canonical.getBytes(UTF_8))
+    NewEvent(occurredAt, raw, canonical, IArray.unsafeFromArray(digest))
 
   /** The bridge from the domain.
     *
