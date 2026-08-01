@@ -23,13 +23,57 @@ One `deploy/docker-compose.yml` brings up the whole stack on a single host.
 | `prometheus` | `prom/prometheus:v3.13.1` | `9090` | Scrapes `/metrics` off all three services every 15 s, 30 d retention. Evaluates the alerting rules (§5.4). |
 | `grafana` | `grafana/grafana:13.1.1` | `3000` | Prometheus provisioned as the default datasource, plus the **Event observatory** dashboard (§5.2). |
 
+**Which containers must be healthy before which, what is reachable from the host, and what survives a
+`docker compose down`.** Arrows are `depends_on` conditions from the compose file, not network traffic; the
+cylinders are named volumes, and a container without one holds nothing you would miss.
+
+```mermaid
+flowchart TB
+  pg["postgres<br/>not published"]
+  kafka["kafka<br/>not published"]
+  init["kafka-init<br/>one-shot"]
+  wolfram["wolfram<br/>host 8081"]
+  cobalt["cobalt<br/>host 8082 · runs the migrations"]
+  ferrite["ferrite<br/>host 9000"]
+  pgx["postgres-exporter<br/>not published"]
+  otel["otel-collector<br/>not published"]
+  prom["prometheus<br/>host 9090"]
+  graf["grafana<br/>host 3000"]
+
+  pgdata[("postgres-data")]
+  kfdata[("kafka-data")]
+  promdata[("prometheus-data")]
+  grafdata[("grafana-data")]
+
+  pg --- pgdata
+  kafka --- kfdata
+  prom --- promdata
+  graf --- grafdata
+
+  kafka -- healthy --> init
+  kafka -- healthy --> wolfram
+  kafka -- healthy --> cobalt
+  init -- "exited 0" --> wolfram
+  init -- "exited 0" --> cobalt
+  pg -- healthy --> cobalt
+  pg -- healthy --> pgx
+  pg -- healthy --> ferrite
+  cobalt -- healthy --> ferrite
+  prom -- started --> graf
+```
+
+`otel-collector` and `prometheus` are gated on nothing, deliberately: a collector with no senders and a scrape
+target that is still booting are both ordinary states, and ordering them behind the services would mean a
+restart of one takes the other down with it. `grafana`'s edge is a bare `depends_on` — *started*, not *healthy* —
+so a Grafana that comes up first shows "Datasource not found" for a few seconds rather than failing to start.
+
 Topics (`kafka-init`, and `com.worxbend.kernel.event.Topics`):
 
 - `events.cloudevents.v1` — 12 partitions, replication factor 1, CloudEvents **binary** content mode.
 - `events.cloudevents.v1.dlq` — 3 partitions, replication factor 1, CloudEvents **structured** mode, keyed
   `topic/partition/offset` so a replayed poison record overwrites its predecessor instead of accumulating copies.
 
-Data flow: producer → `POST /events` on wolfram → Kafka → cobalt → `INSERT … ON CONFLICT DO NOTHING` into
+Data flow: producer → `POST /v1/events` on wolfram → Kafka → cobalt → `INSERT … ON CONFLICT DO NOTHING` into
 `events.cloud_event` → ferrite reads. A W3C `traceparent` is injected into the Kafka headers at ingest and
 extracted by the consumer, so one trace spans HTTP → Kafka → database.
 
@@ -51,12 +95,9 @@ docker compose config -q  # validates interpolation and the mandatory vars
 docker compose up -d
 ```
 
-Startup ordering is enforced with healthchecks rather than plain `depends_on`, because Kafka and Postgres both
-accept TCP connections well before they can serve requests:
-
-```
-postgres/kafka healthy -> kafka-init completes -> wolfram, cobalt -> (cobalt healthy) -> ferrite
-```
+Startup ordering is enforced with healthchecks rather than plain `depends_on` (§1 has the graph), because Kafka
+and Postgres both accept TCP connections well before they can serve requests, and a service that starts too early
+crash-loops instead of waiting.
 
 `cobalt` applies the Flyway migrations on boot, which is why `ferrite` waits for it: the schema must exist before
 the reader starts. `Migrations.migrate` is idempotent and Flyway's own lock serialises concurrent replicas.
@@ -306,17 +347,43 @@ All three services mount the same paths, so one scrape config and one ingress ru
 | `GET /health/ready` | Consults dependencies. wolfram: broker reachability. cobalt: broker **and** database, with the failing dependency's reason in the body. ferrite: the read pool can hand out a valid connection. |
 | `GET /openapi.json` | wolfram only. Generated from the running build's endpoint values. |
 
-`/metrics` and `/health/*` are excluded from `http.server.requests` in all three services — in wolfram
-structurally, by mounting them outside the Tapir interpreter.
+Neither path appears in `http.server.requests`: a scrape endpoint that times itself adds a request per scrape
+interval to every rate panel that reads it, and health probes are the highest-frequency traffic a service serves
+without being user traffic at all.
+
+**Which component times an HTTP request, and what it cannot see.** Read this before writing a panel that groups
+request rate by `service`: the three answers are not the same shape, and one of them is "nothing".
+
+```mermaid
+flowchart TB
+  subgraph W["wolfram — Tapir on Vert.x"]
+    wreq(["request"]) --> wint["Tapir interpreter<br/>MetricsRequestInterceptor"]
+    wint --> wtimer["http.server.requests<br/>uri = Tapir path template"]
+    wops["/metrics, /health/*<br/>plain Vert.x routes, mounted outside the interpreter —<br/>the interceptor structurally cannot see them"]
+  end
+  subgraph F["ferrite — Play"]
+    freq(["request"]) --> ffilter["MetricsFilter, an EssentialFilter"]
+    ffilter -- "path in Meters.UninstrumentedPaths" --> fskip["not timed"]
+    ffilter -- otherwise --> ftimer["http.server.requests<br/>uri = RouteTemplate.of, unknown paths collapse to other"]
+  end
+  subgraph C["cobalt — Cask"]
+    creq(["request"]) --> cnone["no HTTP timer is registered at all"]
+  end
+```
+
+wolfram's exclusion is by construction and cannot fall out of date; ferrite's is a list check in the filter, which
+can. cobalt's admin surface is not timed by anything, so `http_server_requests_seconds` has no `service="cobalt"`
+series and the dashboard's request-rate panel covers two services, not three.
 
 ---
 
 ## 5. Reading the metrics
 
 Names are declared once in `modules/observability`'s `Meters` object in Micrometer's dot convention; the registry
-translates them to Prometheus's underscores at scrape time, and counters gain `_total`, timers `_seconds_{count,sum,max}`.
-Every meter carries the common tags `service` and `version`. `instance` comes from the Prometheus scrape target,
-not from the exposition.
+translates them to Prometheus's underscores at scrape time, and counters gain `_total`, timers
+`_seconds_{count,sum,max}`, distribution summaries `_{count,sum,max}`, and the eleven families with a declared
+ladder also `_bucket` (§5.1). Every meter carries the common tags `service` and `version`. `instance` comes from
+the Prometheus scrape target, not from the exposition.
 
 **Two tags arrive renamed, and queries that ignore this return nothing.** Prometheus reserves `job` and — because
 `prometheus.yml` sets one per target — `service` for the scrape target's own labels, and `honor_labels` is left
@@ -330,39 +397,184 @@ not from the exposition.
 `honor_labels: true` would fix the spelling and break the target: the maintenance job's name would overwrite
 `job="observatory"` and those series would leave the scrape target's label set entirely.
 
-### The ones that matter
+### Where a meter comes from, and why there is exactly one registry
 
-| Metric | Emitted by | Read it as |
+**What has already happened to a meter by the time you query it, and who decided it.** All three filter stages are
+installed in `Telemetry.start` before the first meter exists, which is why a common tag or a bucket ladder cannot
+be retrofitted onto a meter that was registered earlier — it keeps the tags it was born with.
+
+```mermaid
+flowchart LR
+  meters["Meters<br/>35 names, the tag keys, the closed value sets"]
+  facade["one typed façade per service<br/>IngestMetrics · ConsumerMetrics · SearchMetrics<br/>SupervisorMetrics · MaintenanceMetrics · AuthMetrics"]
+  binders["11 JVM and system binders, bound by Telemetry.start<br/>plus HikariCP's own, bound by each service's wiring"]
+  start["Telemetry.start<br/>called once from each service main"]
+  filters["MeterFilters, installed before any meter exists<br/>1 common tags: service, version<br/>2 cardinality caps: uri at 100, type at 50<br/>3 the bucket ladders"]
+  registry["the one registry per process<br/>PrometheusMeterRegistry over PrometheusRegistry"]
+  otel["Tracing: OTLP traces only<br/>the metrics exporter is forced to none"]
+  ep["GET /metrics<br/>Telemetry.scrape returns a String"]
+  prom["Prometheus<br/>job=observatory, every 15s, 30d"]
+  graf["Grafana"]
+
+  meters -. "the only place a name is spelled" .-> facade
+  start -- installs --> filters
+  start -- constructs --> registry
+  start -- constructs --> otel
+  facade -- "at registration" --> filters
+  binders -- "at registration" --> filters
+  filters --> registry
+  registry --> ep --> prom --> graf
+```
+
+One registry, and `scrape()` rather than a getter for it, is what lets three different HTTP stacks mount the same
+endpoint: a second registry would mean a second exposition or a second naming convention, and the shared dashboard
+is the thing that pays for it. Anything with a native Prometheus collector registers into the same
+`PrometheusRegistry` object and appears in the same exposition — no bridge, no second port.
+
+### The catalogue
+
+Thirty-five families, all declared in `modules/observability`'s `Meters`. The Micrometer name is the dotted one in
+that file; below is what Prometheus actually serves. Tags listed are the ones the call site sets — `service` and
+`version` are on everything and are not repeated.
+
+**wolfram — ingestion**
+
+| Metric | Type | What it answers |
 | --- | --- | --- |
-| `ingest_events_received_total{type,mode}` | wolfram | Durable events, counted **after** the broker acknowledged. Not the arrival rate — that is `http_server_requests`. |
-| `ingest_events_rejected_total{reason}` | wolfram | `malformed`, `invalid-attributes`, `invalid-payload`, `unknown-type`, `too-large`. A closed set by construction. |
-| `kafka_produce_latency_seconds{topic,outcome}` | wolfram | p99 is the signal. Rising median = broker pressure; rising p99 over a flat median = one slow partition leader. `outcome="failure"` is the broker-error count — there is no separate error counter. |
-| `consume_group_lag{group,topic,partition}` | cobalt | Gauge from an AdminClient (committed vs `listOffsets(LATEST)`), refreshed every `LAG_REFRESH_INTERVAL`. Not the client's `records-lag-max`, which reads zero during a rebalance and vanishes when the consumer is down. |
-| `consume_batch_size{…}` | cobalt | Distribution summary. Small batches under load mean the consumer is *starved*, not saturated. |
-| `consume_records_persisted_total{type}` | cobalt | Rows the database took responsibility for, by CloudEvents type. |
-| `consume_records_duplicate_total` | cobalt | Idempotent-insert no-ops. Non-zero is **normal** for an at-least-once pipeline; spikes mean redelivery. |
-| `consume_records_poison_total{reason}` | cobalt | Records sent to the DLQ. Any sustained non-zero rate is a page. |
-| `consume_batch_latency_seconds{outcome}` | cobalt | Batch-insert wall clock. Rising = database or GIN-index pressure. |
-| `search_query_duration_seconds{shape}` | ferrite | End-to-end search latency, tagged by which access paths the filter uses: `time`, `text`, `payload`, `attrs`, `none`, or a `+`-joined combination. Never by filter values. |
-| `search_facets_capped_total` | ferrite | A facet result hit the candidate cap and its counts are lower bounds. A product signal, not an error. |
-| `event_unrecognised_total{type,reason}` | wolfram | An accepted event this deployment has no decoder for (`unknown-type`) or whose payload did not fit the decoder its type selected (`invalid-payload`). Benign during a rolling deploy; sustained means a producer shipped ahead of its consumer. |
-| `hikaricp_connections_*{pool}` | cobalt, ferrite | HikariCP's own binding. `pool` is `observatory-read` or `observatory-write`; the two services are told apart by the `service` common tag, not by the pool name. `pending` and `acquire_seconds` are what distinguish a slow query from a queued connection. |
-| `http_server_requests_seconds{uri,outcome,…}` | all three | The one HTTP timer. Tagged by matched route template, never raw path; the `uri` tag is capped at 100 distinct values. |
-| `jvm_*`, `process_*`, `system_*` | all three | The standard binders, including `VirtualThreadMetrics` on JDK 25. |
+| `ingest_events_received_total{type,mode}` | counter | How many events became durable. Incremented **after** the broker acknowledged, so this is not the arrival rate — that is `http_server_requests_seconds_count`. |
+| `ingest_events_rejected_total{reason}` | counter | Why the front door said no, in categories an operator can act on. |
+| `ingest_payload_bytes{mode}` | summary, buckets | Whether `INGEST_MAX_EVENT_BYTES` is set anywhere near reality. A p99 against the ceiling means producers are being refused; a p99 at a hundredth of it means the ceiling protects nothing. Accepted requests only — a refused body would make the p99 a statement about attackers. |
+| `ingest_batch_events` | summary, buckets | How much work one `events:batchCreate` is. A batch of one large event and a batch of two hundred small ones are the same bytes and two hundred sequential produces apart. |
+| `ingest_time_skew{direction}` | summary, buckets | How far producer clocks are from this service's. **The leading indicator for the partition-maintenance failure**: `occurred_at` chooses the partition, so a fleet drifting toward the clamp is a fleet about to be refused wholesale — and that refusal arrives as `reason=invalid-attributes` with no hint that a clock caused it. The sign is a tag because a summary cannot record a negative, and folding the sign away makes "everyone is ten seconds fast" look like "half fast, half slow". |
+| `kafka_produce_latency_seconds{topic,outcome}` | timer, buckets | Broker acknowledgement latency. Rising median is broker pressure; rising p99 over a flat median is one slow partition leader. `outcome="failure"` **is** the produce-error count — there is deliberately no second counter. |
+| `event_unrecognised_total{type,reason}` | counter | Whether a producer shipped ahead of its consumer. Counted at the front door rather than in cobalt, because ADR §4.2 makes refinement total: an unheard-of event still reaches Postgres, so nothing downstream fails and this counter is the only trace. `unknown-type` means deploy the consumer; `invalid-payload` means the schema moved under a decoder that is still registered, which is the more alarming of the two. |
+
+**cobalt — consuming**
+
+| Metric | Type | What it answers |
+| --- | --- | --- |
+| `consume_batch_size` | summary, buckets | Starved or saturated. Batches of one or two under sustained load mean the consumer is waiting, which throughput alone cannot show. |
+| `consume_records_persisted_total{type}` | counter | Rows the database took responsibility for, by type. |
+| `consume_records_duplicate_total` | counter | Idempotent-insert no-ops. Non-zero is **normal** for an at-least-once pipeline; a spike is a redelivery storm. Untagged — one `ON CONFLICT DO NOTHING` batch cannot attribute its shortfall to a type. |
+| `consume_batch_latency_seconds{outcome}` | timer, buckets | Whether the write side is the bottleneck. Rising median is database pressure; rising p99 over a flat median is one oversized payload or one hot partition. |
+| `consume_decode_duration_seconds` | timer, buckets | Which half of the consumer slowed down. Decode is CPU on the stream's thread; the batch write is a blocking round trip on a pool. When throughput drops, exactly one of the two moved. |
+| `consume_records_poison_total{reason}` | counter | Records routed to the DLQ. Any sustained non-zero rate is a page. |
+| `consume_group_lag{group,topic,partition}` | gauge | How far behind the group is, measured from an `AdminClient` and **not** from the consumer's `records-lag-max` — the client metric covers only partitions currently being fetched, so it reads zero during a rebalance and vanishes when the consumer is down. A partition with no committed offset is omitted rather than reported as zero. |
+| `consume_running` | gauge | Whether lag is an outage or somebody's maintenance window. 1 while consuming, 0 while paused. Alerting on lag alone cannot tell those apart, which is how a planned pause pages the on-call. |
+| `consume_lifecycle_commands_total{command,outcome}` | counter | Who has been driving the pipeline. `http_server_requests_seconds` would record that a POST happened; this records which verb and whether it changed anything, and an unexpected rate here means something automated is issuing them. |
+| `consume_checkpoint_divergence` | gauge | Whether the externalised checkpoint and Kafka's committed offset still agree. **Zero is the only healthy value**, and it is the reason `events.consumer_checkpoint` exists: checkpoint ahead of Kafka is events that will be replayed, Kafka ahead of checkpoint is events whose durability nobody can prove. Both are silent everywhere else. |
+| `dlq_depth` | gauge | The dead-letter backlog, as an **upper bound** — computed from partition offsets, and the DLQ is compacted by key, so some offsets may be superseded. `consume_records_poison_total` gives the rate; this says whether a fix worked. |
+| `dlq_replay_operations_total{outcome}` | counter | How many times a human decided to put records back. `outcome="skipped"` is a dry run, kept out of `success` because "an operator is looking" and "an operator has acted" must not share a series. |
+| `dlq_replay_records_total{outcome}` | counter | How much a replay moved. One operation replaying 200 records and 200 operations replaying one each are identical here and very different situations — which is why both counters exist. Not tagged by skip reason: that is in the response body and the log line. |
+
+**cobalt — scheduled maintenance and storage**
+
+| Metric | Type | What it answers |
+| --- | --- | --- |
+| `maintenance_job_duration_seconds{exported_job,outcome}` | timer, buckets | **Whether a job that fails silently is still alive.** Three alerts come off this one family: a non-zero failure rate, *no run of any outcome* in N intervals (a dead job thread leaves no other trace), and a p99 approaching the interval — ADR §12.4's tripwire for retiring the materialized view. `outcome="skipped"` is a replica that lost the advisory-lock race, and with N replicas the healthy steady state is one `success` and N-1 `skipped` per tick. Note `exported_job`, not `job`. |
+| `maintenance_partitions_created_total` | counter | Whether the partition job is achieving anything. A step function of roughly one per month; flat for longer than that is a job running and doing nothing, which the duration timer alone cannot distinguish from a healthy no-op. |
+| `maintenance_partitions_detached_total` | counter | Retention actually detaching. Detached, never dropped — the tables still exist and still hold their rows. |
+| `maintenance_partitions_headroom` | gauge | Months of future partitions that already exist. The leading indicator; alert below **two**, because one means the fix has to happen this month. |
+| `maintenance_partitions_blocked` | gauge | Months whose partition cannot be created because `DEFAULT` already holds rows for them. Non-zero is a request for a human — the job has logged the exact statements, and moving those rows takes an exclusive lock no unattended job should take on an operator's behalf. |
+| `partition_default_rows` | gauge | Rows in the catch-all partition. **Must stay 0.** Alert on `> 0`, not on a rate. |
+
+**ferrite — the read side**
+
+| Metric | Type | What it answers |
+| --- | --- | --- |
+| `search_query_duration_seconds{shape}` | timer, buckets | Which access path is slow. `shape` is the four decisions that change the plan — `time`, `text`, `payload`, `attrs` — `+`-joined in a fixed order, or `none`. Sixteen values in all — fifteen combinations and `none` — closed by construction rather than by a cap, so it cannot mint a seventeenth. Failures are timed too: a search that times out is the slowest search there is, and excluding it would make the p99 improve as the service got worse. |
+| `search_results_returned{shape}` | summary, buckets | Reads against the timer above: a slow query returning three rows is a filter that cannot use an index; a slow query returning a full page is honest work. The ladder starts at 1 because Micrometer rejects a non-positive SLO — a zero boundary throws at registration, inside a `Future.andThen` that swallows it, and the meter simply never appears. |
+| `search_pages_total{page}` | counter | How often the first page failed to answer the question. **Not a depth**: the cursor is an opaque keyset token, not an ordinal, so a depth derived from it would report every continuation as page two — precise-looking and false. |
+| `search_facets_capped_total` | counter | Whether the facet cap is now hiding information users need. A product signal, not an error. |
+| `tail_connections` | gauge | How much of the eight-connection read pool the live tail is holding. Each tail is a repeating query, and an SSE connection is invisible to the HTTP timer after the first observation. |
+| `tail_events_delivered_total` | counter | The tail's own throughput. Delivering nothing while ingest is healthy is a cursor that has stopped advancing. |
+| `rollup_staleness` | gauge | How old the overview page's numbers are, in seconds. `maintenance_job_duration_seconds` says the refresh stopped; this says what that costs the reader, because the page keeps answering and nothing raises an error. `-1` means the rollup is empty. |
+
+**Shared**
+
+| Metric | Type | What it answers |
+| --- | --- | --- |
+| `http_server_requests_seconds{method,uri,status,outcome}` | timer, buckets | The one HTTP timer, timed by Micrometer and nothing else so that Play and Vert.x/Tapir produce identical series. `uri` is a matched route template, never a raw path. Emitted by wolfram and ferrite only — see §4. |
+| `auth_decisions_total{reason,outcome}` | counter | Which check refused a credential. `bad-signature` at volume is an attack, `expired` at volume is a client that stopped refreshing, `scope-missing` at volume is a deployment that granted the wrong role — three different responses, and all three arrive as a 401 or 403 in the HTTP timer. Accepted decisions are counted too, so the failure rate is a fraction and not an absolute. Emitted by wolfram today; cobalt's admin API verifies tokens but does not count the decisions. |
+| `hikaricp_connections_*{pool}` | gauge/timer | Whether a slow page was a slow query or a queued connection. `pool` is `observatory-read` or `observatory-write`; the two services are told apart by `service`, not by the pool name. `pending` and `acquire_seconds` are the ones that matter. |
+| `jvm_*`, `process_*`, `system_*` | binders | Process health, identically for all three services, including `VirtualThreadMetrics` on JDK 25. |
+
+### Closed tag-value sets
+
+A panel author needs to know the whole set up front, because a value that never appears and a value that cannot
+appear look the same on a dashboard. Every set below is closed in the code — the call sites take their values from
+`Meters`, never from an exception message, and a value outside the set is a bug rather than a new label.
+
+| Tag | On | Values |
+| --- | --- | --- |
+| `reason` (`Reasons`) | `ingest_events_rejected_total`, `consume_records_poison_total`, `event_unrecognised_total` | `malformed`, `invalid-attributes`, `invalid-payload`, `unknown-type`, `too-large`, `unpersistable` |
+| `reason` (`AuthReasons`) | `auth_decisions_total` | `absent`, `malformed`, `bad-signature`, `expired`, `not-yet-valid`, `wrong-audience`, `scope-missing`, `accepted`, `disabled` |
+| `outcome` (`Outcomes`) | produce, batch write, maintenance, lifecycle, replay | `success`, `failure`, `duplicate`, `skipped` |
+| `command` (`Commands`) | `consume_lifecycle_commands_total` | `start`, `stop`, `pause`, `resume`, `restart`, `clear-checkpoints` |
+| `direction` (`Skews`) | `ingest_time_skew` | `future`, `past` |
+| `page` (`Pages`) | `search_pages_total` | `first`, `continuation` |
+| `mode` (`Modes`) | `ingest_events_received_total`, `ingest_payload_bytes` | `binary`, `structured` |
+| `exported_job` (`Jobs`) | `maintenance_job_duration_seconds` | `partition-maintenance`, `rollup-refresh` |
+
+Two of those repay a second look. `outcome="skipped"` never means failure: on a maintenance job it is a replica
+that lost the advisory-lock race, on a lifecycle command it is a no-op, and on a replay it is a dry run — folding
+any of them into `failure` pages somebody for the system working as designed. `AuthReasons` deliberately includes
+`accepted` and `disabled`: without the first, forty refusals out of forty requests and forty out of four hundred
+thousand are the same number, and the second is non-zero exactly when `AUTH_ENABLED=false` has reached an
+environment nobody intended.
+
+### Cardinality caps, and what happens when one engages
+
+`Telemetry` installs two `MeterFilter.maximumAllowableTags` caps, both `MeterFilter.deny()` on overflow:
+
+| Cap | Applies to | Limit |
+| --- | --- | --- |
+| `MaxUriTagValues` | the `uri` tag on `http.server.requests` | 100 distinct values |
+| `MaxEventTypeTagValues` | the `type` tag on `ingest.events.received`, `consume.records.persisted`, `event.unrecognised` | 50 distinct values |
+
+**What engaging looks like: nothing.** Once the limit is reached, meters carrying a *new* value of that tag are
+denied — silently. The first 100 route templates keep working and keep being timed; a route added later is
+absent from the exposition, and no log line, no error and no metric says so. That is the deliberate trade:
+dropping the overflow keeps the meters that already exist, where dropping the meter would lose everything.
+
+The caps are backstops, not the mechanism. Both tags are bounded in the normal case by construction — `uri` is a
+route template rather than a raw path, and `type` comes from the event taxonomy — and the caps exist for the day
+someone tags a raw path by accident, or a producer derives its CloudEvents `type` from a firmware build number.
+`event_unrecognised_total` is the meter that reports a producer emitting something unexpected, which makes it the
+meter a misbehaving producer would use to mint unbounded timeseries; the cap is why that becomes a flat line
+instead of an incident.
+
+The caps are registered **before** the bucket filters, and the reading order matches the causal one: the cap
+decides how many tag combinations exist, and each of those is multiplied by the bucket count of whichever ladder
+applies (§5.1).
 
 ### 5.1 Histogram buckets, and which meters have them
 
-Five timer families and one distribution summary publish `_bucket` series, so `histogram_quantile` works against
-them. Everything else reaches Prometheus as `_count`/`_sum`/`_max` only.
+**Eleven of the thirty-five families publish `_bucket` series** — the six timers in `Meters.Buckets.timers` and
+the five distribution summaries in `Meters.Buckets.summaries`. `histogram_quantile` works against those and
+returns *nothing at all* against the other twenty-four, quietly: a meter with no declared ladder reaches
+Prometheus as `_count`/`_sum`/`_max` only, and there is no `_bucket` series for the function to read. Nothing
+errors; the panel is simply empty.
 
-| Meter | Bucket range |
-| --- | --- |
-| `http_server_requests_seconds` | 5 ms → 10 s (11 boundaries) |
-| `search_query_duration_seconds` | 10 ms → 10 s (10) |
-| `kafka_produce_latency_seconds` | 1 ms → 2.5 s (11) |
-| `consume_batch_latency_seconds` | 5 ms → 5 s (10) |
-| `maintenance_job_duration_seconds` | 100 ms → 15 min (9) |
-| `consume_batch_size` | 1 → 1000 records (10) |
+| Meter | Kind | Ladder |
+| --- | --- | --- |
+| `http_server_requests_seconds` | timer | 5 ms → 10 s (11 boundaries) |
+| `search_query_duration_seconds` | timer | 10 ms → 10 s (10) |
+| `kafka_produce_latency_seconds` | timer | 1 ms → 2.5 s (11) |
+| `consume_batch_latency_seconds` | timer | 5 ms → 5 s (10) |
+| `consume_decode_duration_seconds` | timer | 50 µs → 50 ms (9) |
+| `maintenance_job_duration_seconds` | timer | 100 ms → 15 min (9) |
+| `consume_batch_size` | summary | 1 → 1000 records (10) |
+| `ingest_payload_bytes` | summary | 256 B → 1 MiB (8) |
+| `ingest_batch_events` | summary | 1 → 256 events (8) |
+| `ingest_time_skew` | summary | 1 s → 90 d (9) |
+| `search_results_returned` | summary | 1 → 250 rows (7) |
+
+Each ladder brackets the range where a decision changes, and the top boundaries are usually the point: 5 m and
+15 m on the maintenance timer are what make ADR §12.4's "the refresh p99 is approaching its interval" tripwire
+expressible at all; 24 h and 90 d on the skew summary are the time clamp's own limits, so the buckets either side
+of them turn "producers are drifting" into "producers are about to be refused"; 1 MiB on the payload summary is
+`INGEST_MAX_EVENT_BYTES`, and the bucket next to a limit is the interesting one.
 
 The boundaries are **hand-written ladders**, declared in `Meters.Buckets` and installed as `MeterFilter`s by
 `Telemetry`. They are not Micrometer's `publishPercentileHistogram`, which generates ~70 buckets per timer and makes
@@ -382,9 +594,10 @@ sum(rate(search_query_duration_seconds_bucket{le="0.25"}[5m]))
 `clamp_min` is not decoration: without it the ratio is `0/0` whenever traffic stops, and the panel goes to `NaN`
 rather than to zero.
 
-Adding a ladder to a timer is one entry in `Meters.Buckets.timers`. Adding one to a **new tag combination** is the
-expensive direction: bucket count multiplies by surviving tag cardinality, which is why the `uri` cap
-(`Telemetry.MaxUriTagValues`) and the `type` cap (`MaxEventTypeTagValues`) are registered before the bucket filters.
+Adding a ladder is one entry in `Meters.Buckets.timers` or `Meters.Buckets.summaries` — a map rather than a filter
+written per meter, so a timer added without a ladder is visible as an absence from one list rather than as a panel
+nobody can write six months later. Adding a ladder to a **new tag combination** is the expensive direction: bucket
+count multiplies by surviving tag cardinality, which is the order the caps above are registered in.
 
 Useful expressions:
 
@@ -404,7 +617,7 @@ max by (outcome) (consume_batch_latency_seconds_max)
 # ingest durability — there is no separate produce-error counter
 sum by (outcome) (rate(kafka_produce_latency_seconds_count[5m]))
 
-# UI latency (search has no dedicated timer today — see Known limitations)
+# page latency, which is search latency plus rendering — search alone is search_query_duration_seconds
 sum by (uri) (rate(http_server_requests_seconds_sum{service="ferrite",uri=~"/events.*"}[5m]))
   / clamp_min(sum by (uri) (rate(http_server_requests_seconds_count{service="ferrite",uri=~"/events.*"}[5m])), 0.001)
 
