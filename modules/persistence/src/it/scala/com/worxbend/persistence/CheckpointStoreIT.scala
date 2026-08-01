@@ -79,8 +79,8 @@ final class CheckpointStoreIT extends PostgresSuite:
   private def stored: Map[Int, Long] =
     await(store.load(group)).map(row => row.partition -> row.nextOffset).toMap
 
-  /** How many rows carry this CloudEvents id. The other half of the atomicity assertion: a checkpoint that rolled
-    * back while its rows stayed would be just as broken as the reverse, and only this catches it.
+  /** How many rows carry this CloudEvents id. The other half of the atomicity assertion: a checkpoint that rolled back
+    * while its rows stayed would be just as broken as the reverse, and only this catches it.
     */
   private def countOf(id: String): Long =
     withConnection: connection =>
@@ -91,14 +91,18 @@ final class CheckpointStoreIT extends PostgresSuite:
 
   test("an insert and its checkpoint land together"):
     val at = OffsetDateTime.parse("2026-08-01T00:00:00Z")
-    val written = await(repository.insertAllCheckpointed(Vector(event("cp-a", at)), CheckpointCommit(group, Some("r1"), positions(0 -> 10L))))
+    val written = await(repository.insertAllCheckpointed(
+      Vector(event("cp-a", at)),
+      CheckpointCommit(group, Some("r1"), positions(0 -> 10L))
+    ))
     assertEquals(written, 1L)
     assertEquals(stored.get(0), Some(10L))
 
   test("an empty batch still checkpoints"):
     // A poll that yielded only duplicates, or only dead letters, has still moved the consumer forward. Not recording
     // that leaves a position the next start would rewind to, and the rewind replays events that were never a problem.
-    val _ = await(repository.insertAllCheckpointed(Vector.empty, CheckpointCommit(group, Some("r1"), positions(1 -> 5L))))
+    val _ =
+      await(repository.insertAllCheckpointed(Vector.empty, CheckpointCommit(group, Some("r1"), positions(1 -> 5L))))
     assertEquals(stored.get(1), Some(5L))
 
   test("a failed checkpoint rolls the insert back with it — the whole point of the table"):
@@ -117,7 +121,10 @@ final class CheckpointStoreIT extends PostgresSuite:
     assertEquals(countOf("cp-doomed"), 0L, "the event was written even though its checkpoint failed — not atomic")
     // And the good path still works afterwards, so the failure did not poison the pool.
     val _ = await(
-      repository.insertAllCheckpointed(Vector(event("cp-b", at)), CheckpointCommit(group, Some("r1"), positions(0 -> 11L)))
+      repository.insertAllCheckpointed(
+        Vector(event("cp-b", at)),
+        CheckpointCommit(group, Some("r1"), positions(0 -> 11L))
+      )
     )
     assertEquals(stored.get(0), Some(11L))
     assertEquals(countOf("cp-b"), 1L)
@@ -125,7 +132,8 @@ final class CheckpointStoreIT extends PostgresSuite:
   test("a stale write cannot rewind a position"):
     // A rebalance can hand the same partition to another replica mid-flight. Without the monotonicity guard the older
     // position would overwrite the newer one and manufacture a replay — enforced by the database, not by call order.
-    val _ = await(repository.insertAllCheckpointed(Vector.empty, CheckpointCommit(group, Some("r2"), positions(0 -> 5L))))
+    val _ =
+      await(repository.insertAllCheckpointed(Vector.empty, CheckpointCommit(group, Some("r2"), positions(0 -> 5L))))
     assertEquals(stored.get(0), Some(11L))
 
   test("records accumulate rather than being overwritten"):

@@ -96,6 +96,22 @@ final class AdminHandlers(
   def dlqReplay(limit: Int, reason: String, refs: String, dryRun: Boolean): AdminReply =
     deadLetters.replay(limit, reason, refs, dryRun)
 
+  /** The generated OpenAPI document, JSON and YAML. Served rather than published as a file so it can never describe a
+    * build other than the running one.
+    */
+  def openApiJson(): AdminReply = AdminRoutes.json(200, CobaltApiDocs.json)
+
+  def openApiYaml(): AdminReply = AdminReply(200, "application/yaml; charset=utf-8", CobaltApiDocs.yaml)
+
+  /** Swagger UI, rendered from the `swagger-ui` webjar already on the classpath.
+    *
+    * Twelve lines of HTML rather than a second HTTP stack. Tapir's `SwaggerUI` bundle produces *server endpoints*,
+    * which need a tapir server interpreter — and putting one beside Cask would give cobalt two routers, which is the
+    * thing ADR §1 is most explicit about not doing. The assets themselves come from the webjar, served by Cask's own
+    * static-resource route, so nothing is fetched from a CDN and the page works on a host with no internet.
+    */
+  def docs(): AdminReply = AdminReply(200, "text/html; charset=utf-8", AdminRoutes.SwaggerPage)
+
   /** The consumer's lifecycle state and offsets. See [[SupervisorAdmin]]. */
   def consumerStatus(): AdminReply = consumer.status()
 
@@ -128,7 +144,15 @@ object AdminRoutes:
     */
   val DlqPath: String = "/admin/dlq"
   val DlqRecordsPath: String = DlqPath + "/records"
-  val DlqReplayPath: String = DlqPath + "/replay"
+
+  /** The colon form, not `/admin/dlq/replay`.
+    *
+    * Replay is a **custom method** on the DLQ resource, not a sub-resource of it, and AIP-136 spells that with a colon.
+    * `/admin/dlq/records` keeps its slash because it genuinely is a sub-collection — the distinction is the one the
+    * convention exists to make. Moved here after the document and the routes were compared and disagreed;
+    * `CobaltApiDocsSuite` is what noticed.
+    */
+  val DlqReplayPath: String = DlqPath + ":replay"
 
   /** The consumer lifecycle surface.
     *
@@ -145,5 +169,40 @@ object AdminRoutes:
   val ConsumerClearCheckpointsPath: String = ConsumerPath + ":clearCheckpoints"
 
   val JsonContentType: String = "application/json; charset=utf-8"
+
+  /** Where the document and the UI are mounted, matching wolfram so an operator learns one convention. */
+  val OpenApiJsonPath: String = "/openapi.json"
+  val OpenApiYamlPath: String = "/openapi.yaml"
+  val DocsPath: String = "/docs"
+
+  /** Where Cask serves the webjar's assets from. The version is in the path because that is how webjars are laid out,
+    * and hard-coding it here would break silently on a dependency bump — so it is read from the classpath.
+    */
+  val SwaggerAssetsPath: String = "/docs/assets"
+
+  /** The Swagger UI page.
+    *
+    * Self-contained and CDN-free: every asset comes from the `swagger-ui` webjar on this service's own classpath, so
+    * the page renders on a host with no internet — which a homelab behind a firewall is, and which is exactly when
+    * somebody needs the docs.
+    */
+  val SwaggerPage: String =
+    s"""<!doctype html>
+       |<html lang="en">
+       |<head>
+       |  <meta charset="utf-8">
+       |  <meta name="viewport" content="width=device-width, initial-scale=1">
+       |  <title>${CobaltApiDocs.Title}</title>
+       |  <link rel="stylesheet" href="$SwaggerAssetsPath/swagger-ui.css">
+       |</head>
+       |<body>
+       |  <div id="swagger"></div>
+       |  <script src="$SwaggerAssetsPath/swagger-ui-bundle.js"></script>
+       |  <script>
+       |    window.ui = SwaggerUIBundle({ url: "$OpenApiJsonPath", dom_id: "#swagger", deepLinking: true });
+       |  </script>
+       |</body>
+       |</html>
+       |""".stripMargin
 
   def json(status: Int, body: Json): AdminReply = AdminReply(status, JsonContentType, body.noSpaces)

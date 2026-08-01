@@ -31,8 +31,8 @@ import scala.util.control.NonFatal
 /** The consumer lifecycle, over HTTP.
   *
   * **Why this exists.** A consumer that can only be stopped by stopping the process is a consumer whose every incident
-  * response is `docker compose restart` plus a `kafka-consumer-groups.sh` invocation nobody has memorised, run inside
-  * a container that has to be given a shell first. Every operation here replaces one of those.
+  * response is `docker compose restart` plus a `kafka-consumer-groups.sh` invocation nobody has memorised, run inside a
+  * container that has to be given a shell first. Every operation here replaces one of those.
   *
   * **Every mutating route is a POST, and one of them defaults to refusing.** `restart` moves a consumer group's
   * committed offsets, which is the single most destructive thing an operator can do to this pipeline: `latest` skips
@@ -64,25 +64,26 @@ final class SupervisorAdmin(supervisor: ConsumerSupervisor, timeout: FiniteDurat
 
   /** `POST /admin/consumer:restart` — stop, move the group's offsets, start.
     *
-    * `target` selects where to resume from; `offsets` supplies the coordinates when it is `explicit`. `dryRun`
-    * defaults to **true**, so the first call answers "here is what I would set" and changes nothing.
+    * `target` selects where to resume from; `offsets` supplies the coordinates when it is `explicit`. `dryRun` defaults
+    * to **true**, so the first call answers "here is what I would set" and changes nothing.
     */
   def restart(target: String, offsets: String, dryRun: Boolean): AdminReply =
-    val request = for
-      seekTarget <- SeekTarget
-        .parse(target)
-        .toRight(s"target '$target' is not one of ${SeekTarget.values.map(_.name).mkString(", ")}")
-      explicit <-
-        if seekTarget == SeekTarget.Explicit then SeekOffset.parseAll(offsets)
-        else if offsets.trim.nonEmpty then
-          // Refused rather than ignored. An operator who pasted coordinates and chose the wrong target would
-          // otherwise get a successful response that silently did something else with the pipeline.
-          Left(s"offsets were supplied but target is '${seekTarget.name}'; use target=explicit or drop them")
-        else Right(Vector.empty)
-    yield (seekTarget, explicit)
+    val request =
+      for
+        seekTarget <- SeekTarget
+          .parse(target)
+          .toRight(s"target '$target' is not one of ${SeekTarget.values.map(_.name).mkString(", ")}")
+        explicit <-
+          if seekTarget == SeekTarget.Explicit then SeekOffset.parseAll(offsets)
+          else if offsets.trim.nonEmpty then
+            // Refused rather than ignored. An operator who pasted coordinates and chose the wrong target would
+            // otherwise get a successful response that silently did something else with the pipeline.
+            Left(s"offsets were supplied but target is '${seekTarget.name}'; use target=explicit or drop them")
+          else Right(Vector.empty)
+      yield (seekTarget, explicit)
 
     request match
-      case Left(problem) => AdminRoutes.json(400, error(problem))
+      case Left(problem)                           => AdminRoutes.json(400, error(problem))
       case Right((seekTarget, explicit)) if dryRun =>
         // A dry run resolves the target without stopping anything, which is the whole value: an operator can see
         // what `stored` or `earliest` actually means for this group before it costs a rebalance.
@@ -146,8 +147,8 @@ final class SupervisorAdmin(supervisor: ConsumerSupervisor, timeout: FiniteDurat
   /** What a restart *would* seek to, computed from the status this endpoint already fetched.
     *
     * Reuses the status rather than resolving the target for real, because resolving `stored` or `earliest` means more
-    * admin round trips and a dry run should be cheap enough to run twice. The values shown are the same ones the
-    * commit path would use — they come from the same two sources.
+    * admin round trips and a dry run should be cheap enough to run twice. The values shown are the same ones the commit
+    * path would use — they come from the same two sources.
     */
   private def preview(target: SeekTarget, explicit: Vector[SeekOffset], status: ConsumerStatus): List[Json] =
     target match

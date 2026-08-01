@@ -656,14 +656,14 @@ Symptom: `rate(consume_records_poison_total[15m]) > 0`.
 
 3. **Mind the clock.** The DLQ inherits `KAFKA_LOG_RETENTION_HOURS=168` — dead letters are gone after **7 days**.
    If a fix will take longer than that, copy the topic out to durable storage first.
-4. **Replay, once the defect is fixed.** `POST /admin/dlq/replay` re-publishes dead letters onto the main topic
+4. **Replay, once the defect is fixed.** `POST /admin/dlq:replay` re-publishes dead letters onto the main topic
    with their original CloudEvents bytes and headers, so the idempotent insert makes a re-ingested event that did
    land a no-op. **It plans by default and commits only when asked** — run it without `dryRun=false` first and
    read what it says it would do:
 
    ```bash
-   curl -sX POST 'localhost:8082/admin/dlq/replay?limit=50&reason=malformed' | jq              # plan
-   curl -sX POST 'localhost:8082/admin/dlq/replay?limit=50&reason=malformed&dryRun=false' | jq # commit
+   curl -sX POST 'localhost:8082/admin/dlq:replay?limit=50&reason=malformed' | jq              # plan
+   curl -sX POST 'localhost:8082/admin/dlq:replay?limit=50&reason=malformed&dryRun=false' | jq # commit
    ```
 
    Watch `dlq_replay_records_total{outcome}` beside `consume_records_poison_total`: a replay whose records come
@@ -875,7 +875,7 @@ exactly the `conf/` copy an operator can override); **the orphaned hourly rollup
 now drives the overview page at `/` through `OverviewRepository` — §5.2); **the missing container hardening**
 (`no-new-privileges` on every container, `pg_stat_statements`, `track_io_timing`, `log_min_duration_statement` and
 `postgres-exporter` all present and verified — §2.1, §5.3); and **the absence of a DLQ replay tool**
-(`POST /admin/dlq/replay` on cobalt — §6.3).
+(`POST /admin/dlq:replay` on cobalt — §6.3).
 
 ---
 

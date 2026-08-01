@@ -14,7 +14,7 @@ serving nothing but `/metrics` and the two health probes. Source: `applications/
 - Routing every record it cannot store — undecodable *or* rejected by the database — to
   `events.cloudevents.v1.dlq` in structured mode, and committing past it.
 - **Serving that dead-letter queue back to an operator**: `GET /admin/dlq`, `GET /admin/dlq/records` and
-  `POST /admin/dlq/replay`, so a poison record can be inspected and put back on the topic without a console
+  `POST /admin/dlq:replay`, so a poison record can be inspected and put back on the topic without a console
   consumer and without reconstructing it by hand.
 - Committing offsets **only after** the batch is durable.
 - Publishing consumer-group lag from an `AdminClient`, and answering readiness from a background poller.
@@ -48,7 +48,7 @@ serving nothing but `/metrics` and the two health probes. Source: `applications/
 | `GET /health/ready` | `200`/`503` with `{"status":…,"dependencies":{"kafka":{"status","detail"},"postgresql":{…}}}` |
 | `GET /admin/dlq` | DLQ depth per partition, plus the replay limits in force |
 | `GET /admin/dlq/records?limit&reason` | Bounded, newest-first listing of dead letters |
-| `POST /admin/dlq/replay?limit&reason&refs&dryRun` | Plans a replay; publishes only with `dryRun=false` |
+| `POST /admin/dlq:replay?limit&reason&refs&dryRun` | Plans a replay; publishes only with `dryRun=false` |
 
 Cask does the routing (`cask.main.Main.defaultHandler` is its dispatch trie); Undertow is built explicitly in
 `AdminServer` rather than by `cask.main.Main.main`, for two reasons. Cask's own `main` does not expose the bound
@@ -256,13 +256,13 @@ standing broker load for it.
 
 ```bash
 # what would happen — the default, and the shape to run first
-curl -sX POST 'localhost:8082/admin/dlq/replay?limit=50&reason=unconvertible' | jq
+curl -sX POST 'localhost:8082/admin/dlq:replay?limit=50&reason=unconvertible' | jq
 
 # do it
-curl -sX POST 'localhost:8082/admin/dlq/replay?limit=50&reason=unconvertible&dryRun=false' | jq
+curl -sX POST 'localhost:8082/admin/dlq:replay?limit=50&reason=unconvertible&dryRun=false' | jq
 
 # exactly these records, all or nothing
-curl -sX POST 'localhost:8082/admin/dlq/replay?refs=events.cloudevents.v1/3/9912&dryRun=false' | jq
+curl -sX POST 'localhost:8082/admin/dlq:replay?refs=events.cloudevents.v1/3/9912&dryRun=false' | jq
 ```
 
 **The replayed record is a byte copy, never a re-encode.** `DeadLetterReplay.producerRecord` rebuilds it from the
@@ -503,8 +503,8 @@ curl -s localhost:8080/metrics | grep consume_
 # the DLQ, without a console consumer
 curl -s localhost:8080/admin/dlq | jq
 curl -s 'localhost:8080/admin/dlq/records?limit=10' | jq '.records[] | {ref, reason, event}'
-curl -sX POST 'localhost:8080/admin/dlq/replay?limit=10' | jq        # dry run: the default
-curl -sX POST 'localhost:8080/admin/dlq/replay?limit=10&dryRun=false' | jq
+curl -sX POST 'localhost:8080/admin/dlq:replay?limit=10' | jq        # dry run: the default
+curl -sX POST 'localhost:8080/admin/dlq:replay?limit=10&dryRun=false' | jq
 
 # still there, and still the right tool for anything deeper than max-records
 docker compose -f deploy/docker-compose.yml exec kafka \

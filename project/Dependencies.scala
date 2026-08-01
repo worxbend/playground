@@ -156,6 +156,19 @@ object Dependencies:
     "tapir-swagger-ui-bundle"
   ).map("com.softwaremill.sttp.tapir" %% _ % Versions.Tapir)
 
+  /** Tapir's *description* half, without a server interpreter.
+    *
+    * cobalt serves its admin API with Cask and will keep doing so (ADR §1). What it borrows from tapir is the ability
+    * to state the contract once as values and derive the document from them, rather than hand-writing a YAML that
+    * nothing compiles and that is wrong the first time a route changes.
+    */
+  val tapirDocs: Seq[ModuleID] =
+    Seq("tapir-core", "tapir-json-circe", "tapir-openapi-docs")
+      .map("com.softwaremill.sttp.tapir" %% _ % Versions.Tapir)
+
+  /** Swagger UI's static assets, served by whichever HTTP stack the service already has. */
+  val swaggerUi: ModuleID = "org.webjars" % "swagger-ui" % Versions.SwaggerUi
+
   /** The OpenAPI model serialisers. `tapir-openapi-docs` produces the model and deliberately does not choose a
     * serialisation, so both the JSON and the YAML renderings are opt-in.
     */

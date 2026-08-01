@@ -57,7 +57,7 @@ final class CobaltRoutes(handlers: AdminHandlers) extends cask.Routes:
   def dlqRecords(limit: Int = ReplayRequest.UnspecifiedLimit, reason: String = ""): cask.Response[String] =
     CobaltRoutes.respond(handlers.dlqRecords(limit, reason))
 
-  @cask.post("/admin/dlq/replay")
+  @cask.post("/admin/dlq:replay")
   def dlqReplay(
     limit: Int = ReplayRequest.UnspecifiedLimit,
     reason: String = "",
@@ -98,9 +98,55 @@ final class CobaltRoutes(handlers: AdminHandlers) extends cask.Routes:
   def consumerClearCheckpoints(): cask.Response[String] =
     CobaltRoutes.respond(handlers.consumerClearCheckpoints())
 
+  // --- documentation ---------------------------------------------------------------------------------------------
+
+  @cask.get("/openapi.json")
+  def openApiJson(): cask.Response[String] = CobaltRoutes.respond(handlers.openApiJson())
+
+  @cask.get("/openapi.yaml")
+  def openApiYaml(): cask.Response[String] = CobaltRoutes.respond(handlers.openApiYaml())
+
+  @cask.get("/docs")
+  def docs(): cask.Response[String] = CobaltRoutes.respond(handlers.docs())
+
+  /** Swagger UI's own assets, straight out of the webjar on this service's classpath.
+    *
+    * `staticResources` resolves against the classpath root, and a webjar lays its files out under
+    * `META-INF/resources/webjars/<artifact>/<version>/`. The version is read from the jar rather than written here,
+    * because a hard-coded one breaks on the next dependency bump — silently, as a blank page.
+    */
+  @cask.staticResources("/docs/assets")
+  def swaggerAssets(): String = CobaltRoutes.SwaggerResourceRoot
+
   initialize()
 
 object CobaltRoutes:
+
+  /** The classpath directory the `swagger-ui` webjar unpacked into.
+    *
+    * Discovered rather than declared: webjars put their version in the path, so the alternative is a constant that has
+    * to be edited in lockstep with `project/Dependencies.scala` and whose staleness shows up as a 404 for a CSS file,
+    * which nobody notices until they open the page.
+    */
+  val SwaggerResourceRoot: String =
+    val base = "META-INF/resources/webjars/swagger-ui"
+    // From the webjar's own Maven metadata, which every webjar ships and which is a real *file* — reading the
+    // directory entry instead was the first attempt and returns nothing inside a jar, where a directory is not a
+    // readable resource. The fallback would 404 every asset, so the suite asserts discovery actually worked rather
+    // than trusting it.
+    val discovered =
+      Option(getClass.getClassLoader.getResourceAsStream("META-INF/maven/org.webjars/swagger-ui/pom.properties"))
+        .flatMap: stream =>
+          scala.util
+            .Using(stream): input =>
+              val properties = java.util.Properties()
+              properties.load(input)
+              Option(properties.getProperty("version"))
+            .toOption
+            .flatten
+        .map(_.trim)
+        .filter(_.nonEmpty)
+    discovered.fold(base)(version => s"$base/$version")
 
   def respond(reply: AdminReply): cask.Response[String] =
     cask.Response(reply.body, statusCode = reply.status, headers = Seq("content-type" -> reply.contentType))

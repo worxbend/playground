@@ -249,7 +249,11 @@ lazy val cobalt = (project in file("applications/cobalt"))
   .settings(packagingSettings *)
   .settings(
     name := "cobalt",
-    libraryDependencies ++= Seq(cask, pekkoKafka, requests % Test) ++ pekko ++ pekkoTestkit.map(_ % Test),
+    // tapir here is for *documentation only* — cobalt's HTTP surface stays Cask (ADR §1). The endpoint values
+    // describe the admin API and generate its OpenAPI; no tapir server interpreter is on this classpath, and
+    // `CobaltApiDocsSuite` asserts the description and the Cask routes cannot drift apart.
+    libraryDependencies ++= Seq(cask, pekkoKafka, swaggerUi, requests % Test) ++ pekko ++ pekkoTestkit.map(_ % Test),
+    libraryDependencies ++= tapirDocs ++ openApiCirce,
     libraryDependencies ++= testContainers.map(_ % IT)
   )
 

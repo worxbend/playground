@@ -132,8 +132,14 @@ final class SupervisorSuite extends FunSuite:
   test("the stored position appears beside the committed one, which is the whole diagnostic"):
     // A disagreement between the two means one of the commits did not happen, and which one tells an operator
     // whether events will be replayed or were lost. Two endpoints would make that comparison an exercise.
-    val position = PartitionPosition("t", 0, committed = Some(100L), stored = Some(140L), endOffset = Some(200L),
-      lag = Some(100L))
+    val position = PartitionPosition(
+      "t",
+      0,
+      committed = Some(100L),
+      stored = Some(140L),
+      endOffset = Some(200L),
+      lag = Some(100L)
+    )
     val json = io.circe.Encoder[PartitionPosition].apply(position)
     assertEquals(json.hcursor.get[Long]("committed").toOption, Some(100L))
     assertEquals(json.hcursor.get[Long]("stored").toOption, Some(140L))

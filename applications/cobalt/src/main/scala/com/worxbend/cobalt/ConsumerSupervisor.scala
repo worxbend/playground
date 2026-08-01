@@ -39,8 +39,8 @@ import scala.util.control.NonFatal
   *
   * Before this, the consumer was a stream started once at boot and drained once at shutdown, and the only way to stop
   * it was to stop the process. That is a poor answer to every real incident: a poison partition that needs skipping, a
-  * database under maintenance, a backfill that must not be consumed while it runs, a group whose offsets are wrong.
-  * All four end in `docker compose restart` plus a `kafka-consumer-groups.sh` invocation nobody has memorised, on a
+  * database under maintenance, a backfill that must not be consumed while it runs, a group whose offsets are wrong. All
+  * four end in `docker compose restart` plus a `kafka-consumer-groups.sh` invocation nobody has memorised, on a
   * container that has to be given a shell.
   *
   * ## The state machine, and what "pause" actually does
@@ -84,8 +84,8 @@ final class ConsumerSupervisor(
 
   private val current = AtomicReference[ConsumerSupervisor.Snapshot](ConsumerSupervisor.Snapshot.initial(clock))
 
-  /** The transition lock. Only lifecycle commands take it; [[status]] never does, so an operator can always ask what
-    * is happening *while* a slow drain is happening — which is exactly when they want to.
+  /** The transition lock. Only lifecycle commands take it; [[status]] never does, so an operator can always ask what is
+    * happening *while* a slow drain is happening — which is exactly when they want to.
     */
   private val transition = Object()
 
@@ -101,8 +101,8 @@ final class ConsumerSupervisor(
   /** The full picture: lifecycle state plus committed, stored and end offsets per partition.
     *
     * Every Kafka and database call here is best-effort. An admin timeout must not make this endpoint fail: the state
-    * machine's own answer is always available and is the more important half, so a broker that cannot be reached
-    * yields `null` positions and a state, not a 500. This is the endpoint somebody hits *because* something is wrong.
+    * machine's own answer is always available and is the more important half, so a broker that cannot be reached yields
+    * `null` positions and a state, not a 500. This is the endpoint somebody hits *because* something is wrong.
     */
   def status: Future[ConsumerStatus] =
     val snapshot = current.get()
@@ -124,10 +124,11 @@ final class ConsumerSupervisor(
           endOffset = end,
           // Lag needs both numbers. A partition with an end offset and no committed offset has *unknown* lag, not the
           // whole log's worth — reporting the latter is how an idle group looks like an emergency.
-          lag = for
-            c <- committed
-            e <- end
-          yield math.max(0L, e - c)
+          lag =
+            for
+              c <- committed
+              e <- end
+            yield math.max(0L, e - c)
         )
       ConsumerStatus(
         state = snapshot.state,
@@ -196,7 +197,11 @@ final class ConsumerSupervisor(
               offsets.alterOffsets(groupId, seek)
               materialise()
               logger.info(s"restarted at ${target.name}: ${seek.size} partition(s) moved")
-              Right(RestartOutcome(target, seek.toList.map((p, o) => SeekOffset(p.topic, p.partition, o)).sortBy(s => (s.topic, s.partition)), from))
+              Right(RestartOutcome(
+                target,
+                seek.toList.map((p, o) => SeekOffset(p.topic, p.partition, o)).sortBy(s => (s.topic, s.partition)),
+                from
+              ))
             catch
               case NonFatal(error) =>
                 // The consumer is stopped and the seek failed: say so, and leave it stopped rather than starting it
@@ -303,8 +308,8 @@ object ConsumerSupervisor:
 
   /** How long a drain may take before the supervisor gives up waiting and reports the consumer stopped anyway.
     *
-    * Longer than `ConsumerConfig.drainTimeout`, so the connector's own bound is the one that normally fires and this
-    * is only the backstop for a drain that hangs entirely.
+    * Longer than `ConsumerConfig.drainTimeout`, so the connector's own bound is the one that normally fires and this is
+    * only the backstop for a drain that hangs entirely.
     */
   val DrainTimeout: scala.concurrent.duration.FiniteDuration =
     scala.concurrent.duration.Duration(60, java.util.concurrent.TimeUnit.SECONDS)
@@ -332,8 +337,8 @@ object ConsumerSupervisor:
 
   /** Runs a best-effort call, logging rather than propagating.
     *
-    * Used for every Kafka round trip on the status path. The state machine's answer is always available and is the
-    * more important half; an admin timeout must degrade the response, not fail it.
+    * Used for every Kafka round trip on the status path. The state machine's answer is always available and is the more
+    * important half; an admin timeout must degrade the response, not fail it.
     */
   private[cobalt] def quietly[A](logger: com.typesafe.scalalogging.Logger, what: String)(act: => A): Option[A] =
     try Some(act)

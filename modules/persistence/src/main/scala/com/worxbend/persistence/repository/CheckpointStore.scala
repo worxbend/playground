@@ -59,19 +59,19 @@ final case class CheckpointWrite(topic: String, partition: Int, nextOffset: Long
   * **This does not replace Kafka's `__consumer_offsets`,** which stays authoritative for fetching. It answers the two
   * questions Kafka's own storage cannot:
   *
-  *   1. **Retention.** `offsets.retention.minutes` defaults to seven days. A group that stops committing for longer
-  *      has its offsets deleted, and the next start resolves `auto.offset.reset=earliest` and replays the whole
-  *      retained log. Survivable, because the insert deduplicates — and completely silent, which is the problem.
-  *   2. **Transactionality.** [[record]] is called *inside* the same transaction as the batch insert, so the offset
-  *      and the rows it accounts for commit or roll back together. That is the only arrangement in which "the last
-  *      durably stored offset" has an exact answer; Kafka's commit is a separate round trip afterwards, and the window
-  *      between them is precisely the replay window.
+  *   1. **Retention.** `offsets.retention.minutes` defaults to seven days. A group that stops committing for longer has
+  *      its offsets deleted, and the next start resolves `auto.offset.reset=earliest` and replays the whole retained
+  *      log. Survivable, because the insert deduplicates — and completely silent, which is the problem.
+  *   2. **Transactionality.** [[record]] is called *inside* the same transaction as the batch insert, so the offset and
+  *      the rows it accounts for commit or roll back together. That is the only arrangement in which "the last durably
+  *      stored offset" has an exact answer; Kafka's commit is a separate round trip afterwards, and the window between
+  *      them is precisely the replay window.
   *
   * **Why Postgres and not Redis or Cassandra.** The store has to be external to the broker, and the honest answer for
-  * this system is the database that is already a hard dependency of the write path. Redis is a second datastore to
-  * run, back up and monitor, and — not being transactional with respect to the insert — gives up property 2, which is
-  * the only reason worth doing this at all. Cassandra adds an operational surface larger than the rest of the stack
-  * for a table holding one row per partition. If Postgres is down, cobalt is not consuming; no new failure mode.
+  * this system is the database that is already a hard dependency of the write path. Redis is a second datastore to run,
+  * back up and monitor, and — not being transactional with respect to the insert — gives up property 2, which is the
+  * only reason worth doing this at all. Cassandra adds an operational surface larger than the rest of the stack for a
+  * table holding one row per partition. If Postgres is down, cobalt is not consuming; no new failure mode.
   */
 trait CheckpointStore:
 
@@ -118,8 +118,8 @@ final class PostgresCheckpointStore(read: Transactor, write: Transactor)(using E
       // one and manufacture a replay. Monotonicity is enforced by the database, not by the caller's ordering.
       val _ = sql"""
         INSERT INTO events.consumer_checkpoint (group_id, topic, partition, next_offset, records, owner, updated_at)
-        VALUES (${groupId}, ${position.topic}, ${position.partition}, ${position.nextOffset}, ${position.records},
-                ${owner}, now())
+        VALUES ($groupId, ${position.topic}, ${position.partition}, ${position.nextOffset}, ${position.records},
+                $owner, now())
         ON CONFLICT (group_id, topic, partition) DO UPDATE
           SET next_offset = EXCLUDED.next_offset,
               records     = events.consumer_checkpoint.records + EXCLUDED.records,
@@ -134,14 +134,14 @@ final class PostgresCheckpointStore(read: Transactor, write: Transactor)(using E
         sql"""
           SELECT group_id, topic, partition, next_offset, records, owner, updated_at
           FROM events.consumer_checkpoint
-          WHERE group_id = ${groupId}
+          WHERE group_id = $groupId
           ORDER BY updated_at DESC, topic, partition
         """.query[Checkpoint].run()
 
   def clear(groupId: String): Future[Int] =
     Future:
       transact(write):
-        sql"DELETE FROM events.consumer_checkpoint WHERE group_id = ${groupId}".update.run()
+        sql"DELETE FROM events.consumer_checkpoint WHERE group_id = $groupId".update.run()
 
 /** What to checkpoint alongside a batch of events. */
 final case class CheckpointCommit(groupId: String, owner: Option[String], positions: Vector[CheckpointWrite])

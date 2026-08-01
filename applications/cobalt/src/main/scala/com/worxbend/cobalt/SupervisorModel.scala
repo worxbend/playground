@@ -29,8 +29,8 @@ import java.time.Instant
 /** What the consumer is doing right now.
   *
   * **A closed enum and not a boolean pair.** "running" and "paused" as two flags admits four states, two of which are
-  * nonsense, and every reader then has to know which combination means what. One value with six cases makes the
-  * illegal states unrepresentable and makes the admin response a single word an operator can read.
+  * nonsense, and every reader then has to know which combination means what. One value with six cases makes the illegal
+  * states unrepresentable and makes the admin response a single word an operator can read.
   *
   * The distinction that matters most is [[Stopped]] versus [[Failed]]. Both mean "not consuming"; only one of them is
   * somebody's fault. A supervisor that reported a crashed stream as `stopped` would look exactly like one an operator
@@ -116,8 +116,8 @@ final case class PartitionPosition(
 /** The consumer's whole observable state, in one response.
   *
   * One object rather than four endpoints because these values are only meaningful together: a `lag` of 40 000 means
-  * something different when `state` is `paused` than when it is `running`, and an operator who has to make two
-  * requests to find that out will make them minutes apart during an incident.
+  * something different when `state` is `paused` than when it is `running`, and an operator who has to make two requests
+  * to find that out will make them minutes apart during an incident.
   */
 final case class ConsumerStatus(
   state: RunState,
@@ -134,8 +134,8 @@ final case class ConsumerStatus(
 
 object ConsumerStatus:
 
-  /** Hand-written rather than derived so `state` renders as its wire name and the JSON field order is the reading
-    * order — `state` first, because that is the answer to the question anybody asks this endpoint.
+  /** Hand-written rather than derived so `state` renders as its wire name and the JSON field order is the reading order
+    * — `state` first, because that is the answer to the question anybody asks this endpoint.
     */
   given Encoder[ConsumerStatus] = status =>
     Json.obj(
@@ -154,8 +154,8 @@ object ConsumerStatus:
 /** The outcome of a lifecycle command.
   *
   * Carries the state *before* as well as after, because "pause" applied to an already-paused consumer and "pause"
-  * applied to a running one are both successes and an operator needs to know which one happened — particularly when
-  * the command was issued twice because the first response was slow.
+  * applied to a running one are both successes and an operator needs to know which one happened — particularly when the
+  * command was issued twice because the first response was slow.
   */
 final case class LifecycleResult(command: String, from: RunState, status: ConsumerStatus, changed: Boolean)
 

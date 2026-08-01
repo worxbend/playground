@@ -56,13 +56,27 @@ final class AdminRoutesSuite extends munit.FunSuite:
     assertEquals(AdminRoutes.LivenessPath, "/health/live")
     assertEquals(AdminRoutes.ReadinessPath, "/health/ready")
 
-  test("the dead-letter routes live under one prefix, so an ingress can expose the probes without the replay"):
-    // /metrics and /health are platform-owned and safe to expose; POST /admin/dlq/replay is the only route cobalt
-    // serves that changes anything, and a prefix is what lets a network policy separate the two without a path list.
+  test("the admin routes live under one prefix, so an ingress can expose the probes without them"):
+    // /metrics and /health are platform-owned and safe to expose; the mutating routes are not, and a prefix is what
+    // lets a network policy separate the two without maintaining a path list.
     assertEquals(AdminRoutes.DlqPath, "/admin/dlq")
     assertEquals(AdminRoutes.DlqRecordsPath, "/admin/dlq/records")
-    assertEquals(AdminRoutes.DlqReplayPath, "/admin/dlq/replay")
     assert(!AdminRoutes.DlqPath.startsWith(Meters.HealthPath), "the replay surface must not sit under the probe path")
+    assert(!AdminRoutes.ConsumerPath.startsWith(Meters.HealthPath))
+
+  test("custom methods use a colon and sub-collections use a slash — the distinction AIP-136 exists to make"):
+    // `:replay` acts on the DLQ; `/records` is part of it. Spelling both with a slash would make the second
+    // indistinguishable from a resource whose id is `replay`, which is the collision the colon form prevents.
+    assertEquals(AdminRoutes.DlqReplayPath, "/admin/dlq:replay")
+    assertEquals(AdminRoutes.DlqRecordsPath, "/admin/dlq/records")
+    List(
+      AdminRoutes.ConsumerPausePath,
+      AdminRoutes.ConsumerResumePath,
+      AdminRoutes.ConsumerStopPath,
+      AdminRoutes.ConsumerStartPath,
+      AdminRoutes.ConsumerRestartPath,
+      AdminRoutes.ConsumerClearCheckpointsPath
+    ).foreach(path => assert(path.startsWith(AdminRoutes.ConsumerPath + ":"), path))
 
   test("metrics are served verbatim with the registry's own content type"):
     val telemetry = Fixtures.telemetry()
