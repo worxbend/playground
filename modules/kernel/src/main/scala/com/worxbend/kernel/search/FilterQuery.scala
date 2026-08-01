@@ -111,12 +111,54 @@ object FilterQuery:
   /** Renders a filter as a permalink query string, without the leading `?`. */
   def encode(filter: Option[Filter]): Either[FilterError, String] =
     val leaves = filter.fold(Vector.empty[Filter])(Filter.leaves).sortBy(Filter.sortKey)
-    val collected = leaves.foldLeft[Either[FilterError, Vector[(String, String)]]](Right(Vector.empty)): (acc, leaf) =>
-      acc.flatMap(params => paramsOf(leaf).map(params ++ _))
-    collected.map: params =>
-      ((VersionKey -> Version) +: params)
-        .map((key, value) => s"${Percent.encode(key)}=${Percent.encode(value)}")
-        .mkString("&")
+    val collected =
+      leaves.foldLeft[Either[FilterError, Vector[(Filter, Vector[(String, String)])]]](Right(Vector.empty)):
+        (acc, leaf) => acc.flatMap(collected => paramsOf(leaf).map(params => collected :+ (leaf -> params)))
+    for
+      perLeaf <- collected
+      _ <- oneLeafPerSlot(perLeaf)
+    yield ((VersionKey -> Version) +: perLeaf.flatMap((_, params) => params))
+      .map((key, value) => s"${Percent.encode(key)}=${Percent.encode(value)}")
+      .mkString("&")
+
+  /** The permalink slot a leaf occupies, or `None` for a leaf whose slot may legitimately hold several.
+    *
+    * A query string has one slot per filter family, and [[decode]] folds everything it finds in a slot into a single
+    * leaf. `PayloadCmp` is the one family where that fold is faithful — `data.t=>18&data.t=<24` decodes to the two
+    * leaves it was written from, which is how the grammar spells a range — so it has no slot and never clashes.
+    * `ExtensionEq`'s slot is per name, since two names are an ordinary conjunction and only a repeated name collides.
+    */
+  private def slotOf(leaf: Filter): Option[String] = leaf match
+    case Filter.PayloadCmp(_, _, _)  => None
+    case Filter.ExtensionEq(name, _) => Some(s"$ExtensionPrefix$name")
+    case other                       => Some(other.ordinal.toString)
+
+  /** Rejects a conjunction that wants to put two leaves in one slot.
+    *
+    * **Without this, [[encode]] silently widened the filter.** `And(TypeIn(a), TypeIn(b))` — an intersection, and one
+    * `Filter.and` builds without complaint — rendered as `type=a&type=b`, which [[decode]] reads as the *union*
+    * `TypeIn(a, b)`. The link then showed results the filter it was made from excludes, which is precisely the failure
+    * this codec's totality rules exist to prevent. The single-valued slots failed differently and just as badly:
+    * `And(SeverityAtLeast(Warn), SeverityAtLeast(Error))` produced `severity=…&severity=…`, a link [[decode]] rejects
+    * as [[FilterError.Repeated]] — an unopenable permalink.
+    *
+    * Reporting it as [[FilterError.NotPermalinkable]] puts it on the path ADR §6.3 already defines for `Or` and `Not`:
+    * a content-hashed saved search, which stores the AST and does not have to flatten it.
+    */
+  private def oneLeafPerSlot(perLeaf: Vector[(Filter, Vector[(String, String)])]): Either[FilterError, Unit] =
+    val clashes = perLeaf
+      .flatMap((leaf, params) => slotOf(leaf).map(slot => slot -> params.map((key, _) => key).distinct))
+      .groupMap((slot, _) => slot)((_, keys) => keys)
+      .collect { case (_, occupants) if occupants.sizeIs > 1 => occupants.head.mkString("/") }
+      .toVector
+      .sorted
+    if clashes.isEmpty then Right(())
+    else
+      Left(
+        FilterError.NotPermalinkable(
+          s"a query string holds one filter per parameter, and ${clashes.mkString(", ")} is asked for twice"
+        )
+      )
 
   /** Parses a permalink. Accepts a leading `?`. `Right(None)` means "a valid link with no filters" — the landing page —
     * which is a different answer from an error and the UI treats it differently.
@@ -302,7 +344,15 @@ private object Percent:
                 case None       => Left(s"invalid percent escape '${raw.substring(index, index + 3)}'")
                 case Some(byte) => go(index + 3, acc :+ byte)
           case '+' => go(index + 1, acc :+ ' '.toByte)
-          case ch  => go(index + 1, acc ++ ch.toString.getBytes(UTF_8).toVector)
+          case ch  =>
+            // A code point, not a `char`. Encoding a lone surrogate as UTF-8 yields `?`, so taking one UTF-16 unit at
+            // a time turned every astral character — an emoji in a `q=` term — into two question marks, silently
+            // changing the search a hand-written link asked for. Browsers percent-encode the query, which is why this
+            // only ever bit a URL pasted from a chat client or built by hand.
+            val paired =
+              Character.isHighSurrogate(ch) && index + 1 < raw.length && Character.isLowSurrogate(raw.charAt(index + 1))
+            val next = if paired then index + 2 else index + 1
+            go(next, acc ++ raw.substring(index, next).getBytes(UTF_8).toVector)
 
     go(0, Vector.empty).map(bytes => String(bytes.toArray, UTF_8))
 

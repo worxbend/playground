@@ -108,6 +108,34 @@ class ContentModeSuite extends ScalaCheckSuite:
     assertEquals(CloudEventHeaders.get(headers, "ce_id"), None)
     assertEquals(value.map(_.map(bytes => String(bytes, UTF_8))), Right(Some(base.render)))
 
+  property("a write replaces whatever the binding had already put in the headers"):
+    forAll(WireGenerators.genEnvelope, WireGenerators.genEnvelope): (previous, envelope) =>
+      // A `Serializer` is handed the record's own headers, so "the carrier is empty" is the caller's habit and not a
+      // guarantee. A replayer that copies a consumed record's headers onto a new `ProducerRecord` used to get a
+      // structured record still carrying `ce_specversion` — which `of` reads as *binary*, so every attribute came from
+      // the previous event and the structured body was mistaken for its payload.
+      val binary = dirty(previous, ContentMode.Binary)
+      val structured = dirty(previous, ContentMode.Structured)
+      val readBinary = roundTripInto(binary, ContentMode.Binary, envelope)
+      val readStructured = roundTripInto(structured, ContentMode.Structured, envelope)
+      (ContentMode.of(binary) == Some(ContentMode.Binary)) :| "binary write leaves a binary record" &&
+      (ContentMode.of(structured) == Some(ContentMode.Structured)) :| "structured write leaves a structured record" &&
+      (readBinary == Right(CloudEventAdapter.binaryCanonical(envelope))) :| s"binary read: $readBinary" &&
+      (readStructured == Right(envelope)) :| s"structured read: $readStructured"
+
+  test("a write does not disturb transport headers it does not own"):
+    // `ce_*` and `content-type` are the binding's namespace and are replaced wholesale. Trace context and a replayer's
+    // own bookkeeping describe the transport of this record, not the event in it, and must survive.
+    val headers = RecordHeaders()
+    val _ = CloudEventHeaders.put(headers, "traceparent", "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
+    val _ = CloudEventHeaders.put(headers, "x-replay-of", "events.cloudevents.v1/0/17")
+    val _ = ContentMode.write(ContentMode.Structured, base, headers)
+    assertEquals(
+      CloudEventHeaders.get(headers, "traceparent"),
+      Some("00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01")
+    )
+    assertEquals(CloudEventHeaders.get(headers, "x-replay-of"), Some("events.cloudevents.v1/0/17"))
+
   test("an extension name the spec forbids is refused before the record is built"):
     val envelope = base.copy(extensions = Map("Tenant-Id" -> AttrValue.Text("acme")))
     assert(ContentMode.write(ContentMode.Binary, envelope, RecordHeaders()).isLeft)
@@ -191,10 +219,20 @@ class ContentModeSuite extends ScalaCheckSuite:
     assertEquals(KafkaCodecs.decode(record).left.map(_.reason), Left("unknown-encoding"))
 
   private def roundTrip(mode: ContentMode, envelope: Envelope): Either[String, Envelope] =
-    val headers: Headers = RecordHeaders()
+    roundTripInto(RecordHeaders(), mode, envelope)
+
+  /** [[roundTrip]] over a carrier the caller has already used, which is the case a `Serializer` actually sees. */
+  private def roundTripInto(headers: Headers, mode: ContentMode, envelope: Envelope): Either[String, Envelope] =
     ContentMode
       .write(mode, envelope, headers)
       .flatMap(value => ContentMode.read(headers, value).left.map(_.message))
+
+  /** Headers left over from writing `previous` — the state a reused `ProducerRecord` header set is in. */
+  private def dirty(previous: Envelope, mode: ContentMode): Headers =
+    val headers: Headers = RecordHeaders()
+    val _ = ContentMode.write(mode, previous, headers)
+    val _ = CloudEventHeaders.put(headers, CloudEventHeaders.attribute("staleextension"), "left-behind")
+    headers
 
   private val base: Envelope =
     Envelope(

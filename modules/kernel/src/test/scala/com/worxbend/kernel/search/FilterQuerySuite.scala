@@ -36,6 +36,12 @@ final class FilterQuerySuite extends munit.ScalaCheckSuite:
 
   override def scalaCheckTestParameters = super.scalaCheckTestParameters.withMinSuccessfulTests(300)
 
+  /** The message `encode` gives when two leaves want the same parameter. Spelled once so the tests below read as the
+    * cases they are rather than as repeated string literals.
+    */
+  private def clash(key: String): String =
+    s"a query string holds one filter per parameter, and $key is asked for twice"
+
   property("encoding then decoding a flat filter is the identity"):
     forAll(FilterGenerators.genFlatFilter): filter =>
       FilterQuery.encode(Some(filter)).map(FilterQuery.decode) == Right(Right(Some(filter)))
@@ -138,6 +144,66 @@ final class FilterQuerySuite extends munit.ScalaCheckSuite:
   test("broken percent encoding is reported against the fragment"):
     assert(FilterQuery.decode("v=1&q=%ZZ").isLeft)
     assert(FilterQuery.decode("v=1&q=%A").isLeft)
+
+  test("two leaves of one family have no permalink, rather than a link that widens the filter"):
+    // `And(TypeIn(a), TypeIn(b))` is an intersection. Flattened into `type=a&type=b` it decodes as the *union*, so the
+    // link showed rows the filter it was built from excludes — the one outcome this codec's totality rules exist to
+    // prevent. Reported the same way `Or` and `Not` are, which routes it to a saved search (ADR §6.3).
+    val types = Filter.and(
+      Vector(
+        FilterGenerators.force(Filter.typeIn(Vector("a"))),
+        FilterGenerators.force(Filter.typeIn(Vector("b")))
+      )
+    )
+    assertEquals(FilterQuery.encode(types.toOption), Left(FilterError.NotPermalinkable(clash("type"))))
+    // Two of the same *single-valued* family used to encode into a link `decode` then refused as `Repeated` — an
+    // unopenable permalink rather than a wrong one, and just as broken.
+    val severities =
+      Filter.and(Vector(Filter.severityAtLeast(Severity.Warn), Filter.severityAtLeast(Severity.Error)))
+    assertEquals(FilterQuery.encode(severities.toOption), Left(FilterError.NotPermalinkable(clash("severity"))))
+    // A time window split across two leaves is *semantically* the window `decode` rebuilds, but it is not the same
+    // AST, so the round trip is not an identity and the codec says so instead of quietly canonicalising.
+    val split = Filter.and(
+      Vector(
+        FilterGenerators.force(Filter.occurred(Some(OffsetDateTime.parse("2026-07-01T00:00:00Z")), None)),
+        FilterGenerators.force(Filter.occurred(None, Some(OffsetDateTime.parse("2026-08-01T00:00:00Z"))))
+      )
+    )
+    assert(FilterQuery.encode(split.toOption).isLeft)
+    // Two equalities on one extension name collide; two names are an ordinary conjunction and still encode.
+    val sameName = Filter.and(
+      Vector(
+        FilterGenerators.force(Filter.extensionEq("tenantid", "acme")),
+        FilterGenerators.force(Filter.extensionEq("tenantid", "other"))
+      )
+    )
+    assertEquals(FilterQuery.encode(sameName.toOption), Left(FilterError.NotPermalinkable(clash("ext.tenantid"))))
+    val twoNames = Filter.and(
+      Vector(
+        FilterGenerators.force(Filter.extensionEq("tenantid", "acme")),
+        FilterGenerators.force(Filter.extensionEq("sequence", "7"))
+      )
+    )
+    assert(FilterQuery.encode(twoNames.toOption).isRight)
+
+  test("a repeated payload comparison is not a clash, because a range is how the grammar spells it"):
+    val range = Filter.and(
+      Vector(
+        FilterGenerators.force(Filter.payloadCmp("temperature", NumOp.Gte, BigDecimal(18))),
+        FilterGenerators.force(Filter.payloadCmp("temperature", NumOp.Lt, BigDecimal(24)))
+      )
+    )
+    assertEquals(FilterQuery.encode(range.toOption).map(FilterQuery.decode), Right(Right(range.toOption)))
+
+  test("a hand-written link keeps characters outside the basic plane"):
+    // `q=🔥` arrives raw from anything that is not a browser address bar. Decoding UTF-16 unit by unit turned the
+    // surrogate pair into two `?`, which searched for something the user did not type and reported no error.
+    assertEquals(
+      FilterQuery.decode("v=1&q=smoke 🔥"),
+      Right(Some(FilterGenerators.force(Filter.fullText("smoke 🔥"))))
+    )
+    val filter = FilterGenerators.force(Filter.fullText("🔥 kitchen 🧯"))
+    assertEquals(FilterQuery.encode(Some(filter)).map(FilterQuery.decode), Right(Right(Some(filter))))
 
   test("a filter with Or or Not has no permalink and says so"):
     val a = FilterGenerators.force(Filter.typeIn(Vector("a")))

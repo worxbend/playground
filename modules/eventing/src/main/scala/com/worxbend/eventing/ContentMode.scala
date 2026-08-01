@@ -96,9 +96,32 @@ object ContentMode:
     * that distinction because kernel's `Payload` does.
     */
   def write(mode: ContentMode, envelope: Envelope, headers: Headers): Either[String, Option[Array[Byte]]] =
+    clearBinding(headers)
     mode match
       case Binary     => writeBinary(envelope, headers)
       case Structured => writeStructured(envelope, headers)
+
+  /** Removes every header the CloudEvents binding owns, so a write *replaces* the event a header set describes rather
+    * than merging into it.
+    *
+    * The invariant this buys: after `write(mode, e, h)`, `of(h) == Some(mode)` and `read(h, value) == Right(e)` — for
+    * any `h`, not only a fresh one. Without it a caller with a non-empty header set got a record that decoded as a
+    * different event than it wrote, in two ways. A structured write into headers still carrying `ce_specversion` (a
+    * replayer copying a consumed record's headers onto a new `ProducerRecord`) produced a record [[of]] reports as
+    * *binary*, so the structured body was read as a payload and every attribute came from the previous event. A binary
+    * write inherited the previous event's `ce_<extension>` headers, silently attaching extensions the envelope does not
+    * have. Neither is hypothetical for a `Serializer`: `serialize(topic, headers, data)` is handed whatever headers the
+    * caller put on the record.
+    *
+    * Scoped to `ce_*` and `content-type`, which is exactly the binding's namespace. `traceparent`, `tracestate` and any
+    * replay bookkeeping a caller added survive, because those describe the *transport* of this record and not the event
+    * in it.
+    */
+  private def clearBinding(headers: Headers): Unit =
+    val owned = CloudEventHeaders.keys(headers).toVector.filter: key =>
+      key == CloudEventHeaders.ContentType || CloudEventHeaders.attributeOf(key).isDefined
+    owned.foreach: key =>
+      val _ = headers.remove(key)
 
   /** Reads a record back, choosing the mode from the headers. Total: every failure is a [[DecodeFailure]] value. */
   def read(headers: Headers, value: Option[Array[Byte]]): Either[DecodeFailure, Envelope] =
