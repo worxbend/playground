@@ -4,12 +4,33 @@ import ItConfig.*
 
 Global / onChangedBuildSource := ReloadOnSourceChanges
 
-// native-packager defines Debian/Rpm keys this build never sets; without these
-// every run prints ~110 "unused key" warnings that bury real ones.
+// native-packager defines Debian/Rpm/Windows keys this build never sets, and sbt's `lintUnused` reports every one
+// of them on every invocation. The first two entries left thirty behind — sixty lines of warning in front of every
+// `sbt verify`, which is how a real warning goes unread.
+//
+// Excluding the *keys* and not disabling the plugins: `.disablePlugins(DebianPlugin, RpmPlugin)` looks like the
+// root-cause fix and is not one — `JavaServerAppPackaging` requires both, so the build fails to load with
+// "Failed to sort … topologically" before any project is configured.
 Global / excludeLintKeys += Docker / daemonUser
 Global / excludeLintKeys += Docker / daemonUserUid
+Global / excludeLintKeys ++= Set(
+  Debian / executableScriptName,
+  Debian / sourceDirectory,
+  Debian / daemonGroup,
+  Debian / daemonGroupGid,
+  Rpm / executableScriptName,
+  Rpm / sourceDirectory,
+  Rpm / name,
+  Rpm / daemonStdoutLogFile,
+  Rpm / daemonGroupGid,
+  rpmScriptsDirectory,
+  Universal / executableScriptName,
+  UniversalDocs / name,
+  UniversalSrc / name,
+  Linux / javaOptions
+)
 
-ThisBuild / dependencyOverrides ++= Dependencies.overrides
+ThisBuild / dependencyOverrides ++= Dependencies.overrides ++ Dependencies.securityOverrides
 
 lazy val commonSettings: Seq[Setting[?]] =
   defaultSettings ++ commonDependencies ++ testDependencies ++ itSettings
@@ -42,13 +63,37 @@ def domainLibrary(id: String): Project =
   * healthcheck shells out to (`eclipse-temurin:25` — native-packager's default — has neither `wget` nor `curl`, so a
   * healthcheck against it can never pass), and it has no `bash`, which is why `AshScriptPlugin` is mandatory alongside
   * it.
+  *
+  * The port is a parameter rather than a shared constant because ferrite listens on 9000 and the other two on 8080; a
+  * default that is wrong for one service in three is worse than naming it at each call site. Without it native-packager
+  * warns "There are no exposed ports for your docker image" on every `Docker/stage`, and `EXPOSE` is the only
+  * machine-readable statement of the port — compose publishes explicitly, but `docker inspect` and every container UI
+  * read this instead. The values match `deploy/docker-compose.yml`.
   */
-lazy val packagingSettings: Seq[Setting[?]] = Seq(
+def packagingSettings(httpPort: Int): Seq[Setting[?]] = sbomSettings ++ Seq(
+  dockerExposedPorts := Seq(httpPort),
   dockerBaseImage := "eclipse-temurin:25-jre-alpine",
   dockerUpdateLatest := true,
   Docker / daemonUserUid := None,
   Docker / daemonUser := "daemon",
   Universal / javaOptions ++= containerJvmOptions
+)
+
+/** CycloneDX SBOM settings for a deployable service.
+  *
+  * Applied only to the three services, and that is the whole point: an SBOM describes something you ship. Each
+  * service's `Compile` bom already contains the transitive closure of the `modules/` it depends on, so a fourth, fifth
+  * and sixth SBOM for the libraries would list a subset of what is already listed and give the scanner more to say
+  * about the same jars.
+  *
+  * The two settings both exist to feed `osv-scanner`, which has no sbt extractor and identifies an SBOM by filename: it
+  * reads `*.cdx.json` and refuses a file called `wolfram-0.1.0-SNAPSHOT.bom.json` with "could not determine extractor
+  * suitable to this file". Collecting them under one directory is what lets the workflow — and
+  * `sbt sbom && osv-scanner scan --lockfile …` on a laptop — name one path instead of three.
+  */
+lazy val sbomSettings: Seq[Setting[?]] = Seq(
+  bomFileName := s"${name.value}.cdx.json",
+  bomOutputPath := ((ThisBuild / baseDirectory).value / "target" / "sbom").getPath
 )
 
 /** JVM flags baked into `conf/application.ini`, because the container defaults are wrong for these three processes.
@@ -211,7 +256,7 @@ lazy val ferrite = (project in file("applications/ferrite"))
   .disablePlugins(PlayLayoutPlugin)
   .dependsOn(kernel, persistence, observability)
   .settings(commonSettings *)
-  .settings(packagingSettings *)
+  .settings(packagingSettings(httpPort = 9000) *)
   .settings(
     name := "ferrite",
     libraryDependencies ++= Seq(guice, jsoup % Test) ++ webjars,
@@ -221,6 +266,11 @@ lazy val ferrite = (project in file("applications/ferrite"))
     // outright with "Cannot write to /opt/docker/RUNNING_PID". /dev/null is the documented escape: the container
     // runtime, not a pid file, is what tracks whether this process is alive.
     Universal / javaOptions += "-Dpidfile.path=/dev/null",
+    // Play stages `Compile/doc` into the image as `share/doc/api`. That is 13 MB of HTML and 437 files in a runtime
+    // container that serves none of it — and it makes `Docker/stage` depend on Scaladoc, so a broken `[[link]]`
+    // would fail the packaging job. The Scaladoc that is actually published comes from `playground/scaladocSite`.
+    // cobalt and wolfram never had this: it is Play's setting, not native-packager's.
+    PlayKeys.includeDocumentationInBinary := false,
     // Play's packaging maps `src/main/resources` into the image's `conf/` *and* into the module jar, so the staged
     // image carried two `logback.xml` files. The start script puts `conf/` at the head of the classpath, so the
     // outcome was never ambiguous — but logback prints `Resource [logback.xml] occurs multiple times` on every boot,
@@ -246,7 +296,7 @@ lazy val cobalt = (project in file("applications/cobalt"))
   .enablePlugins(JavaAppPackaging, DockerPlugin, AshScriptPlugin, AutomateHeaderPlugin)
   .dependsOn(kernel, eventing, persistence, observability)
   .settings(commonSettings *)
-  .settings(packagingSettings *)
+  .settings(packagingSettings(httpPort = 8080) *)
   .settings(
     name := "cobalt",
     // tapir here is for *documentation only* — cobalt's HTTP surface stays Cask (ADR §1). The endpoint values
@@ -263,10 +313,12 @@ lazy val wolfram = (project in file("applications/wolfram"))
   .enablePlugins(JavaAppPackaging, DockerPlugin, AshScriptPlugin, AutomateHeaderPlugin)
   .dependsOn(kernel, eventing, observability)
   .settings(commonSettings *)
-  .settings(packagingSettings *)
+  .settings(packagingSettings(httpPort = 8080) *)
   .settings(
     name := "wolfram",
-    libraryDependencies ++= tapir ++ openApiCirce ++ Seq(vertx, circeGeneric, jwt) ++ tapirTestkit.map(_ % Test),
+    // No circe-generic: `Endpoints` derives its schemas and codecs by name on purpose (see its Scaladoc), so the
+    // auto-derivation macros were a dependency nothing imported.
+    libraryDependencies ++= tapir ++ openApiCirce ++ Seq(vertx, jwt) ++ tapirTestkit.map(_ % Test),
     libraryDependencies ++= testContainers.map(_ % IT)
   )
 
@@ -309,6 +361,9 @@ lazy val scaladocSite = taskKey[Unit]("Collect every module's Scaladoc under tar
 
 addCommandAlias("fmt", "; scalafmtSbt; scalafmtAll")
 addCommandAlias("fmtCheck", "; scalafmtSbtCheck; scalafmtCheckAll")
+// One CycloneDX document per deployable, under target/sbom. This is what the vulnerability gate scans, and what
+// `docs/development.md` §9 tells you to run before claiming a dependency bump is safe.
+addCommandAlias("sbom", "; ferrite/makeBom; cobalt/makeBom; wolfram/makeBom")
 // `testFull`, not `test`. sbt 2 INVERTED sbt 1's naming: here `test` is the
 // incremental task (`testQuick` is merely its alias) and `testFull` is the one
 // that runs everything. Spelling it `Test/test` still selects the incremental

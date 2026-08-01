@@ -1,0 +1,20 @@
+# Vulnerability-gate exceptions for `osv-scanner`, consumed by .github/workflows/supply-chain.yml.
+#
+# The gate fails on ANY advisory rather than on a severity threshold, so this file is the only place a known
+# advisory can be accepted — and accepting one has to be written down, argued and dated. `ignoreUntil` is the
+# point: an entry expires, the gate goes red, and somebody re-reads the argument instead of inheriting it.
+#
+# An entry belongs here only when the advisory cannot be fixed by moving a version. If a fix exists, it goes in
+# `Dependencies.securityOverrides` instead.
+
+[[IgnoredVulns]]
+id = "GHSA-3x3v-w654-m28m"
+ignoreUntil = 2027-02-01
+# Undertow DoS via multipart/form-data on a GET. Reached only through `ServletRequest#getParameterMap`, which
+# lives in `undertow-servlet` — an artifact that is not on cobalt's classpath (`undertow-core`, `xnio-api`,
+# `xnio-nio`, `jboss-threads` and `jboss-logging` are the whole family here). Cask binds Undertow's raw
+# `HttpServerExchange`, so there is no servlet layer to call it from.
+#
+# No fixed version exists: OSV reports "--", and 2.3.26.Final is the head of the 2.3 line that Cask 0.11.3
+# supports. Re-check when Cask moves to Undertow 2.4.
+reason = "undertow-servlet is not on the classpath; the affected code path (ServletRequest#getParameterMap) cannot be reached from Cask, and no fixed 2.3.x release exists"

@@ -6,10 +6,18 @@ on:
   pull_request:
     branches: [main]
 
+# Nothing here writes anything. Left implicit, the token's scope is whatever the repository default happens to
+# be, which for a public repository that has never been configured is read/write on `contents`.
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+# Every job carries `timeout-minutes`. The default is six hours, and the failure that runs into it is not a test
+# failure — it is an sbt server that never answers or a container that never becomes healthy, which is precisely
+# the case where nobody is watching.
 jobs:
   # The gate. Nothing here needs anything but a JDK, which is what keeps it fast and what
   # keeps `sbt verify` runnable on a laptop, on an air-gapped box and in this job with the
@@ -17,11 +25,12 @@ jobs:
   # that is not on Maven — and that is exactly why they are separate jobs.
   verify:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up JDK
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: 25
@@ -46,10 +55,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up JDK
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: 25
@@ -87,11 +96,12 @@ jobs:
   # before sbt runs and the log is checked after. Without both, this job is decorative.
   stylesheet:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up JDK
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: 25
@@ -141,13 +151,14 @@ jobs:
 
   package:
     runs-on: ubuntu-latest
+    timeout-minutes: 25
     needs: verify
     if: github.event_name == 'push'
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Set up JDK
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: 25
@@ -157,8 +168,15 @@ jobs:
 
       # Stages the images without publishing: proves packaging still works on
       # every push without needing registry credentials.
+      #
+      # `;a;b;c`, not three space-separated arguments. sbt 2 does not split a single
+      # space-joined string into commands — it reads `ferrite/Docker/stage cobalt/…` as one
+      # malformed key and exits 1 with "Expected whitespace character". Written the wrong
+      # way, this job had failed on every push since it was added, so the one thing that
+      # proves the images still build has never actually built one. `docs/development.md`
+      # §2 states the rule; this file was the counterexample.
       - name: Stage Docker images
-        run: sbt -batch ferrite/Docker/stage cobalt/Docker/stage wolfram/Docker/stage
+        run: sbt -batch ";ferrite/Docker/stage;cobalt/Docker/stage;wolfram/Docker/stage"
 
   # The deployment artefacts are as capable of being broken as the Scala is, and nothing
   # else validates them: a compose file that does not interpolate, or a rules file
@@ -167,17 +185,27 @@ jobs:
   # misspelled function or a bad label matcher, not just bad YAML.
   deploy-config:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Validate docker-compose.yml
         working-directory: deploy
         # The mandatory `${VAR:?…}` variables have no defaults, by design, so supply
         # throwaway values: this validates the file's structure and interpolation, not the
         # secrets.
+        #
+        # Read out of the file rather than listed here. The list *was* listed here, and it
+        # went stale the day wolfram gained AUTH_SECRET: every push since failed with
+        # "required variable AUTH_SECRET is missing a value", in a job whose subject is
+        # unrelated to whatever the pusher changed. There is no guard needed on the regex —
+        # if it matches nothing, `docker compose config` is the thing that says so.
         run: |
-          POSTGRES_PASSWORD=ci APPLICATION_SECRET=ci GRAFANA_ADMIN_PASSWORD=ci \
-            docker compose config -q
+          set -euo pipefail
+          required=$(grep -oE '\$\{[A-Za-z_][A-Za-z0-9_]*:\?' docker-compose.yml | sed 's/^\${//; s/:?$//' | sort -u)
+          echo "supplying throwaway values for: $(echo "$required" | tr '\n' ' ')"
+          for v in $required; do export "$v=ci"; done
+          docker compose config -q
 
       - name: Validate Prometheus rules and scrape config
         run: |

@@ -1,0 +1,88 @@
+name: Supply chain
+
+# This replaced three workflows that reported to nobody. `scala-snyk.yml` ran on every push with a valid
+# SNYK_TOKEN and failed every time with "Failed to get dependencies for all 1 potential projects" — Snyk's Scala
+# integration cannot read an sbt 2 build, and its own action prints "the action scala is deprecated". `sonar.yml`
+# failed in 1.1 s on a 2020 SONAR_TOKEN the account no longer honours. `security.yml` was a ZAP baseline scan
+# pointed at https://www.zaproxy.org — someone else's website, not this application — with a rules file that was
+# never committed, pulling `owasp/zap2docker-stable`, an image Docker Hub retired. Between them they had produced
+# zero findings and a permanently red main, which is worse than no scanner: it teaches everyone to ignore red.
+#
+# What runs here needs no account and no paid tier. It gates.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  # An advisory is published without anyone pushing a commit. Without this, a dependency that becomes vulnerable
+  # on a quiet week is discovered by whoever happens to open the next pull request.
+  schedule:
+    - cron: "17 6 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dependencies:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      # Pinned, and verified against the checksum the release publishes. A vulnerability gate that fetches an
+      # unauthenticated binary over the network and runs it is itself a supply-chain hole.
+      OSV_SCANNER_VERSION: "2.4.0"
+      OSV_SCANNER_SHA256: "15314940c10d26af9c6649f150b8a47c1262e8fc7e17b1d1029b0e479e8ed8a0"
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Set up JDK
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 25
+          cache: sbt
+
+      - uses: sbt/setup-sbt@v1
+
+      # One CycloneDX document per deployable. osv-scanner has no sbt extractor — it reads lockfiles and SBOMs —
+      # so this is what turns a resolved sbt classpath into something a scanner can read at all.
+      - name: Generate SBOMs
+        run: sbt -batch sbom
+
+      - name: Install osv-scanner
+        run: |
+          set -euo pipefail
+          url="https://github.com/google/osv-scanner/releases/download/v${OSV_SCANNER_VERSION}/osv-scanner_linux_amd64"
+          curl -fsSL --retry 3 -o "$RUNNER_TEMP/osv-scanner" "$url"
+          echo "${OSV_SCANNER_SHA256}  $RUNNER_TEMP/osv-scanner" | sha256sum -c -
+          chmod +x "$RUNNER_TEMP/osv-scanner"
+
+      # Fails on ANY advisory, not on a severity threshold. The exceptions live in osv-scanner.toml, where each
+      # one carries an argument and an expiry date; a threshold would silently accept every medium for ever.
+      #
+      # Naming the three files rather than the directory is deliberate: a `sbom` task that silently produced
+      # nothing would make a directory scan pass having read no packages, which is the exact shape of the
+      # decorative scanner this workflow replaced. A missing --lockfile path is an error.
+      - name: Scan dependencies against OSV
+        run: |
+          set -euo pipefail
+          "$RUNNER_TEMP/osv-scanner" scan \
+            --config osv-scanner.toml \
+            --lockfile target/sbom/ferrite.cdx.json \
+            --lockfile target/sbom/cobalt.cdx.json \
+            --lockfile target/sbom/wolfram.cdx.json
+
+      # Kept whatever the scan said. An SBOM of a build that failed the gate is the thing you need to read to fix
+      # it, and `if: always()` is what makes it available then rather than only on the green runs.
+      - name: Publish the SBOMs
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: sbom
+          path: target/sbom/*.cdx.json
+          if-no-files-found: error

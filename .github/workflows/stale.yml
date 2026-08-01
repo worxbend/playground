@@ -4,16 +4,27 @@ on:
   schedule:
     - cron: "30 1 * * *"
 
+# Writing labels and comments is the whole job; nothing else is needed.
+permissions:
+  issues: write
+  pull-requests: write
+
 jobs:
   stale:
-
     runs-on: ubuntu-latest
-
+    timeout-minutes: 10
     steps:
-      - uses: actions/stale@v6
+      # v6 runs on Node 16, which GitHub-hosted runners no longer provide, so this job could
+      # only ever fail. It also carried the template's literal placeholder text — a bot that
+      # comments "Stale issue message" on somebody's issue is worse than no bot.
+      - uses: actions/stale@v11
         with:
           repo-token: ${{ secrets.GITHUB_TOKEN }}
-          stale-issue-message: 'Stale issue message'
-          stale-pr-message: 'Stale pull request message'
-          stale-issue-label: 'no-issue-activity'
-          stale-pr-label: 'no-pr-activity'
+          stale-issue-message: >
+            No activity here for 60 days. This will close in 7 days unless something says
+            otherwise — a comment, a linked commit, or removing the label.
+          stale-pr-message: >
+            No activity here for 60 days. This will close in 7 days; reopening costs nothing
+            if the work resumes.
+          stale-issue-label: "no-issue-activity"
+          stale-pr-label: "no-pr-activity"
