@@ -25,8 +25,13 @@ import com.worxbend.observability.Meters
 import com.worxbend.observability.Telemetry
 import io.circe.Json
 
-/** A status code, a content type and a body — the whole of cobalt's HTTP contract. */
-final case class AdminReply(status: Int, contentType: String, body: String)
+/** A status code, a content type, a body and any extra headers — the whole of cobalt's HTTP contract.
+  *
+  * `headers` is empty for every answer a handler produces and non-empty for exactly one thing: the `WWW-Authenticate`
+  * challenge RFC 6750 requires on a 401. Carrying it on the reply rather than setting it at the route is what keeps
+  * [[AdminAuth]] testable without Undertow.
+  */
+final case class AdminReply(status: Int, contentType: String, body: String, headers: Seq[(String, String)] = Nil)
 
 /** The operational answers, computed without a socket.
   *
@@ -206,3 +211,50 @@ object AdminRoutes:
        |""".stripMargin
 
   def json(status: Int, body: Json): AdminReply = AdminReply(status, JsonContentType, body.noSpaces)
+
+  /** Every path this service serves, and what it takes to call it. `None` means deliberately unauthenticated.
+    *
+    * **This table exists because the failure it prevents is silent.** A route added without a guard answers 200 to
+    * anybody, and nothing compiles differently, no test fails and no log line appears. `AdminAccessSuite` compares this
+    * map against Cask's own dispatch table in both directions, so a new route with no entry here fails a unit test
+    * before it is ever deployed, and `AdminAuthIT` drives every entry over a real socket and asserts the observed
+    * status matches the declaration — so the table cannot be right while the routes are wrong.
+    *
+    * **What is open, and why.**
+    *
+    *   - `/metrics` and the two `/health` probes must stay open or the stack goes down: Prometheus scrapes one and the
+    *     container orchestrator probes the others, and neither can hold a bearer token. They disclose meter values and
+    *     a dependency-reachability boolean — no event data and no configuration.
+    *   - `/openapi.json`, `/openapi.yaml`, `/docs` and its assets are open, and that is a decision rather than an
+    *     oversight. The document is a static description of *this build's* routes, identical in every deployment and
+    *     already readable in the repository; it contains no data, no configuration and no secret. Closing it would cost
+    *     the Swagger page outright — the UI fetches `/openapi.json` from the browser with no `Authorization` header, so
+    *     an authenticated document renders a blank page — which is to say it would remove the operator's tool during an
+    *     incident in exchange for hiding paths an attacker can read on GitHub. What must not leak is the DLQ's contents
+    *     and the ability to act on it, and those are what the scopes cover.
+    */
+  val Access: Map[String, Option[AdminScope]] =
+    Map(
+      Meters.MetricsPath -> None,
+      LivenessPath -> None,
+      ReadinessPath -> None,
+      OpenApiJsonPath -> None,
+      OpenApiYamlPath -> None,
+      DocsPath -> None,
+      SwaggerAssetsPath -> None,
+      // Reads. `/admin/dlq/records` returns event payloads and `/admin/consumer` returns the group's offsets: both are
+      // disclosure, neither changes anything.
+      DlqPath -> Some(AdminScope.Read),
+      DlqRecordsPath -> Some(AdminScope.Read),
+      ConsumerPath -> Some(AdminScope.Read),
+      // Writes. Every one of these changes the pipeline, and three of them irreversibly: `:replay` appends to the
+      // production topic, `:restart` moves committed offsets, `:clearCheckpoints` destroys the externalised ones.
+      // `dryRun=true` is not a substitute for a scope — it is the default of a caller who is already authorised.
+      DlqReplayPath -> Some(AdminScope.Write),
+      ConsumerPausePath -> Some(AdminScope.Write),
+      ConsumerResumePath -> Some(AdminScope.Write),
+      ConsumerStopPath -> Some(AdminScope.Write),
+      ConsumerStartPath -> Some(AdminScope.Write),
+      ConsumerRestartPath -> Some(AdminScope.Write),
+      ConsumerClearCheckpointsPath -> Some(AdminScope.Write)
+    )
