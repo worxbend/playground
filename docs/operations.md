@@ -822,51 +822,92 @@ one, delete it here in the same change.
 
 Ordered by operational blast radius.
 
-1. **Single-node Kafka, replication factor 1, is not highly available.** One broker, `KRaft` combined
+1. **ferrite has no authentication.** It serves the search UI and the SSE live tail over the *whole* event corpus —
+   including device-supplied payloads — and compose publishes it on host port 9000. wolfram and cobalt both require
+   a scoped JWT; ferrite requires nothing, and nothing in the code says that is deliberate. Keep it on a trusted
+   network, or put an authenticating proxy in front of it. This is now the largest open security gap in the system.
+2. **`main` has no branch protection**, so no CI result gates a merge — not `verify`, not `verifyIt`, not the
+   supply-chain scan. A red build merges. `gh api repos/worxbend/playground/branches/main/protection` returns 404.
+   This cannot be fixed from a file in the repository; it is a setting the owner has to apply.
+3. **Single-node Kafka, replication factor 1, is not highly available.** One broker, `KRaft` combined
    broker+controller, `RF=1` on both topics and on the internal offsets/transaction-state topics. There is no
    redundancy: broker downtime is ingestion downtime, and loss of the log is loss of everything not yet consumed.
    The `acks=all` + idempotent producer settings are honest but only ever wait for one replica. Suitable for a
    homelab; a production deployment needs three brokers and `RF=3` with `min.insync.replicas=2`.
-2. **Play is on a milestone release.** `3.1.0-M9` is the only Play line cross-published for sbt 2; the stable
+4. **The JWT verifier is implemented twice.** wolfram's is built on jwt-scala; cobalt's is ~540 lines on the JDK's
+   JCA primitives, written that way only because jwt-scala was not on cobalt's classpath and the agent that wrote it
+   could not change the build. They share a contract and a conformance suite (`CobaltAuthSuite`) but not a type, and
+   two verifiers that drift apart is a security defect in waiting — a check tightened in one and not the other. The
+   fix is a `modules/security` library both depend on. It was deliberately **not** attempted in the same pass that
+   merged five branches: a half-verified refactor of working, well-tested security code is worse than the
+   duplication.
+5. **Play is on a milestone release.** `3.1.0-M9` is the only Play line cross-published for sbt 2; the stable
    3.0.x line ships an sbt 1 plugin only. Test-kit and server APIs can shift between milestones, and there is no
-   security-support commitment for a milestone. Pin every Play artifact to one version and bump them together;
-   do not "fix" the version without accepting the loss of sbt 2.
-3. **The alert rules fire into nothing.** The 13 rules in `deploy/observability/rules/observatory.rules.yml`
+   security-support commitment for a milestone. Pin every Play artifact to one version and bump them together.
+6. **The alert rules fire into nothing.** The 13 rules in `deploy/observability/rules/observatory.rules.yml`
    evaluate, and you can see them at `/api/v1/rules` and as `ALERTS` series — but there is no Alertmanager, so
-   nothing is *delivered*. That is a deliberate stop: a homelab with no on-call rotation has nowhere to route a
-   page. Adding one is a container and a routing decision, not a rule. Until then, alerts are something you look
-   at, not something that reaches you. See §5.4.
-4. **A payload range comparison cannot use its index.** `data.value=>21` — and every operator except `=` — plans
-   as a sequential scan. PostgreSQL's `jsonb_path_ops` GIN extracts search keys only from jsonpath clauses of the
-   form `accessors_chain = constant`, so `$.value ? (@ == 21)` is a selective bitmap index scan while
-   `$.value ? (@ > 21)` is not. `FilterAccessPathIT` asserts both halves of this, so the day it stops being true
-   the suite says so. Pair a range comparison with a time bound or another indexed attribute; a range alone over
-   the whole fact table is a scan.
-5. **Only six meters have histogram buckets** — the ones tabulated in §5.1. `histogram_quantile` against any
-   other timer returns nothing, quietly, because a timer with no declared ladder publishes `_count`/`_sum`/`_max`
-   only. That is the deliberate default: a wrong bucket range is worse than none, since every observation lands in
-   `+Inf` and the panel reports a confident, meaningless number. Give a timer a ladder by adding it to
-   `Meters.Buckets.timers`.
-6. **Traces go to the collector's `debug` exporter only** — they are logged and dropped. The pipeline is live (a
-   single smoke event produces `resource spans: 2, spans: 3`, so HTTP → Kafka → consumer is one trace), but point
-   `otel-collector.yaml` at Tempo or Jaeger before you need to *read* one.
-7. **The live tail can miss a late-arriving event.** It advances a keyset cursor over `(occurred_at, event_uid)`,
-   so an event whose `occurred_at` is older than a row already tailed — a clock-skewed producer, or ingest lag
-   past the cursor — never appears in the stream. Reload to see it. The alternative, seeking on `ingested_at`,
-   has only a BRIN index and cannot serve an ordered seek; a grace window would re-send the feed several times
-   over. Search shares the same property, and the time clamp in wolfram bounds how far skew can go.
-8. **The browser JavaScript has no test tier.** `applications/ferrite/src/main/resources/public/js/app.js` — the
-   SSE client and the keyboard model — is verified by reading, not by running. The *server* side of the tail is
-   proven end to end by `OverviewPageIT`, and `TemplateSuite` pins every markup contract the script depends on,
-   so a template change that breaks it fails the build. But the script itself is unexercised. Adding a tier means
-   a Node toolchain or a headless browser in the build, which is a deliberate decision nobody has made.
-9. **ferrite's stylesheet is committed output, and `verify` still does not check it.** The `stylesheet` CI job
-   now installs the Tailwind CLI and runs `ferrite/tailwindCheck` for real, so drift is caught before merge. But
-   `verify` must stay runnable with nothing but a JDK, so a local run will not tell you: a template that gains a
-   utility class in a change where nobody ran `sbt ferrite/tailwind` ships a page that renders without it, and
-   only CI will say so. See `docs/development.md` §8.
+   nothing is *delivered*. A homelab with no on-call rotation has nowhere to route a page. Alerts are something you
+   look at, not something that reaches you. See §5.4.
+7. **Three search predicates have no usable access path.** Each is a real query somebody will write:
+   - `data.value=>21` — a payload **range** comparison. `jsonb_path_ops` GIN extracts search keys only from
+     `accessors_chain = constant`, so `$.value ? (@ == 21)` is a selective bitmap index scan and `? (@ > 21)` is
+     not. Re-checked against PostgreSQL 18.4; `FilterAccessPathIT` asserts both halves.
+   - `severity>=warn` and below. Index `cloud_event_alerts_ix` is *partial* on `severity_rank >= 50`, and 50 is
+     `error`. A predicate only implies that index at or above 50, so `>=error` is an index scan and `>=warn` is not.
+   - An **unfiltered** `/events`. With no query string the filter compiles to `WHERE TRUE`, so the page query, the
+     facet candidate set and the bounded total each read every partition. It is the most-run query on the service.
+   Pair any of them with a time bound, which prunes partitions.
+8. **One overview page view can occupy seven of the read pool's eight connections.** `OverviewService.load` issues
+   volume, three breakdowns, totals, freshness and alerts concurrently against a pool of eight fronted by a
+   dispatcher of eight. Two simultaneous viewers contend; a third waits on `connection-timeout`. Watch
+   `hikaricp_connections_pending` (§5).
+9. **Only six meters have histogram buckets** — the ones tabulated in §5.1. `histogram_quantile` against any other
+   timer returns nothing, quietly, because a timer with no declared ladder publishes `_count`/`_sum`/`_max` only.
+   That is the deliberate default: a wrong bucket range is worse than none. Add one in `Meters.Buckets.timers`.
+10. **Traces go to the collector's `debug` exporter only** — they are logged and dropped. The pipeline is live (one
+    smoke event produces `resource spans: 2, spans: 3`, so HTTP → Kafka → consumer is one trace), but point
+    `otel-collector.yaml` at Tempo or Jaeger before you need to *read* one.
+11. **The live tail can miss a late-arriving event.** It advances a keyset cursor over `(occurred_at, event_uid)`,
+    so an event whose `occurred_at` is older than a row already tailed — a clock-skewed producer, or ingest lag past
+    the cursor — never appears in the stream. Reload to see it. Seeking on `ingested_at` instead has only a BRIN
+    index and cannot serve an ordered seek. Search shares the property; wolfram's time clamp bounds how far skew
+    can go.
+12. **The browser JavaScript has no test tier.** `applications/ferrite/src/main/resources/public/js/app.js` — the
+    SSE client, the keyboard model and the two charts — is verified by reading, not by running. The *server* side of
+    the tail is proven end to end by `OverviewPageIT`, and `TemplateSuite`/`OverviewSuite` pin every markup contract
+    the script depends on, so a template change that breaks it fails the build. The script itself is unexercised.
+13. **ferrite's stylesheet is committed output, and `verify` still does not check it.** The `stylesheet` CI job
+    installs the Tailwind CLI and runs `ferrite/tailwindCheck` for real, so drift is caught before merge. But
+    `verify` must stay runnable with nothing but a JDK, so a local run will not tell you. See
+    `docs/development.md` §8.
+14. **The vulnerability gate covers compile scope only.** Test and IT dependencies — Testcontainers, and the
+    Selenium/Fluentlenium tree `play-test` drags into ferrite — are not scanned. Deliberate: they never leave CI,
+    and gating on them would make an advisory in a browser driver block a production release.
+15. **sbt 2.0.3 silently drops `scalacOptions` it does not recognise**, so a flag added to
+    `project/BaseSettings.scala` can appear enabled and do nothing. Demonstrated with an invalid flag that compiled
+    clean under `-Werror`. Any future `-W` hardening must be proved by writing code that violates it and watching
+    the build fail.
+16. **`sbt doc` does not run under `-Werror`** — it logs "Skipping unused scalacOptions: -Werror, …" — so a broken
+    Scaladoc `[[link]]` is a warning nothing fails on. `modules/observability`'s `Tracing.scala` has two today, and
+    the published site carries them.
+17. **The `osv-scanner.toml` exception for GHSA-3x3v-w654-m28m expires 2027-02-01.** When it does, the supply-chain
+    job goes red until somebody re-reads the argument or Cask moves to Undertow 2.4. That is the intent: an expiry
+    date rather than a permanent suppression.
+18. **Docker image IDs are not reproducible, though the layers are.** Two builds of the same commit produce
+    identical RootFS layer digests and identical application jars but different image IDs, because Docker stamps
+    `created` with wall-clock time. Content is reproducible; identity is not.
+19. **`DatabaseConfig` holds the database password as a plain field with a derived `toString`.** Nothing renders it
+    today — every call site was checked — but a debug line, an assertion message or an exception built from the
+    value would print it. `AuthConfig` had the same defect and now redacts; this one is the same three-line fix.
+20. **`events.saved_search` is created and read by nothing.** `V1__events.sql` creates the table; no code in the
+    build touches it, so the `?s=…` short-link fallback ADR §6.3 promises for a filter too long for a URL does not
+    exist. Either implement it or drop the table.
 
-Fixed, and no longer listed: `deploy/.env.example` (present); ferrite's `DockerPlugin` (enabled, so
+Fixed, and no longer listed: **cobalt's unauthenticated admin API** (every `/admin` route now requires a scoped
+JWT — §3.2 — and `AdminAuthIT` drives every one of them over a socket); **the three decorative security workflows**
+(Snyk could not read an sbt 2 build, Sonar's token was from 2020, and the ZAP scan pointed at zaproxy.org — replaced
+by an SBOM-plus-OSV gate that needs no account and fails the build); **the `package` and compose-config CI jobs**
+(both had failed on every push since they were written); `deploy/.env.example` (present); ferrite's `DockerPlugin` (enabled, so
 `ferrite:latest` builds); compose's database variables (`DATABASE_URL`/`DATABASE_USER`/`DATABASE_PASSWORD`,
 matching what the services read); the absence of a partition-maintenance job (cobalt runs one — §7.3); the three
 un-emitted meters and Hikari's missing pool binding (all wired — §5); timers without histogram buckets (six meter

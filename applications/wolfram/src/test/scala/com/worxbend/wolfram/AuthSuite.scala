@@ -200,12 +200,20 @@ final class AuthSuite extends FunSuite:
 
   // --- the disabled path ---------------------------------------------------------------------------------------
 
-  test("a disabled verifier admits everyone as the anonymous principal, and grants no scope"):
+  test("a disabled verifier admits everyone — including where a scope is still required"):
+    // The behaviour, asserted rather than assumed. A comment here used to claim the opposite: that a deployment
+    // which disabled authentication while still requiring a scope would refuse every request, because the anonymous
+    // principal holds no scopes. `verify` short-circuits on `!config.enabled` before the scope check ever runs, so
+    // that was false — and it is the kind of false claim a reviewer trusts instead of reading the flow.
     val off = JwtVerifier.from(Tokens.config.copy(enabled = false)).fold(fail(_), identity)
     assertEquals(off.verify(None), Right(JwtVerifier.Anonymous))
-    // The safe direction for the "auth off but scope still required" misconfiguration: everything is refused rather
-    // than everything allowed. `verify` short-circuits before the scope check, so this asserts the *principal* is
-    // powerless rather than that the request is refused — which is what makes it safe if that order ever changes.
+    assertEquals(
+      off.verify(None, Some(JwtVerifier.PublishScope)),
+      Right(JwtVerifier.Anonymous),
+      "off means off: a required scope does not re-enable the check"
+    )
+    // The empty scope set still matters — nothing downstream can mistake this principal for an authorised one if
+    // the short-circuit is ever removed.
     assert(!JwtVerifier.Anonymous.hasScope(JwtVerifier.PublishScope))
 
   test("a disabled verifier needs no key, so a dev deployment is not forced to invent one"):

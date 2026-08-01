@@ -89,7 +89,21 @@ final case class DatabaseConfig(
   password: String,
   read: PoolConfig,
   write: PoolConfig
-)
+):
+
+  /** Redacts the password.
+    *
+    * The class comment above promises the password "never appears in ... a connection-error message". A derived
+    * `toString` broke that promise for every other route out of the process: one `s"…$config…"` in a log line, one
+    * munit assertion message in CI output, one exception built from the value, and the database password is in a log
+    * aggregator. Nothing rendered it today — every call site was checked — which is exactly why it was worth fixing
+    * before something did.
+    *
+    * The username stays visible. It is not a secret, and an error that says which *user* could not connect is the
+    * difference between a five-minute fix and an hour.
+    */
+  override def toString: String =
+    s"DatabaseConfig($jdbcUrl, $username, <redacted>, $read, $write)"
 
 object DatabaseConfig:
 

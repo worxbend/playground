@@ -68,3 +68,22 @@ final class DatabaseConfigSuite extends munit.FunSuite:
     // Silently defaulting would give a service that starts, connects to localhost, and reports itself healthy while
     // reading an empty database.
     assert(DatabaseConfig.load(ConfigSource.empty).isLeft)
+
+  test("the password is redacted from toString, because that is every accidental route out of the process"):
+    // One `s"…$config…"` in a log line, one assertion message in CI output, one exception built from the value.
+    // The class promises the password never reaches a connection-error message; a derived `toString` broke that
+    // promise for every caller at once.
+    val config = DatabaseConfig(
+      jdbcUrl = "jdbc:postgresql://db:5432/observatory",
+      username = "observatory",
+      password = "hunter2-do-not-log-me",
+      read = loaded.read,
+      write = loaded.write
+    )
+    val rendered = config.toString
+    assert(!rendered.contains("hunter2-do-not-log-me"), rendered)
+    assert(rendered.contains("<redacted>"), rendered)
+    // The username stays: an error naming which user could not connect is worth an hour of somebody's time.
+    assert(rendered.contains("observatory"), rendered)
+    // And interpolation goes through the same method, which is the case that actually bites.
+    assert(!s"failed to open $config".contains("hunter2-do-not-log-me"))

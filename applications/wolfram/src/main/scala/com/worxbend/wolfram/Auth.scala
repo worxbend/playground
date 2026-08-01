@@ -169,10 +169,20 @@ object JwtVerifier:
   /** The principal a disabled verifier reports.
     *
     * Not `Option[Principal]`: making the *absence* of authentication representable in the type would push a `match`
-    * onto every call site, and every one of them would take the same branch. A named anonymous principal with no scopes
-    * says the same thing and cannot be forgotten — and because it holds no scopes, a deployment that disables
-    * authentication while still requiring a scope refuses every request rather than allowing every request, which is
-    * the safe direction for that particular misconfiguration.
+    * onto every call site, and every one of them would take the same branch. A named anonymous principal says the same
+    * thing and cannot be forgotten.
+    *
+    * **`AUTH_ENABLED=false` means open, and the scope check does not save you.** An earlier version of this comment
+    * claimed the opposite — that a deployment which disabled authentication while still requiring a scope would refuse
+    * every request, because this principal holds none. That was false: [[JwtVerifier.verify]] returns
+    * `Right(Anonymous)` on `if !config.enabled` *before* the scope check runs, so a disabled verifier admits
+    * everything. The behaviour is the right one — "off" should mean off, not a confusing 403 — but the comment
+    * described a safety property the code does not have, which is the kind of claim a reviewer trusts instead of
+    * reading the flow. It was found when the same sentence was copied into cobalt's verifier and cobalt's test suite
+    * failed on it.
+    *
+    * The empty scope set is still worth having: nothing downstream can mistake this principal for an authorised one if
+    * the short-circuit above is ever removed.
     */
   val Anonymous: Principal = Principal("anonymous", Set.empty, None)
 
