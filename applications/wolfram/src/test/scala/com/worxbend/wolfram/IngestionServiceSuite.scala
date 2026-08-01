@@ -163,7 +163,6 @@ final class IngestionServiceSuite extends FunSuite:
 
     assertEquals(outcome.accepted, 2)
     assertEquals(outcome.rejected, 1)
-    assert(outcome.partial)
     assert(outcome.results(0).isRight)
     assert(outcome.results(1).isLeft)
     assert(outcome.results(2).isRight)

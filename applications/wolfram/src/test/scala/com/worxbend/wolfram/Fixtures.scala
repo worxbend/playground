@@ -115,7 +115,6 @@ object Fixtures:
       Future.successful(outcome(envelope))
 
     def brokerReachable: Boolean = reachable
-    def flush(): Unit = ()
     def close(): Unit = ()
 
   val ack: PublishAck = PublishAck("events.cloudevents.v1", 3, 42L, "/gateway/kitchen#kitchen-thermostat")

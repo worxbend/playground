@@ -42,13 +42,12 @@ final class AdminRoutes(telemetry: Telemetry, publisher: EventPublisher):
   /** Mounts every operational route onto `router`. */
   def mount(router: Router): Unit =
     val _ = router.get(Meters.MetricsPath).handler(handler(metrics))
-    val _ = router.get(AdminRoutes.LivenessPath).handler(handler(_ => AdminRoutes.live))
-    val _ = router.get(AdminRoutes.ReadinessPath).handler(handler(_ => readiness))
-    val _ = router.get(AdminRoutes.OpenApiPath).handler(handler(_ => AdminRoutes.openApi))
+    val _ = router.get(AdminRoutes.LivenessPath).handler(handler(AdminRoutes.live))
+    val _ = router.get(AdminRoutes.ReadinessPath).handler(handler(readiness))
+    val _ = router.get(AdminRoutes.OpenApiPath).handler(handler(AdminRoutes.openApi))
 
   /** The Prometheus exposition, served verbatim with the registry's own content type. */
-  private[wolfram] def metrics(context: RoutingContext): AdminRoutes.Reply =
-    val _ = context
+  private[wolfram] def metrics: AdminRoutes.Reply =
     AdminRoutes.Reply(200, Telemetry.ContentType, telemetry.scrape())
 
   /** Readiness reflects broker reachability, because a wolfram that cannot publish cannot do the one thing it exists
@@ -68,9 +67,13 @@ final class AdminRoutes(telemetry: Telemetry, publisher: EventPublisher):
       )
     )
 
-  private def handler(reply: RoutingContext => AdminRoutes.Reply): Handler[RoutingContext] =
+  /** Every route here answers from process state alone — nothing reads the request — so the handler takes the reply by
+    * name rather than as a function of the [[RoutingContext]]. A `RoutingContext => Reply` would oblige three of the
+    * four routes to accept and discard a parameter, which `-Wunused:all` then makes them say so out loud.
+    */
+  private def handler(reply: => AdminRoutes.Reply): Handler[RoutingContext] =
     context =>
-      val response = reply(context)
+      val response = reply
       val _ = context
         .response()
         .setStatusCode(response.status)

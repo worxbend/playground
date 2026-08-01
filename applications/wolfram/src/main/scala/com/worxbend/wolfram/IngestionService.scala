@@ -42,7 +42,6 @@ final case class Receipt(accepted: Accepted, ack: PublishAck)
 final case class BatchOutcome(results: Vector[Either[Rejection, Receipt]]):
   def accepted: Int = results.count(_.isRight)
   def rejected: Int = results.count(_.isLeft)
-  def partial: Boolean = accepted > 0 && rejected > 0
 
 /** The application service: decode, validate, publish. wolfram's whole product.
   *
@@ -107,8 +106,9 @@ final class IngestionService(
                   one.map(results :+ _)
               .map(results => Right(BatchOutcome(results)))
 
-  /** Everything that can be decided without talking to the broker. Pure, and therefore the part that is
-    * property-tested.
+  /** Everything that can be decided without talking to the broker: size, content mode, attributes, and the time window.
+    * Pure, so `events:validate` can answer with it, and so every rejection path is reachable from a test with neither a
+    * server nor a broker.
     */
   def validate(headers: Map[String, String], body: Array[Byte]): Either[Rejection, Accepted] =
     if body.length > limits.maxEventBytes then

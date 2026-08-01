@@ -60,7 +60,8 @@ enum Rejection(val reason: String, val detail: String):
   /** The broker did not acknowledge the record, or ingestion shed load to avoid queueing in front of it. */
   case BrokerUnavailable(cause: String) extends Rejection(Meters.Reasons.Unpersistable, cause)
 
-  /** One human-readable line, in the shape `modules/eventing`'s `DecodeFailure.message` uses, so a wolfram log line and
-    * a cobalt DLQ record read the same way.
+  /** One human-readable line, `reason: detail` — the shape `modules/eventing`'s `DecodeFailure.message` renders, so a
+    * rejection reported as text here reads the same way as the cobalt DLQ record for the same condition. The HTTP
+    * surface does not use it: [[ApiModel]] puts `reason` and `detail` in separate fields of the AIP-193 envelope.
     */
   def message: String = s"$reason: $detail"

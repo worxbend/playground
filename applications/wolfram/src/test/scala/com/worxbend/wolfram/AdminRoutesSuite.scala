@@ -59,9 +59,13 @@ final class AdminRoutesSuite extends FunSuite:
 
   telemetryFixture.test("the metrics route serves the shared registry's exposition verbatim"): telemetry =>
     val _ = telemetry.registry.counter(Meters.IngestRejected, Meters.TagKeys.Reason, Meters.Reasons.Malformed)
-    val body = telemetry.scrape()
-    assert(body.contains("ingest_events_rejected"), body.take(500))
-    assertEquals(Telemetry.ContentType, "text/plain; version=0.0.4; charset=utf-8")
+    // Through the route rather than through `telemetry.scrape()`: the thing that can regress is the route serving
+    // some *other* registry, or the exposition's own content type being replaced with `application/json`.
+    val reply = AdminRoutes(telemetry, Fixtures.StubPublisher()).metrics
+    assertEquals(reply.status, 200)
+    assertEquals(reply.contentType, "text/plain; version=0.0.4; charset=utf-8")
+    assertEquals(reply.contentType, Telemetry.ContentType)
+    assert(reply.body.contains("ingest_events_rejected"), reply.body.take(500))
 
   test("the probe paths are the ones the shared vocabulary defines, so one ingress config covers the fleet"):
     assertEquals(AdminRoutes.LivenessPath, s"${Meters.HealthPath}/live")

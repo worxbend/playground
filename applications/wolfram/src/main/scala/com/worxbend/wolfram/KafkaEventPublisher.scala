@@ -190,15 +190,13 @@ final class KafkaEventPublisher(
       case NonFatal(error) =>
         health.observe(reachable = false, now(), Some(KafkaEventPublisher.describe(error)))
 
-  def flush(): Unit = producer.flush()
-
   /** Graceful shutdown: stop accepting, drain, then close.
     *
     * The order matters and is the whole reason this is not just `producer.close()`. `onClose` shuts the sender queue
     * down so no new record is enqueued; `flush` blocks until everything already accepted is acknowledged — those are
-    * records for which a client has *already been given a 202*, and dropping them would make the API a liar; only then
-    * is the producer closed, with a bounded timeout so an unreachable broker cannot hold a rolling deploy open
-    * indefinitely.
+    * records for which a client is *already holding a created-event response*, and dropping them would make the API a
+    * liar; only then is the producer closed, with a bounded timeout so an unreachable broker cannot hold a rolling
+    * deploy open indefinitely.
     */
   def close(): Unit =
     onClose()

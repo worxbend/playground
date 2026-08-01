@@ -63,6 +63,11 @@ import sttp.tapir.server.ServerEndpoint
   * reach Kafka byte-identical (ADR §4.3); decoding it as a `String` would corrupt any non-UTF-8 payload, and decoding
   * it as JSON would reject the very events binary mode exists to carry. The size ceiling is enforced on those bytes,
   * before anything is decoded.
+  *
+  * The consequence is that the generated document declares one request media type, `application/octet-stream`, while
+  * the service accepts any `Content-Type` — the header is an input to [[HttpBinding.modeOf]], not a routing key. A
+  * `oneOfBody` per media type would document the three a client actually sends, but it would also make Tapir dispatch
+  * on `Content-Type`, which is the precedence rule this endpoint exists to avoid.
   */
 object Endpoints:
 
@@ -106,14 +111,6 @@ object Endpoints:
   given Schema[Unauthorized] = Schema.derived[Unauthorized]
   given Schema[Forbidden] = Schema.derived[Forbidden]
   given Schema[Unavailable] = Schema.derived[Unavailable]
-
-  /** Media types this API advertises for a request body. Kept as values because the tests assert against them and the
-    * document derives from them; a literal repeated in three places will disagree with itself.
-    */
-  val SingleRequestMediaTypes: List[String] =
-    List(HttpBinding.StructuredMediaType, "application/json", "application/octet-stream")
-
-  val BatchRequestMediaTypes: List[String] = List(HttpBinding.BatchMediaType)
 
   /** The tag every operation carries, so Swagger UI groups them under one heading. */
   val Tag: String = "events"

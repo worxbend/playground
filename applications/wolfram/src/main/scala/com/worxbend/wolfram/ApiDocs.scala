@@ -59,9 +59,10 @@ object ApiDocs:
 
   val Title: String = "wolfram — CloudEvents ingestion"
 
-  /** Where the UI and the documents are mounted. `/docs` is the human entry point. */
+  /** Where the UI and the YAML document are mounted. `/docs` is the human entry point; the JSON rendering is served at
+    * the conventional root path by [[AdminRoutes.OpenApiPath]], not from here.
+    */
   val DocsPath: String = "docs"
-  val JsonPath: String = "openapi.json"
   val YamlPath: String = "openapi.yaml"
 
   private val Description: String =
