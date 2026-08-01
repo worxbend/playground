@@ -28,14 +28,15 @@ import scala.concurrent.duration.DurationInt
 
 /** The admin surface behind a real socket, with and without a credential.
   *
-  * **This is the test that fails without the fix.** Before it, `POST /admin/consumer:restart?target=latest&dryRun=false`
-  * answered 200 to an anonymous caller and permanently skipped every unconsumed event; `GET /admin/dlq/records`
-  * returned event payloads to anybody who could reach the port. Every assertion below is one of those routes.
+  * **This is the test that fails without the fix.** Before it,
+  * `POST /admin/consumer:restart?target=latest&dryRun=false` answered 200 to an anonymous caller and permanently
+  * skipped every unconsumed event; `GET /admin/dlq/records` returned event payloads to anybody who could reach the
+  * port. Every assertion below is one of those routes.
   *
   * `AdminAccessSuite` proves the *declaration* in [[AdminRoutes.Access]] covers every route Cask serves. This drives
   * every entry in that declaration over HTTP and asserts the served behaviour matches it, so the two cannot be right
-  * about each other and wrong about the service. The table is walked rather than enumerated by hand: a route added
-  * with an access decision but no guard fails here without anyone remembering to add a case.
+  * about each other and wrong about the service. The table is walked rather than enumerated by hand: a route added with
+  * an access decision but no guard fails here without anyone remembering to add a case.
   */
 final class AdminAuthIT extends munit.FunSuite:
 
@@ -102,7 +103,7 @@ final class AdminAuthIT extends munit.FunSuite:
     guarded.foreach: (path, scope) =>
       val response = call(server, path, read)
       scope match
-        case AdminScope.Read  => assertEquals(response.statusCode, 200, path)
+        case AdminScope.Read => assertEquals(response.statusCode, 200, path)
         // 403 and not 401: the operator's token is genuine and retrying with it cannot help.
         case AdminScope.Write => assertEquals(response.statusCode, 403, path)
 

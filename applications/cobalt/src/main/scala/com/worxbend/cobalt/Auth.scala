@@ -70,9 +70,9 @@ enum AuthProblem(val detail: String):
   * credential that can also empty the pipeline, and that is the only distinction a token can usefully carry.
   *
   * **A token holding the write scope also satisfies [[Read]].** The mutating routes already return the state the read
-  * routes return — `:restart` answers with the full consumer status, `:replay` with the record identities it acted on
-  * — so refusing the GET while permitting the POST would be a distinction with no security content and one that
-  * produces an inexplicable 403 in the middle of an incident.
+  * routes return — `:restart` answers with the full consumer status, `:replay` with the record identities it acted on —
+  * so refusing the GET while permitting the POST would be a distinction with no security content and one that produces
+  * an inexplicable 403 in the middle of an incident.
   */
 enum AdminScope:
   case Read, Write
@@ -112,10 +112,10 @@ final case class AuthConfig(
 
   /** Redacted, because the derived one is not.
     *
-    * A `case class` holding a credential gets a `toString` that prints it, and every way a configuration object
-    * reaches a log is a `toString`: an `s"…$config…"` in a debug line, a munit assertion message in CI output, an
-    * exception built from a value. None of those exist today and the point is that none of them can start the leak
-    * later. `CobaltAuthSuite` asserts the secret is absent from the rendering.
+    * A `case class` holding a credential gets a `toString` that prints it, and every way a configuration object reaches
+    * a log is a `toString`: an `s"…$config…"` in a debug line, a munit assertion message in CI output, an exception
+    * built from a value. None of those exist today and the point is that none of them can start the leak later.
+    * `CobaltAuthSuite` asserts the secret is absent from the rendering.
     */
   override def toString: String =
     s"AuthConfig(enabled=$enabled, algorithm=$algorithm, secret=${redact(secret)}, " +
@@ -208,8 +208,8 @@ final class JwtVerifier private (
     *
     * The length bound is the only denial-of-service surface a verifier has: base64-decoding and JSON-parsing a segment
     * is linear in its size, and an unauthenticated caller chooses that size. 8 KiB is several times the largest real
-    * token — an RS256 access token with a dozen claims is about 1 KiB — and it is checked before the first `split`, so a
-    * 50 MB `Authorization` header costs one comparison.
+    * token — an RS256 access token with a dozen claims is about 1 KiB — and it is checked before the first `split`, so
+    * a 50 MB `Authorization` header costs one comparison.
     *
     * Five parts is called out by name: that is a JWE, and answering "malformed" to an operator who pasted an encrypted
     * token would send them looking for a typo.
@@ -335,7 +335,7 @@ final class JwtVerifier private (
   private def unauthenticated(cause: String): AuthProblem = AuthProblem.Unauthenticated(cause)
 
 /** The three segments of a compact JWS, still encoded. Named so the signature check cannot reassemble them wrongly. */
-private final case class JwsParts(header: String, payload: String, signature: String)
+final private case class JwsParts(header: String, payload: String, signature: String)
 
 /** The signature algorithms this service accepts, each paired with the JCA name that implements it.
   *
@@ -359,8 +359,8 @@ object JwtVerifier:
     *
     * It carries no scopes and nothing consults them: `enabled = false` short-circuits the scope check along with the
     * signature check. That is the honest reading of the flag — a half-disabled auth layer that still refuses every
-    * request is not an escape hatch, and an escape hatch that does not work is one nobody reaches for twice. The
-    * safety here is that turning it off has to be said out loud and is printed at boot in capitals.
+    * request is not an escape hatch, and an escape hatch that does not work is one nobody reaches for twice. The safety
+    * here is that turning it off has to be said out loud and is printed at boot in capitals.
     */
   val Anonymous: Principal = Principal("anonymous", Set.empty, None)
 
@@ -386,8 +386,8 @@ object JwtVerifier:
   /** Builds a verifier, or explains what is wrong with the configuration.
     *
     * @param clock
-    *   injected so a test can place a token's `exp` on either side of "now" deterministically. A verifier that reads the
-    *   wall clock cannot be tested for expiry without sleeping.
+    *   injected so a test can place a token's `exp` on either side of "now" deterministically. A verifier that reads
+    *   the wall clock cannot be tested for expiry without sleeping.
     */
   def from(config: AuthConfig, clock: Clock = Clock.systemUTC()): Either[String, JwtVerifier] =
     if !config.enabled then Right(new JwtVerifier(config, JwsAlgorithm.HS256, Left(Array.emptyByteArray), clock))
@@ -464,10 +464,10 @@ object JwtVerifier:
 
 /** The admin surface's gate: an `Authorization` header in, a [[Principal]] or an [[AdminReply]] out.
   *
-  * Separate from [[JwtVerifier]] because they answer different questions. The verifier answers "is this token
-  * genuine"; this answers "what does cobalt's HTTP surface do about the answer" — which status code, which body, and
-  * which `WWW-Authenticate` challenge. Keeping the second out of the first is what lets the verifier be tested with no
-  * notion of HTTP and lets this be tested with no notion of cryptography.
+  * Separate from [[JwtVerifier]] because they answer different questions. The verifier answers "is this token genuine";
+  * this answers "what does cobalt's HTTP surface do about the answer" — which status code, which body, and which
+  * `WWW-Authenticate` challenge. Keeping the second out of the first is what lets the verifier be tested with no notion
+  * of HTTP and lets this be tested with no notion of cryptography.
   */
 final class AdminAuth(verifier: JwtVerifier, config: AuthConfig):
 
@@ -513,8 +513,8 @@ object AdminAuth:
     headers.collectFirst {
       case (name, values) if name.equalsIgnoreCase(AuthorizationHeader) => values
     } match
-      case None                      => Right(None)
-      case Some(values) if values.isEmpty => Right(None)
+      case None                              => Right(None)
+      case Some(values) if values.isEmpty    => Right(None)
       case Some(values) if values.sizeIs > 1 =>
         Left("the request carries more than one Authorization header")
       case Some(values) =>

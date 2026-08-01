@@ -132,7 +132,10 @@ final class CobaltAuthSuite extends FunSuite:
     // The two services can be given the same signing key by an operator with one issuer. A producer token must still
     // not be an admin token, which is why the default scopes are `admin:` and not `events:`.
     val producer = Tokens.signed(scopes = Set("events:write"))
-    assert(verifier.verify(Some(producer), Set(JwtVerifier.ReadScope)).swap.exists(_.isInstanceOf[AuthProblem.Forbidden]))
+    assert(verifier.verify(
+      Some(producer),
+      Set(JwtVerifier.ReadScope)
+    ).swap.exists(_.isInstanceOf[AuthProblem.Forbidden]))
 
   // --- issuer and audience -------------------------------------------------------------------------------------
 
