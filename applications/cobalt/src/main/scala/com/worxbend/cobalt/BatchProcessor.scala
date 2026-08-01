@@ -26,6 +26,9 @@ import com.worxbend.eventing.DeadLetter
 import com.worxbend.eventing.DecodeFailure
 import com.worxbend.kernel.event.Source
 import com.worxbend.observability.Meters
+import com.worxbend.persistence.repository.CheckpointCommit
+import com.worxbend.persistence.repository.CheckpointingWriter
+import com.worxbend.persistence.repository.CheckpointWrite
 import com.worxbend.persistence.repository.EventRepository
 import java.sql.SQLException
 import org.apache.pekko.kafka.ConsumerMessage.Committable
@@ -72,7 +75,8 @@ final class BatchProcessor(
   metrics: ConsumerMetrics,
   source: Source,
   attempts: Int,
-  backoff: () => Future[Unit]
+  backoff: () => Future[Unit],
+  checkpoint: Option[BatchProcessor.Checkpointing] = None
 )(using ec: ExecutionContext)
     extends StrictLogging:
 
@@ -128,11 +132,22 @@ final class BatchProcessor(
     deadLetters.publish(deadLetter).map: _ =>
       metrics.poison(Meters.Reasons.Unpersistable)
 
-  /** The single insert, timed and counted. Never retries — that is [[attempt]]'s job. */
+  /** The single insert, timed and counted. Never retries — that is [[attempt]]'s job.
+    *
+    * **The checkpoint goes in with the rows, or not at all.** When a [[BatchProcessor.Checkpointing]] is configured and
+    * the repository can honour it, the offsets and the events commit in one transaction — which is the entire reason
+    * `events.consumer_checkpoint` exists rather than a Redis key. Falling back to a plain insert when it is absent
+    * keeps this class usable by the suites that have no checkpoint store, and the fallback is *silent about offsets*
+    * rather than writing them separately: a second transaction would reintroduce exactly the window the table removes,
+    * while looking like it worked.
+    */
   private def insert(pending: Vector[PendingWrite]): Future[Unit] =
     val started = System.nanoTime()
-    repository
-      .insertAll(pending.map(_.event))
+    val written = (checkpoint, repository) match
+      case (Some(checkpointing), writer: CheckpointingWriter) =>
+        writer.insertAllCheckpointed(pending.map(_.event), checkpointing.commit(pending))
+      case _ => repository.insertAll(pending.map(_.event))
+    written
       .transform:
         case Success(written) =>
           metrics.batchWrite(Meters.Outcomes.Success, System.nanoTime() - started)
@@ -149,6 +164,32 @@ final class BatchProcessor(
     metrics.duplicates(math.max(0L, pending.size.toLong - written))
 
 object BatchProcessor:
+
+  /** How to turn a batch into the offsets it earned.
+    *
+    * A small type rather than two loose parameters because the group id and the owner travel together everywhere and
+    * because it makes the *absence* of checkpointing one `None` instead of two — a processor built with a group id and
+    * no owner would otherwise be a state that compiles and means nothing.
+    */
+  final case class Checkpointing(groupId: String, owner: Option[String]):
+
+    /** The positions a batch accounts for: per partition, the highest offset seen **plus one**.
+      *
+      * Plus one because that is Kafka's commit convention — the offset of the next record to read. Storing the last
+      * processed offset instead reads identically and is off by one at every seek, in the direction that reprocesses a
+      * record: safe, because the insert deduplicates, and still wrong.
+      *
+      * `max` and not `last`: a batch is assembled by `groupedWithin` across partitions and is not ordered by offset
+      * within one, so taking the final element would checkpoint whichever record happened to arrive last.
+      */
+    def commit(pending: Vector[PendingWrite]): CheckpointCommit =
+      val positions = pending
+        .groupBy(write => (write.record.topic, write.record.partition))
+        .toVector
+        .map { case ((topic, partition), writes) =>
+          CheckpointWrite(topic, partition, writes.map(_.record.offset).max + 1L, writes.size.toLong)
+        }
+      CheckpointCommit(groupId, owner, positions)
 
   /** SQLSTATE classes that mean "this row, not this database".
     *

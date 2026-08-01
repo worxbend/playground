@@ -97,7 +97,33 @@ final case class Histogram(
   untilLabel: String,
   peakLabel: String,
   empty: Boolean
-)
+):
+
+  /** The same series as data, for the canvas chart that progressively enhances the bars.
+    *
+    * **A JSON island rather than attributes on each bar.** The Content-Security-Policy has no `'unsafe-inline'` in
+    * `script-src`, so the data cannot be a `<script>` literal; it goes in a `<script type="application/json">`, which
+    * is inert data and not script, and the CSP does not govern it. Reading ninety `data-` attributes back out of the
+    * DOM would work too and would make the parse cost linear in the number of bars for no benefit.
+    *
+    * `[timestamps, counts]` is uPlot's own column-major shape, so the client hands it straight to the constructor
+    * without a transform — and a transform is where a chart quietly starts disagreeing with the table beside it.
+    */
+  def series: io.circe.Json =
+    val seconds = bars.map(bar => io.circe.Json.fromLong(java.time.Instant.parse(bar.start).getEpochSecond))
+    val counts = bars.map(bar => io.circe.Json.fromLong(bar.count))
+    io.circe.Json.obj(
+      "t" -> io.circe.Json.arr(seconds*),
+      "v" -> io.circe.Json.arr(counts*),
+      // The bucket width, so the chart can draw bars of the right span rather than guessing from the point spacing —
+      // which is wrong for the last bucket of a series and for any window with a gap in it.
+      "widthSeconds" -> io.circe.Json.fromLong(
+        if bars.sizeIs >= 2 then
+          java.time.Instant.parse(bars(1).start).getEpochSecond -
+            java.time.Instant.parse(bars.head.start).getEpochSecond
+        else 0L
+      )
+    )
 
 /** One selectable value within a facet. `count` is pre-formatted because it may be an approximation ("1,024" or the
   * capped form), and deciding which belongs to [[Presenter]].

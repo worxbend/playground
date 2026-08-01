@@ -25,6 +25,13 @@
   --accent-contrast: #ffffff;
   --focus: #2f5bd0;
 
+  /* Chart palette, declared here so JavaScript can read it rather than
+     duplicate it. A hard-coded hex in app.js is the one colour a scheme switch
+     cannot reach, and it drifts from this file the first time either moves. */
+  --chart-accent: #2f5bd0;
+  --chart-grid: rgba(91, 100, 114, 0.16);
+  --chart-axis: #5b6472;
+
   --severity-debug: #7a8798;
   --severity-info: #2f7fd0;
   --severity-notice: #2f9d8f;
@@ -52,6 +59,9 @@
     --text-muted: #97a1b0;
     --accent: #6f9bff;
     --accent-contrast: #0b0e12;
+    --chart-accent: #6f9bff;
+    --chart-grid: rgba(148, 163, 184, 0.18);
+    --chart-axis: #94a3b8;
     --focus: #6f9bff;
 
     --severity-debug: #7a8798;
@@ -1129,5 +1139,59 @@ body[data-density="compact"] {
   * {
     transition-duration: 0.01ms !important;
     animation-duration: 0.01ms !important;
+  }
+}
+
+
+/* ---------------------------------------------------------------------------
+ * Charts
+ *
+ * The canvas is an enhancement over `.histogram-bars`, not a replacement for
+ * it: the markup renders a working bar chart of links with no JavaScript, and
+ * app.js hides that only once uPlot has actually drawn. These rules therefore
+ * style a thing that may never appear, which is the correct trade — the cost
+ * is a few hundred bytes and the alternative is a blank panel.
+ * ------------------------------------------------------------------------- */
+
+.chart {
+  margin: 0;
+  padding: 0;
+}
+
+.chart[hidden] {
+  display: none;
+}
+
+.chart-canvas {
+  width: 100%;
+  min-height: 160px;
+}
+
+/* uPlot draws its own cursor line; these align its chrome with the rest of the
+   surface rather than leaving it with the library's defaults. */
+.chart .u-cursor-x,
+.chart .u-cursor-y {
+  border-color: color-mix(in srgb, var(--chart-axis) 55%, transparent);
+}
+
+.chart .u-select {
+  background: color-mix(in srgb, var(--accent) 18%, transparent);
+}
+
+/* The hover readout lives in the <figcaption>: one element, no positioning
+   maths, and it is real text in the flow rather than a floating box a screen
+   reader has to be told about. `min-height` reserves its line so the panel
+   does not jump by one row as the pointer enters and leaves. */
+.chart-readout {
+  min-height: 1.4em;
+  padding-top: 0.35rem;
+  font-size: 0.8125rem;
+  font-variant-numeric: tabular-nums;
+  color: var(--text-muted);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .chart * {
+    transition: none !important;
   }
 }

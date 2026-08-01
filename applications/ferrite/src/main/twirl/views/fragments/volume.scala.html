@@ -17,6 +17,22 @@
   @if(histogram.empty) {
     <p class="histogram-empty">No events between @histogram.fromLabel and @histogram.untilLabel.</p>
   } else {
+    @* The canvas chart's mount point and its data.
+     *
+     * The <ol> below is not a fallback that JavaScript replaces — it is the chart, and the canvas is an enhancement
+     * layered over it. Without JS the page is a working bar chart of links; with it, the same series is drawn with a
+     * hover readout and a real time axis. Building it the other way round (an empty div plus a script) would make
+     * the no-JS page show nothing where its most informative element belongs.
+     *
+     * `type="application/json"` is inert data, not script, so the CSP's script-src — which deliberately has no
+     * 'unsafe-inline' — does not govern it. That is the whole reason the series travels this way.
+     *@
+    <figure class="chart" data-chart="volume" hidden aria-hidden="true">
+      <div class="chart-canvas"></div>
+      <figcaption class="chart-readout" aria-live="off"></figcaption>
+    </figure>
+    <script type="application/json" data-chart-series="volume">@Html(histogram.series.noSpaces)</script>
+
     <ol class="histogram-bars">
       @for(bar <- histogram.bars) {
         <li class="histogram-bar @bar.heightClass">

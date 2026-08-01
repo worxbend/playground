@@ -27,11 +27,11 @@ import scala.concurrent.duration.DurationInt
 
 /** The document, and the one property that makes describing a Cask API with tapir values safe.
   *
-  * **The drift test is the whole justification for this design.** cobalt's routes are Cask annotations and its
-  * document is a separate list of tapir endpoint values; nothing in the compiler connects them. Left unchecked that
-  * is a hand-written spec with extra steps — the failure mode a generated document is supposed to eliminate. So the
-  * two sets of paths are compared in both directions, by reflecting over the annotations Cask itself routes on. A
-  * route added without a description fails here, and so does a description of a route that does not exist.
+  * **The drift test is the whole justification for this design.** cobalt's routes are Cask annotations and its document
+  * is a separate list of tapir endpoint values; nothing in the compiler connects them. Left unchecked that is a
+  * hand-written spec with extra steps — the failure mode a generated document is supposed to eliminate. So the two sets
+  * of paths are compared in both directions, by reflecting over the annotations Cask itself routes on. A route added
+  * without a description fails here, and so does a description of a route that does not exist.
   */
 final class CobaltApiDocsSuite extends FunSuite:
 
@@ -42,9 +42,9 @@ final class CobaltApiDocsSuite extends FunSuite:
   /** Every path Cask actually serves, read out of the router's own dispatch table.
     *
     * `caskMetadata` is what Cask itself routes on, so this compares the document against the *served* surface rather
-    * than against a second list somebody maintains. Java annotation reflection was the first attempt and silently
-    * found nothing — Cask's `@cask.get` is a Scala `StaticAnnotation` with no runtime retention — which is precisely
-    * the vacuous-pass this suite's third test now guards against.
+    * than against a second list somebody maintains. Java annotation reflection was the first attempt and silently found
+    * nothing — Cask's `@cask.get` is a Scala `StaticAnnotation` with no runtime retention — which is precisely the
+    * vacuous-pass this suite's third test now guards against.
     *
     * Building an instance costs a supervisor and a telemetry registry; `Fixtures.idleSupervisor` supplies one that
     * needs no broker.

@@ -259,6 +259,19 @@ object Fixtures:
   def telemetry(): Telemetry =
     Telemetry.start(TelemetryConfig("cobalt-test", "0.0.0-test", "test"), Tracing.noop)
 
+  /** A decoded record ready to write, at a chosen Kafka coordinate.
+    *
+    * The coordinate is what the checkpoint tests are about, so it is the parameter; the payload is incidental and comes
+    * from the standard envelope.
+    */
+  def pendingWrite(id: String, partition: Int, offset: Long): PendingWrite =
+    val message = envelope(id)
+    PendingWrite(
+      record(message, partition = partition, offset = offset),
+      message,
+      com.worxbend.persistence.repository.NewEvent.from(message).fold(problem => sys.error(problem), identity)
+    )
+
   /** A supervisor whose stream never actually starts, and whose Kafka and checkpoint lookups answer nothing.
     *
     * For suites that need a supervisor to *exist* rather than to run — the admin-path constants, the route wiring. The

@@ -24,6 +24,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <meta name="color-scheme" content="light dark">
     <title>@title</title>
+    <link rel="stylesheet" href="@com.worxbend.ferrite.web.Urls.asset("lib/uplot/dist/uPlot.min.css")">
     <link rel="stylesheet" href="@com.worxbend.ferrite.web.Urls.asset("css/app.css")">
     @*
      * htmx and Alpine come from WebJars, unpacked under /public by sbt-web, and are cache-busted by build version
@@ -32,6 +33,12 @@
      * anything htmx swaps in afterwards, which is why swapped fragments need no re-initialisation glue.
      *@
     <script defer src="@com.worxbend.ferrite.web.Urls.asset("lib/htmx.org/dist/htmx.min.js")"></script>
+    @* uPlot before app.js, and both deferred: deferred scripts execute in document order, so `uPlot` is defined by
+     * the time the chart code looks for it. It is ~45 kB, canvas-rendered and dependency-free — chosen over Chart.js
+     * or ECharts because the CSP allows no external host, so every byte is served from this service's own jar, and
+     * because a time series of a few thousand points is the only shape this UI draws.
+     *@
+    <script defer src="@com.worxbend.ferrite.web.Urls.asset("lib/uplot/dist/uPlot.iife.min.js")"></script>
     <script defer src="@com.worxbend.ferrite.web.Urls.asset("js/app.js")"></script>
     <script defer src="@com.worxbend.ferrite.web.Urls.asset("lib/alpinejs/dist/cdn.min.js")"></script>
   </head>

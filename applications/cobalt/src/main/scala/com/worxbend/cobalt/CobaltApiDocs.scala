@@ -39,18 +39,18 @@ import sttp.tapir.json.circe.*
   * server interpreter on this classpath. What tapir contributes here is only the *description*: a set of endpoint
   * values that a generator turns into a document with real schemas.
   *
-  * The alternative was a hand-written `openapi.yaml`. That is a second statement of the contract, and the two
-  * disagree the first time a parameter is added — silently, because nothing compiles YAML. This arrangement has the
-  * same hazard in a smaller and *checkable* form: the description could drift from the Cask routes. So
-  * `CobaltApiDocsSuite` asserts, in both directions, that every path here is served and every route served is
-  * described. That test is the reason this design is acceptable rather than merely convenient.
+  * The alternative was a hand-written `openapi.yaml`. That is a second statement of the contract, and the two disagree
+  * the first time a parameter is added — silently, because nothing compiles YAML. This arrangement has the same hazard
+  * in a smaller and *checkable* form: the description could drift from the Cask routes. So `CobaltApiDocsSuite`
+  * asserts, in both directions, that every path here is served and every route served is described. That test is the
+  * reason this design is acceptable rather than merely convenient.
   *
   * ## Why the admin API is documented at all
   *
   * Two of these routes move a production pipeline: one replays dead letters onto the main topic, the other moves a
   * consumer group's committed offsets. An operator meets them during an incident, from a terminal, having never used
-  * them before. A generated document with every parameter's meaning and every failure's cause is the difference
-  * between that and reading Scala.
+  * them before. A generated document with every parameter's meaning and every failure's cause is the difference between
+  * that and reading Scala.
   */
 object CobaltApiDocs:
 
@@ -271,8 +271,12 @@ object CobaltApiDocs:
   val dlqRecords: PublicEndpoint[(Int, String), ErrorDoc, Json, Any] =
     admin.get
       .in("dlq" / "records")
-      .in(query[Int]("limit").default(0).description("Bounded by `REPLAY_MAX_RECORDS`; an over-limit request is refused, never clamped."))
-      .in(query[String]("reason").default("").description("Filter by rejection reason — the same closed vocabulary as `consume_records_poison_total{reason}`."))
+      .in(query[Int](
+        "limit"
+      ).default(0).description("Bounded by `REPLAY_MAX_RECORDS`; an over-limit request is refused, never clamped."))
+      .in(query[String]("reason").default("").description(
+        "Filter by rejection reason — the same closed vocabulary as `consume_records_poison_total{reason}`."
+      ))
       .out(jsonBody[Json])
       .name("listDeadLetters")
       .summary("A bounded, newest-first page of dead letters")
@@ -287,8 +291,12 @@ object CobaltApiDocs:
       .in("dlq:replay")
       .in(query[Int]("limit").default(0).description("How many to replay. Refused above `REPLAY_MAX_RECORDS`."))
       .in(query[String]("reason").default("").description("Replay only dead letters with this reason."))
-      .in(query[String]("refs").default("").description("Comma-separated `topic/partition/offset` of specific records."))
-      .in(query[Boolean]("dryRun").default(true).description("Defaults to **true**. Returns the plan and publishes nothing."))
+      .in(query[String](
+        "refs"
+      ).default("").description("Comma-separated `topic/partition/offset` of specific records."))
+      .in(query[Boolean](
+        "dryRun"
+      ).default(true).description("Defaults to **true**. Returns the plan and publishes nothing."))
       .out(jsonBody[Json])
       .name("replayDeadLetters")
       .summary("Replay dead letters onto the main topic")
@@ -340,7 +348,9 @@ object CobaltApiDocs:
       .out(jsonBody[Json])
       .name("getReadiness")
       .summary("Readiness")
-      .description("Both Kafka and PostgreSQL count: without one there is nothing to consume, without the other nowhere to put it.")
+      .description(
+        "Both Kafka and PostgreSQL count: without one there is nothing to consume, without the other nowhere to put it."
+      )
       .tag(platformTag)
 
   /** Every endpoint, in document order. The drift test walks this list against the Cask routes. */

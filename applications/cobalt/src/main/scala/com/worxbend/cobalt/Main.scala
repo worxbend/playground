@@ -147,7 +147,12 @@ object CobaltApp extends StrictLogging:
       metrics = metrics,
       source = DeadLetterSource,
       attempts = config.consumer.writeAttempts,
-      backoff = () => after(config.consumer.retryDelay, system.scheduler)(Future.unit)
+      backoff = () => after(config.consumer.retryDelay, system.scheduler)(Future.unit),
+      // The externalised offsets. `owner` is the container id, so a checkpoint that stops advancing names the
+      // replica that owned the partition when it did — the first thing worth knowing after a rebalance.
+      checkpoint = Some(
+        BatchProcessor.Checkpointing(config.consumer.groupId, sys.env.get("HOSTNAME").filter(_.nonEmpty))
+      )
     )
 
     // The consumer behind a supervisor rather than started directly. `EventConsumer.start` is now a *factory* the

@@ -324,3 +324,147 @@
     });
   });
 })();
+
+/* ---------------------------------------------------------------------------
+ * Charts.
+ *
+ * The <ol class="histogram-bars"> in the markup IS the chart; this replaces it
+ * with a canvas when uPlot is available. Built that way round on purpose — an
+ * empty div plus a script would leave the page's most informative element
+ * blank whenever JavaScript is off, blocked, or still loading.
+ *
+ * The series arrives in a <script type="application/json"> island rather than
+ * in data- attributes or an inline literal: the CSP has no 'unsafe-inline' in
+ * script-src, and reading ninety attributes back out of the DOM would make the
+ * parse linear in the bar count for nothing.
+ * ------------------------------------------------------------------------- */
+(function () {
+  'use strict';
+
+  /* Theme colours read from the stylesheet rather than duplicated here. A
+   * hard-coded hex in JavaScript is the one place a dark-mode switch cannot
+   * reach, and it drifts from the CSS the first time a palette is adjusted. */
+  function themeColour(name, fallback) {
+    var value = getComputedStyle(document.documentElement).getPropertyValue(name);
+    return value && value.trim() ? value.trim() : fallback;
+  }
+
+  function formatCount(value) {
+    return value.toLocaleString();
+  }
+
+  function build(figure, series) {
+    var accent = themeColour('--chart-accent', '#38bdf8');
+    var grid = themeColour('--chart-grid', 'rgba(148,163,184,0.16)');
+    var axis = themeColour('--chart-axis', '#94a3b8');
+    var canvas = figure.querySelector('.chart-canvas');
+    var readout = figure.querySelector('.chart-readout');
+    if (!canvas || !series.t || series.t.length === 0) return null;
+
+    var data = [series.t, series.v];
+
+    /* Bars and not a line. A line between hourly buckets implies values
+     * between them, and there are none — the series is a histogram, and
+     * drawing it as a line is a claim about data that was never measured. */
+    function bars(u, seriesIndex, idx0, idx1) {
+      var spacing = series.widthSeconds > 0 ? series.widthSeconds : 60;
+      return uPlot.paths.bars({ size: [0.85, Infinity], align: 0, gap: 1 })(
+        u, seriesIndex, idx0, idx1, spacing
+      );
+    }
+
+    var options = {
+      width: canvas.clientWidth || 800,
+      height: 160,
+      padding: [8, 8, 0, 8],
+      cursor: { y: false, points: { show: false } },
+      legend: { show: false },
+      scales: { x: { time: true } },
+      axes: [
+        { stroke: axis, grid: { stroke: grid, width: 1 }, ticks: { stroke: grid } },
+        {
+          stroke: axis,
+          grid: { stroke: grid, width: 1 },
+          ticks: { stroke: grid },
+          size: 44,
+          values: function (u, splits) { return splits.map(formatCount); }
+        }
+      ],
+      series: [
+        {
+          /* The hover readout is written into the <figcaption> rather than a
+           * floating tooltip: one element, no positioning maths, and it stays
+           * readable to a screen reader because it is real text in the flow. */
+          value: function (u, raw) {
+            return raw == null ? '' : new Date(raw * 1000).toLocaleString();
+          }
+        },
+        { paths: bars, fill: accent, stroke: accent, width: 0, points: { show: false } }
+      ],
+      hooks: {
+        setCursor: [
+          function (u) {
+            var idx = u.cursor.idx;
+            if (idx == null || !readout) {
+              if (readout) readout.textContent = '';
+              return;
+            }
+            var when = new Date(u.data[0][idx] * 1000);
+            readout.textContent = when.toLocaleString() + ' · ' + formatCount(u.data[1][idx]) + ' events';
+          }
+        ]
+      }
+    };
+
+    return new uPlot(options, data, canvas);
+  }
+
+  function mount(figure) {
+    var id = figure.getAttribute('data-chart');
+    var island = document.querySelector('script[data-chart-series="' + id + '"]');
+    if (!island) return;
+
+    var series;
+    try {
+      series = JSON.parse(island.textContent);
+    } catch (error) {
+      /* A malformed island leaves the bars in place. Silently showing an empty
+       * canvas where a working chart used to be is the worse failure. */
+      return;
+    }
+
+    var chart = build(figure, series);
+    if (!chart) return;
+
+    /* Only now is the fallback hidden — after the canvas exists. Hiding it
+     * first would leave a hole on any browser where uPlot failed to load. */
+    var bars = figure.parentElement && figure.parentElement.querySelector('.histogram-bars');
+    if (bars) bars.setAttribute('hidden', 'hidden');
+    figure.removeAttribute('hidden');
+    figure.removeAttribute('aria-hidden');
+
+    /* Redraw on resize, coalesced to an animation frame: uPlot sizes itself
+     * once at construction, so a chart in a fluid layout is the wrong width
+     * from the first reflow onwards without this. */
+    var pending = false;
+    window.addEventListener('resize', function () {
+      if (pending) return;
+      pending = true;
+      window.requestAnimationFrame(function () {
+        pending = false;
+        chart.setSize({ width: figure.querySelector('.chart-canvas').clientWidth, height: 160 });
+      });
+    });
+  }
+
+  function mountAll() {
+    if (typeof uPlot === 'undefined') return;
+    Array.prototype.forEach.call(document.querySelectorAll('[data-chart]'), mount);
+  }
+
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', mountAll);
+  } else {
+    mountAll();
+  }
+})();

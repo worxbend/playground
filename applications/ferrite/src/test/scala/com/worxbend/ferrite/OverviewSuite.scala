@@ -173,6 +173,54 @@ final class OverviewSuite extends FunSuite:
     assertEquals(hrefs.distinct.size, hrefs.size, "two bars linked to the same window")
     hrefs.foreach(href => assert(href.contains("from=") && href.contains("until="), href))
 
+  // --- the chart's contract with app.js ---------------------------------------------------------------------------
+  //
+  // There is no JavaScript test tier, so these assertions ARE the contract. Every one of them pins something the
+  // chart code reads by selector: break one and the canvas silently never mounts, leaving the bars in place — which
+  // looks fine, which is exactly why it needs a test.
+
+  test("the bars are the chart and the canvas is the enhancement, not the other way round"):
+    // The <ol> must be present and visible in the server-rendered HTML. Shipping an empty div for a script to fill
+    // would leave the page's most informative element blank whenever JavaScript is off, blocked or still loading.
+    val document = render()
+    val bars = document.select(".volume .histogram-bars")
+    assertEquals(bars.size(), 1)
+    assert(!bars.first().hasAttr("hidden"), "the fallback chart starts hidden, so a no-JS page shows nothing")
+    val figure = document.select(".volume figure.chart")
+    assertEquals(figure.size(), 1)
+    assert(figure.first().hasAttr("hidden"), "the canvas starts visible, so a no-JS page shows an empty box")
+
+  test("the series travels as an inert JSON island, which the CSP permits and a script literal would not"):
+    // script-src has no 'unsafe-inline', so the data cannot be an inline <script> literal. `application/json` is
+    // data rather than script and is not governed by that directive — the whole reason for this shape.
+    val document = render()
+    val island = document.select("script[data-chart-series=volume]")
+    assertEquals(island.size(), 1)
+    assertEquals(island.first().attr("type"), "application/json")
+    val parsed = io.circe.parser.parse(island.first().data()).getOrElse(fail("the island is not valid JSON"))
+    val times = parsed.hcursor.get[Vector[Long]]("t").getOrElse(fail("no t series"))
+    val values = parsed.hcursor.get[Vector[Long]]("v").getOrElse(fail("no v series"))
+    assertEquals(times.size, Fixtures.volume.size)
+    assertEquals(times.size, values.size, "the two columns must be the same length or uPlot draws nothing")
+    assert(parsed.hcursor.get[Long]("widthSeconds").exists(_ > 0L), "the bucket width is needed to size the bars")
+
+  test("the chart data and the bars describe the same series"):
+    // Two renderings of one dataset is two chances to disagree. If they ever do, the canvas and the table beside it
+    // tell different stories and only one of them is right.
+    val document = render()
+    val island = document.select("script[data-chart-series=volume]").first()
+    val values = io.circe.parser
+      .parse(island.data())
+      .flatMap(_.hcursor.get[Vector[Long]]("v"))
+      .getOrElse(fail("no series"))
+    assertEquals(values.sum, Fixtures.volume.map(_.events).sum)
+
+  test("the mount point and readout the chart code looks for are present"):
+    val document = render()
+    assertEquals(document.select(".volume figure.chart[data-chart=volume]").size(), 1)
+    assertEquals(document.select(".volume .chart-canvas").size(), 1)
+    assertEquals(document.select(".volume .chart-readout").size(), 1)
+
   test("the overview drives nothing through htmx, because it has no results region to swap"):
     // An hx-target that matches nothing is a click that silently does nothing — the worst possible failure for a
     // control, because it looks like the data is missing rather than like the page is wrong.

@@ -144,3 +144,37 @@ final class SupervisorSuite extends FunSuite:
     assertEquals(json.hcursor.get[Long]("committed").toOption, Some(100L))
     assertEquals(json.hcursor.get[Long]("stored").toOption, Some(140L))
     assertEquals(json.hcursor.get[Long]("lag").toOption, Some(100L))
+
+  // --- what a batch checkpoints -------------------------------------------------------------------------------
+
+  test("a batch checkpoints the highest offset per partition, plus one"):
+    // Plus one is Kafka's commit convention — the offset of the *next* record. Storing the last processed offset
+    // reads identically and is off by one at every seek.
+    val records = Vector(
+      Fixtures.pendingWrite("a", partition = 0, offset = 4L),
+      Fixtures.pendingWrite("b", partition = 0, offset = 9L),
+      Fixtures.pendingWrite("c", partition = 3, offset = 2L)
+    )
+    val commit = BatchProcessor.Checkpointing("g", Some("replica-1")).commit(records)
+    assertEquals(commit.groupId, "g")
+    assertEquals(commit.owner, Some("replica-1"))
+    val byPartition = commit.positions.map(p => p.partition -> p.nextOffset).toMap
+    assertEquals(byPartition, Map(0 -> 10L, 3 -> 3L))
+
+  test("the highest offset wins, not the last one in the batch"):
+    // `groupedWithin` assembles a batch across partitions and does not order it by offset within one, so taking the
+    // final element would checkpoint whichever record happened to arrive last — and rewind the position if that
+    // record was an earlier offset.
+    val outOfOrder = Vector(
+      Fixtures.pendingWrite("a", partition = 0, offset = 9L),
+      Fixtures.pendingWrite("b", partition = 0, offset = 4L)
+    )
+    val commit = BatchProcessor.Checkpointing("g", None).commit(outOfOrder)
+    assertEquals(commit.positions.map(_.nextOffset), Vector(10L))
+
+  test("records counts the batch's own contribution, which the store then accumulates"):
+    val records = Vector(
+      Fixtures.pendingWrite("a", partition = 0, offset = 1L),
+      Fixtures.pendingWrite("b", partition = 0, offset = 2L)
+    )
+    assertEquals(BatchProcessor.Checkpointing("g", None).commit(records).positions.map(_.records), Vector(2L))
