@@ -59,6 +59,13 @@ nav:
       - Development: development.md
       - Operations: operations.md
   - Architecture:
+      # Ordered by zoom level, which is the order somebody new should read them: the system, then the shapes it
+      # moves, then how each service is assembled, then what happens over time. The decision record is last because
+      # it answers "why is it like this" rather than "what is it", and that is the second question.
+      - At a glance: architecture/overview.md
+      - Shared types: architecture/domain.md
+      - Service composition: architecture/services.md
+      - Flows over time: architecture/flows.md
       - Decision record: adr/0000-architecture.md
   - API docs:
       - Scaladoc: api/index.html

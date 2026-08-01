@@ -34,6 +34,7 @@ import com.worxbend.persistence.repository.PostgresEventRepository
 import com.zaxxer.hikari.metrics.micrometer.MicrometerMetricsTrackerFactory
 import java.util.concurrent.Executors
 import java.util.concurrent.ThreadFactory
+import java.util.concurrent.atomic.AtomicReference
 import org.apache.kafka.clients.admin.Admin
 import org.apache.pekko.Done
 import org.apache.pekko.actor.ActorSystem
@@ -122,9 +123,15 @@ object CobaltApp extends StrictLogging:
     // A late binding rather than reordering construction: the supervisor needs the admin client the probes are
     // built around, and the probes need a way to read the supervisor. One `var` visible in this scope alone is
     // smaller than the alternative, which is a second admin client or a lazily-initialised holder type.
-    var supervisorRef: Option[ConsumerSupervisor] = None
+    // An `AtomicReference` and not a captured `var`, and the difference is a real bug rather than a style
+    // preference. A mutable local captured by a closure compiles to an `ObjectRef` whose `elem` field is **not
+    // volatile**, so there is no happens-before edge between the boot thread's assignment below and the scheduled
+    // probe thread's read. The poller could observe `None` for the life of the process — and the symptom would be
+    // that `consume.running` and `consume.checkpoint.divergence` sit at their initial values forever, which are
+    // precisely the gauges somebody reaches for after a rebalance. Silent, and worse than no gauge at all.
+    val supervisorRef = AtomicReference[Option[ConsumerSupervisor]](None)
     def supervisorReading(): Unit =
-      supervisorRef.foreach: active =>
+      supervisorRef.get().foreach: active =>
         supervisorMetrics.observe(Await.result(active.status, config.lag.requestTimeout))
 
     val probes = Probes(
@@ -177,7 +184,7 @@ object CobaltApp extends StrictLogging:
       groupId = config.consumer.groupId,
       topic = config.consumer.topic
     )
-    supervisorRef = Some(supervisor)
+    supervisorRef.set(Some(supervisor))
     val started = Await.result(supervisor.start(), ConsumerSupervisor.DrainTimeout)
     logger.info(s"consumer supervisor: ${started.status.state.name}")
 

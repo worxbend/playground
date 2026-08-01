@@ -33,7 +33,7 @@ Three services, one canonical event format, one database, one metrics exposition
 
 - **wolfram** — HTTP ingestion. Tapir endpoint descriptions served by Vert.x 5. Validates a CloudEvent, assigns nothing, publishes to Kafka in **binary content mode** with a plain `KafkaProducer`. No Pekko.
 - **cobalt** — Kafka consumer. `pekko-connectors-kafka` committable source → decode-in-stream → batched idempotent insert → commit **after** the durable write. Cask is only the `/metrics` + `/health` HTTP surface.
-- **ferrite** — Play 3 web application. Server-rendered Twirl + HTMX + Alpine + Tailwind over PostgreSQL. Owns the Flyway migrations. Never sees Kafka.
+- **ferrite** — Play 3 web application. Server-rendered Twirl + HTMX + Alpine + Tailwind over PostgreSQL. Never sees Kafka. **Amendment (as built):** this line originally said ferrite "owns the Flyway migrations". It does not, and deliberately: `wiring/Databases` applies no DDL, because three web replicas starting together would race on the schema-history table and a migration that failed halfway would leave a replica serving traffic against a schema it cannot describe. **cobalt** runs them on boot — it is the write side, so it is the service that must not start against a schema older than its own inserts, and `Migrations.migrate` is idempotent so every replica converges rather than conflicting.
 
 Canonical format is CloudEvents 1.0. The CloudEvent is stored **verbatim** in `raw jsonb`; every queryable attribute is a `GENERATED ALWAYS AS … STORED` column derived from `raw`, so projections cannot drift from the payload.
 
@@ -66,7 +66,7 @@ flowchart LR
     GR["Grafana 13.1.1"]
   end
 
-  D -->|"HTTP POST /events<br/>binary or structured"| W
+  D -->|"HTTP POST /v1/events<br/>binary or structured"| W
   W -->|"produce + inject traceparent"| T1
   T1 -->|"consume, extract traceparent"| C
   C -->|"poison"| T2

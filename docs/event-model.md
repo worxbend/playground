@@ -412,7 +412,7 @@ sequenceDiagram
         W->>K: send(key = source#subject, binary mode)<br/>+ traceparent injected into headers
         Note over W,K: acks=all, enable.idempotence=true,<br/>compression=zstd, linger.ms=5
         K-->>W: ack
-        W-->>D: 202 Accepted
+        W-->>D: 200 OK + the created resource
     end
     deactivate W
 
