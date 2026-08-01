@@ -10,11 +10,12 @@ work inside it.
 
 | Tool | Version | Notes |
 | --- | --- | --- |
-| JDK | **25** (`25.0.1-tem`) | Pinned in `.sdkmanrc`; the same JDK CI and the container base images use. |
+| JDK | **25** (`25.0.1-tem`) | Pinned in `.sdkmanrc`. CI asks for `25` and the base image is `eclipse-temurin:25-jre-alpine`, both of which float to the newest 25.x — deliberately, so a JDK security release is picked up without a commit. `.sdkmanrc` is the only exact pin. |
 | sbt | **2.0.3** | Pinned in `.sdkmanrc` and `project/build.properties`. sbt 1 will not load this build. |
 | Docker | any recent daemon | Required for `sbt verifyIt` (Testcontainers) and for the images. Not needed for `sbt verify`. |
 | Python + MkDocs | 3.12, `mkdocs` 1.6.1 + `mkdocs-material` 9.7.7 | Only for building the docs site locally. |
 | Tailwind CSS CLI | **4.3.3** standalone binary | Only for `ferrite/tailwind` — see §8. Absent, the task warns and leaves the committed stylesheet alone. |
+| osv-scanner | **2.4.0** | Only for the dependency gate — see §9. Not needed by `verify`. |
 
 ```bash
 sdk env          # adopts the JDK and sbt from .sdkmanrc
@@ -34,7 +35,7 @@ sbt verifyIt    # IT/testFull — the slow tier. Needs a working Docker daemon. 
 sbt fmt         # scalafmt, build sources included
 sbt fmtCheck    # scalafmtSbtCheck + scalafmtCheckAll
 sbt headerCreate  # stamp licence headers — NEVER hand-write one
-sbt doc         # Scaladoc; -Werror applies, so a broken doc link fails the build
+sbt doc         # Scaladoc. -Werror does NOT apply here — read the warnings, see §4
 sbt scaladocSite  # doc for every module, collected under target/site/api/<module>
 
 sbt cobalt/run    # :8080 (HTTP_PORT)
@@ -44,12 +45,19 @@ sbt ferrite/run   # :9000, Play dev mode
 sbt ferrite/tailwind       # regenerate ferrite's committed stylesheet — see §8
 sbt ferrite/tailwindCheck  # fail if it is stale
 
+sbt sbom          # one CycloneDX document per deployable, into target/sbom — see §9
+
 sbt "cobalt/testOnly com.worxbend.cobalt.BatchProcessorSuite"
 sbt "persistence/IT/testOnly com.worxbend.persistence.MigrationIT"
 
 # One quoted argument each, or a ";a;b;c" sequence: sbt 2 does not split a single space-joined string.
 sbt ";ferrite/Docker/publishLocal;cobalt/Docker/publishLocal;wolfram/Docker/publishLocal"
 ```
+
+That last rule is not theoretical. The `package` job in `.github/workflows/scala.yml` ran
+`sbt -batch ferrite/Docker/stage cobalt/Docker/stage wolfram/Docker/stage` and had therefore failed on **every
+push since it was written**, with `Expected whitespace character` — so the one job that proves the images still
+build had never built one.
 
 Run `sbt verify` before handing work back. `headerCheck` fails on any file `sbt-header` has not stamped, and new
 files are only stamped once they have been compiled or `sbt headerCreate` has run.
@@ -136,9 +144,11 @@ Adding a compile-scoped dependency on anything else — Play, Kafka, JDBC, even 
 single file compiles. Test-scoped dependencies are allowed. That constraint is the whole value of the module: the
 domain compiles without a framework in scope, so nothing about the domain can depend on how it is transported.
 
-Every other module automatically gets pureconfig, quicklens, scala-logging and logback (main) plus munit,
-munit-scalacheck, scalacheck and scalatest (test) from `commonDependencies`/`testDependencies` — do not re-declare
-them. Coordinates live in `project/Dependencies.scala`; `Versions` is public so `build.sbt` can reference it.
+Every other module automatically gets pureconfig, scala-logging and logback (main) plus munit, munit-scalacheck,
+scalacheck and scalatest (test) from `commonDependencies`/`testDependencies` — do not re-declare them. Keep that
+list short: anything in it ships in all three images whether or not a line of code references it. quicklens was in
+it and was referenced by nothing, in any module, so it was removed.
+Coordinates live in `project/Dependencies.scala`; `Versions` is public so `build.sbt` can reference it.
 Two traps already resolved there: pureconfig publishes no `pureconfig_3` aggregate (Scala 3 derivation lives in
 `pureconfig-core`), and the `scala-garden/scala-logging` fork publishes nothing to Maven Central.
 
@@ -173,7 +183,15 @@ Two traps already resolved there: pureconfig publishes no `pureconfig_3` aggrega
 - `-Wnonunit-statement` is **removed in `Test` scope only**, because ScalaTest's `assert` returns an `Assertion`
   and every multi-assertion test would otherwise fail. Do not re-add it there.
 - 120 columns, enforced by scalafmt.
-- Scaladoc is compiled with the same flags: a broken `[[link]]` fails `sbt doc`.
+- **Scaladoc is *not* compiled with the same flags.** `doc` logs
+  `Skipping unused scalacOptions: -Werror, -Wvalue-discard, -Wnonunit-statement, -source, -new-syntax, -indent`
+  and an unresolved `[[link]]` is a warning it walks past — `modules/observability`'s `Tracing.scala` has two
+  today. Read the `sbt doc` output; do not assume a green exit means the links resolve.
+- **sbt 2.0.3 silently drops `scalacOptions` it does not recognise, and this is a trap.** Adding, say,
+  `-Wsafe-init` to `BaseSettings.scalacFlags` changes nothing: `sbt "print kernel/scalacOptions"` still reports the
+  old list, and a deliberately invalid `-Wbogus-probe-flag` compiles clean *even with `-Werror`*. So a flag added
+  here can look enabled and be doing nothing. Before relying on a new one, prove it fires — write a file that
+  violates it and watch the build go red.
 - **Never hard-code an sbt output path.** sbt 2 writes to one shared root — `target/out/jvm/scala-<v>/<project>/`
   — not to `<module>/target/scala-<v>/`. The Pages workflow used to copy Scaladoc from the sbt 1 location behind
   an `[ -d "$src" ] &&` guard, so all seven modules were skipped in silence for as long as it existed. Ask sbt for
@@ -406,10 +424,82 @@ run there. In CI, cache `~/.cache/worxbend` beside `~/.cache/coursier`.
 
 ---
 
-## 9. Gotchas worth remembering
+## 9. Dependencies, advisories and the supply-chain gate
 
-- `sbt verify` is green at 531 unit tests. If your change makes the count *drop*, you probably renamed a suite
-  into invisibility.
+### 9.1 The gate
+
+`.github/workflows/supply-chain.yml` builds a CycloneDX SBOM per deployable and scans it against
+[OSV](https://osv.dev). It fails the job on **any** advisory. It needs no account and no paid tier.
+
+```bash
+sbt sbom                                        # -> target/sbom/{ferrite,cobalt,wolfram}.cdx.json
+osv-scanner scan --config osv-scanner.toml \
+  --lockfile target/sbom/ferrite.cdx.json \
+  --lockfile target/sbom/cobalt.cdx.json \
+  --lockfile target/sbom/wolfram.cdx.json
+```
+
+Three things about that shape are deliberate:
+
+- **SBOMs, not a source scan.** osv-scanner has no sbt extractor — point it at this repository and it reports
+  "No package sources found". `project/plugins.sbt` carries `sbt-sbom` purely to give it something to read.
+- **`*.cdx.json`, under one directory.** osv-scanner identifies an SBOM by filename and rejects sbt-sbom's default
+  `wolfram-0.1.0-SNAPSHOT.bom.json` with "could not determine extractor suitable to this file". That is what
+  `bomFileName` and `bomOutputPath` in `build.sbt` are for.
+- **Three SBOMs, one per service, and none for the libraries.** A service's `Compile` bom already contains the
+  transitive closure of the `modules/` it depends on. Test and `IT` dependencies are *not* covered — Testcontainers,
+  and the Selenium/Appium tree `play-test` drags into ferrite, never leave CI, and gating on them would make `main`
+  red for something nobody ships.
+
+The scan is also on a weekly schedule. An advisory is published without anyone pushing a commit; without the cron,
+the person who finds out is whoever opens the next pull request.
+
+### 9.2 When the gate goes red
+
+Two places to fix it, and picking the wrong one is how a gate rots:
+
+- **A fix exists upstream** → add the coordinate to `Dependencies.securityOverrides` with the advisory id, the
+  upstream that holds it back, and why the bump is safe. That list closed 22 of the 23 advisories this repository
+  was carrying when the gate was written.
+- **No fix exists, or the code path is unreachable** → add an entry to `osv-scanner.toml` with an argument and an
+  `ignoreUntil` date. The date is the point: the ignore expires, the gate goes red, and somebody re-reads the
+  argument instead of inheriting it. There is exactly one entry today.
+
+Never widen the gate to a severity threshold. A threshold accepts every medium for ever and writes nothing down.
+
+### 9.3 Before you move a `dependencyOverride`
+
+Forcing a transitive dependency is a bet that its consumer compiled against a compatible shape, and neither
+`sbt evicted` nor the test suites can settle that bet. `missinglink` can:
+
+```scala
+// project/plugins.sbt, temporarily
+addSbtPlugin("ch.epfl.scala" % "sbt-missinglink" % "0.3.8")
+```
+
+```bash
+SBT_OPTS=-Xmx4g sbt cobalt/missinglinkCheck
+```
+
+It earns the detour. Moving `undertow-core` to 2.3.26 brought `jboss-threads` 3.7.0 with it, and Undertow's own
+POM manages `jboss-logging` *down* to 3.4.3 — below the `Messages.getBundle(MethodHandles.Lookup, Class)` overload
+that jboss-threads calls from a static initialiser. `sbt evicted` printed nothing, because nothing was evicted: the
+low version simply won. `verify` and `verifyIt` were both green. The failure would have been a `NoSuchMethodError`
+the first time Undertow built its worker — that is, on cobalt's first boot. `missinglinkCheck` named the method,
+the caller and the jar; the fix is the `jboss-logging` entry in `Dependencies.overrides`.
+
+**It is not wired into `verify`, and that is a considered decision.** On `wolfram` it cannot be made green without
+excluding `vertx-core` and three `netty` artifacts wholesale, because their optional integrations (Conscrypt,
+Brotli, JZlib, the native transports, Jackson 2) are absent by design and missinglink reports each as a conflict.
+Excluding the artifacts would mute the check exactly where the next real skew would appear. Run it by hand, read
+the "missing members" section — that is the part that matters — and ignore the "missing classes" noise.
+
+---
+
+## 10. Gotchas worth remembering
+
+- `sbt verify` is green at 709 unit tests and `sbt verifyIt` at 100 integration tests across the five modules that
+  have a `src/it`. If your change makes a count *drop*, you probably renamed a suite into invisibility.
 - OpenTelemetry's `Context` is `ThreadLocal`-backed and `Context.current()` returns root **silently** on any
   thread it was not entered on. Across a `Future`, a Pekko stream stage or a Vert.x event-loop hop, capture the
   `Context` and pass it explicitly. An orphaned span is not an error anything reports.

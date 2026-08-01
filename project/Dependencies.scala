@@ -25,7 +25,6 @@ object Dependencies:
     val Hikari = "7.1.0"
     val Flyway = "13.0.0"
     val PureConfig = "0.17.10"
-    val Quicklens = "1.9.15"
     // The apispec line tapir 1.13.29 itself depends on. Pinned here because the OpenAPI *serialiser* is a separate
     // artifact from the model, and resolving them at different versions produces a `NoSuchMethodError` at the first
     // request for the document rather than at compile time.
@@ -56,13 +55,23 @@ object Dependencies:
     val TestContainersJ = "2.0.5" // Java Testcontainers; 2.x renamed the modules
     val Jsoup = "1.22.2"
     val Requests = "0.9.3"
+    // --- forced past an advisory; see `securityOverrides` for why each is here ---
+    val Undertow = "2.3.26.Final"
+    val JbossLogging = "3.6.3.Final" // not an advisory; see `overrides` — undertow 2.3.26 resolves it too low
+    val Jackson = "2.21.5"
+    val BouncyCastle = "1.85"
+    val Lz4 = "1.11.1"
 
-  /** Applied to every module, main scope. */
+  /** Applied to every module, main scope.
+    *
+    * Deliberately short. Anything here lands in all three images whether or not a line of code references it, so a
+    * library earns its place by being used by more than one module. quicklens used to be here and was referenced by
+    * nothing at all — an artifact in every image, in every SBOM and in every vulnerability scan, for no call site.
+    */
   def commonDependencies: Seq[Setting[?]] =
     Seq(
       libraryDependencies ++= Seq(
         "com.github.pureconfig" %% "pureconfig-core" % Versions.PureConfig,
-        "com.softwaremill.quicklens" %% "quicklens" % Versions.Quicklens,
         "com.typesafe.scala-logging" %% "scala-logging" % Versions.ScalaLogging,
         "ch.qos.logback" % "logback-classic" % Versions.Logback
       )
@@ -85,8 +94,6 @@ object Dependencies:
     "io.circe" %% "circe-core" % Versions.Circe,
     "io.circe" %% "circe-parser" % Versions.Circe
   )
-
-  val circeGeneric: ModuleID = "io.circe" %% "circe-generic" % Versions.Circe
 
   // --- modules/eventing ---
 
@@ -239,5 +246,49 @@ object Dependencies:
     "org.apache.pekko" %% "pekko-protobuf-v3" % Versions.Pekko,
     "org.postgresql" % "postgresql" % Versions.Postgres,
     "io.prometheus" % "prometheus-metrics-core" % Versions.PrometheusJava,
-    "ch.qos.logback" % "logback-classic" % Versions.Logback
+    "ch.qos.logback" % "logback-classic" % Versions.Logback,
+    // undertow-core 2.3.26's parent POM manages jboss-logging down to 3.4.3.Final while the jboss-threads 3.7.0 it
+    // also pulls needs 3.6.1: `Messages.getBundle(MethodHandles.Lookup, Class)` and
+    // `Logger.getMessageLogger(MethodHandles.Lookup, Class, String)` do not exist before 3.5. Undertow declares
+    // jboss-logging one level higher in the graph, so resolution takes 3.4.3 and the mismatch is a
+    // `NoSuchMethodError` in `org.jboss.threads.Messages.<clinit>` — reached when Undertow builds its worker, i.e.
+    // when cobalt's admin server starts.
+    //
+    // `sbt evicted` never mentions it — nothing was evicted; the low version simply won — and neither `sbt verify`
+    // nor `sbt verifyIt` was red. It was found with `sbt missinglinkCheck`, which `docs/development.md` §9.3
+    // describes as the check to run whenever an entry in this list moves.
+    "org.jboss.logging" % "jboss-logging" % Versions.JbossLogging
+  )
+
+  /** Transitive versions forced past a published advisory.
+    *
+    * Separate from `overrides` because these are not compatibility decisions and they are not permanent. Every entry is
+    * a dependency this build never names, arriving at a version OSV reports as vulnerable, and every entry is something
+    * `sbt sbom` plus the `supply-chain` workflow fails on. Before this list existed the shipped classpath carried 23
+    * known advisories — 2 critical, 7 high — and nothing in CI had an opinion, because the Snyk workflow that was
+    * supposed to have one could not read an sbt 2 build at all.
+    *
+    * Each entry names the advisory and the upstream that holds it back, so the drop condition is explicit: delete it
+    * once that upstream ships the fixed version itself. Only the *patch* component moves here — a minor bump is a
+    * compatibility decision and belongs in `Versions`.
+    */
+  val securityOverrides: Seq[ModuleID] = Seq(
+    // Cask 0.11.3 pins undertow-core 2.3.18.Final. GHSA-j382-5jj3-vw4j (9.6, request smuggling) plus four more,
+    // all fixed by 2.3.21; 2.3.26 is the head of the same patch line. Cask uses `Undertow.builder`/`HttpHandler`,
+    // which have not changed across 2.3.x.
+    "io.undertow" % "undertow-core" % Versions.Undertow,
+    // pekko-serialization-jackson 1.6.0 and play-json 3.1.0-M10 both pin 2.21.2, which carries eleven advisories
+    // including GHSA-r7wm-3cxj-wff9 (8.7) and two 8.1s. All three artifacts move together: jackson-module-scala
+    // reflects over databind internals and a split version is how you get a NoSuchMethodError on first parse.
+    "com.fasterxml.jackson.core" % "jackson-databind" % Versions.Jackson,
+    "com.fasterxml.jackson.core" % "jackson-core" % Versions.Jackson,
+    "com.fasterxml.jackson.module" %% "jackson-module-scala" % Versions.Jackson,
+    // play-server 3.1.0-M9 pins 1.83 (it generates the dev-mode self-signed certificate). GHSA-574f-3g2m-x479
+    // (9.3) and three more, fixed in 1.84. bcutil is here because bcpkix drags it in at its own version.
+    "org.bouncycastle" % "bcprov-jdk18on" % Versions.BouncyCastle,
+    "org.bouncycastle" % "bcpkix-jdk18on" % Versions.BouncyCastle,
+    "org.bouncycastle" % "bcutil-jdk18on" % Versions.BouncyCastle,
+    // GHSA-xx22-p4ch-683r (6.5). Reached two independent ways — kafka-clients 3.9.2 for compression in cobalt and
+    // wolfram, pekko-serialization-jackson for ferrite — so both arrive at 1.11.1 rather than one being patched.
+    "at.yawk.lz4" % "lz4-java" % Versions.Lz4
   )
