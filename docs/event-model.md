@@ -206,6 +206,50 @@ event from a dozen headers at that moment is exactly the wrong task. Self-contai
 than a reconstruction. The dead letter is *itself* a CloudEvent (`com.worxbend.eventing.dead-letter`) so the DLQ holds the
 same kind of thing as every other topic and needs no second reader that nobody exercises until the day it matters.
 
+**What question this diagram answers:** given a request or a record, which mode is it in, where are the attributes,
+and what is in the body?
+
+```mermaid
+flowchart TB
+    Q["a request or a record arrives"]
+    D1{"specversion attribute<br/>present as a header?"}
+    D2{"media type essence is<br/>application/cloudevents+json ?"}
+    N["neither — rejected.<br/>Guessing structured here would accept a plain<br/>application/json POST and then complain about a missing id"]
+
+    Q --> D1
+    D1 -- yes --> BIN
+    D1 -- no --> D2
+    D2 -- yes --> STR
+    D2 -- no --> N
+
+    subgraph BIN["Binary mode — the main topic, and most HTTP ingest"]
+        direction TB
+        BH["headers carry the attributes:<br/>specversion, id, source, type,<br/>subject, time, dataschema,<br/>plus one header per extension"]
+        BC["the media-type header describes the PAYLOAD,<br/>not the event — so it may itself say cloudevents+json"]
+        BV["body / record value = the data, byte-for-byte.<br/>Never re-encoded, so an unknown schema round-trips"]
+        BH --- BC --- BV
+    end
+
+    subgraph STR["Structured mode — the DLQ, and HTTP by opt-in"]
+        direction TB
+        SH["the only header that matters is<br/>content-type: application/cloudevents+json"]
+        SV["body / record value = ONE JSON object:<br/>every attribute, extensions flattened alongside them,<br/>and data or data_base64"]
+        SH --- SV
+    end
+```
+
+The order of the two questions is the whole diagram. A binary-mode payload may perfectly well *be* a CloudEvents
+document — a forwarder, a replay tool, an event that quotes another event — so asking about the media type first
+misreads exactly those and discards every attribute in the headers. A genuine structured record never carries the
+`specversion` header, because its specversion is inside the JSON, which makes that header's presence the unambiguous
+signal.
+
+The attribute headers are spelled `ce-specversion` over HTTP and `ce_specversion` on Kafka: Kafka historically
+disallowed `-` in header keys and the spec follows each transport's convention. That is why `HttpBinding` in wolfram
+and `ContentMode` in `modules/eventing` are deliberately separate implementations of the same decision — sharing them
+would mean threading a prefix parameter through every function, and a bug class (accepting `ce_type` over HTTP, which
+no conformant client sends) that no test would think to look for.
+
 Two implementation notes that are easy to get wrong and are therefore fixed in `ContentMode`:
 
 - **Mode detection checks `ce_specversion` first, and that order is load-bearing.** In binary mode the `content-type`
@@ -358,7 +402,7 @@ sequenceDiagram
     participant P as PostgreSQL<br/>events.cloud_event
     participant F as ferrite<br/>(Play 3 + HTMX)
 
-    D->>W: POST /events<br/>binary (ce-* headers) or structured
+    D->>W: POST /v1/events<br/>binary (ce-* headers) or structured
     activate W
     Note over W: Envelope.decoder — total, never inspects `type`<br/>specversion == 1.0, attributes refined
     Note over W: TimeClamp: `time` present and plausible<br/>(hours ahead, months behind) — reject, never invent
@@ -387,19 +431,22 @@ sequenceDiagram
     end
     deactivate C
 
-    Note over P: raw jsonb stored verbatim;<br/>every projection GENERATED ALWAYS AS … STORED
+    Note over P: raw jsonb stored verbatim —<br/>every projection GENERATED ALWAYS AS … STORED
 
     F->>P: keyset SELECT / facets / histogram / detail
     P-->>F: page + nextCursor
     Note over F: ferrite has no Kafka on its classpath at all
 ```
 
+Each stage is drawn on its own, with the decisions and the failure branches, in
+[flows](architecture/flows.md).
+
 ### Stage notes
 
 **1 — Ingest (wolfram).** Tapir endpoint *descriptions* cover both content modes, so OpenAPI is generated for free.
 The body is `byteArrayBody` and not `stringBody` or `jsonBody`, because binary mode's payload is arbitrary bytes.
-`POST /events/batch` accepts `application/cloudevents-batch+json` on a distinct path rather than as a third mode on
-`/events`. Validation rejects and never invents defaults — including for `time`, whose plausibility window is
+`POST /v1/events:batchCreate` accepts `application/cloudevents-batch+json` on a custom method rather than as a third
+mode on `/v1/events`. Validation rejects and never invents defaults — including for `time`, whose plausibility window is
 asymmetric (hours ahead, months behind) because the two directions fail differently: a future timestamp is almost
 always a broken clock, while a past one is usually a gateway draining a buffer after an outage, which is legitimate and
 must keep working.
