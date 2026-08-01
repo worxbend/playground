@@ -60,11 +60,6 @@ trait EventPublisher extends AutoCloseable:
     */
   def brokerReachable: Boolean
 
-  /** Blocks until every accepted record has been acknowledged. Called by graceful shutdown; see
-    * [[KafkaEventPublisher.close]] for why flushing and closing are separate steps.
-    */
-  def flush(): Unit
-
 /** The service's belief about broker reachability, and the only state `/health/ready` reads.
   *
   * **Why belief and not a probe per request.** Readiness is checked by a load balancer several times a second. Asking

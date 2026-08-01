@@ -12,10 +12,13 @@ plain `KafkaProducer`. Source: `applications/wolfram/`.
 - Deciding whether an event is publishable *before* it becomes durable: size, spec conformance, and a
   plausibility window on `time`.
 - Publishing the accepted event to `events.cloudevents.v1` in binary content mode, keyed by
-  `Envelope.partitionKey`, and returning the broker's receipt (`topic`, `partition`, `offset`) to the client.
+  `Envelope.partitionKey`, and returning the created resource — including a `destination` naming the `topic`,
+  `partition` and `offset` the broker wrote it to.
+- Verifying a JWT bearer token on every `/v1` operation, before anything else looks at the body.
 - Injecting the W3C `traceparent` into the Kafka record headers so the trace that started at this HTTP ingress
   continues into cobalt.
-- Serving its own Prometheus exposition, two health probes, and a generated OpenAPI document.
+- Serving its own Prometheus exposition, two health probes, a generated OpenAPI document and the Swagger UI that
+  renders it.
 
 ## What it is explicitly NOT
 
@@ -29,7 +32,9 @@ plain `KafkaProducer`. Source: `applications/wolfram/`.
   into range and no default is invented (ADR §4.3, "reject; never invent defaults").
 - **Not a Pekko service.** Every produce belongs to exactly one in-flight HTTP request, so there is no stream and
   no materializer; Pekko is off this classpath entirely (ADR §1, `KafkaEventPublisher`).
-- **Not a query API.** There is no read path, no `GET /events`, no replay endpoint. Reading is ferrite's job.
+- **Not a query API.** There is no read path: no `GET /v1/events`, no `GET /v1/events/{event}`, no replay
+  endpoint. Reading is ferrite's job. `events:validate` is the one operation that answers without publishing, and
+  it reads nothing — it re-runs the checks against the body in the request.
 - **Not a batch transaction.** A batch is a convenience for the producer, not an atomic unit — see the 207 below.
 
 ---
@@ -57,8 +62,9 @@ segment.
 
 ### `POST /v1/events` — Create
 
-One CloudEvent, in either HTTP content mode. Declared media types: `application/cloudevents+json`,
-`application/json`, `application/octet-stream`.
+One CloudEvent, in either HTTP content mode. Any `Content-Type` is accepted, because the header is an input to the
+mode decision and not a routing key; the generated document declares the single media type `byteArrayBody`
+implies, `application/octet-stream`.
 
 **Mode is chosen by the presence of the `ce-specversion` header, never by `Content-Type` alone**
 (`HttpBinding.modeOf`). This is load-bearing: in binary mode `Content-Type` describes the *payload*, and a payload
@@ -73,49 +79,103 @@ the RFC 6839 `+json` suffix rule) is spliced into the `data` slot as JSON; anyth
 That is the same choice the CloudEvents JSON format makes, which is what makes
 `decode(binary) == decode(structured)` for the same event.
 
-| Status | Body | Meaning |
+| Status | `error.status` | Meaning |
 | --- | --- | --- |
-| `202 Accepted` | `EventAccepted { id, source, eventType, time, partitionKey, topic, partition, offset }` | Durable: the broker acknowledged it under `acks=all`. |
-| `400 Bad Request` | `InvalidEvent { reason, detail }` | Not a CloudEvent this service accepts: unparseable body, missing/ill-typed attribute, or a `time` outside the window. |
-| `413 Payload Too Large` | `OversizeEvent { reason, detail, limit, actual, unit }` | Body over `max-event-bytes`, or batch over `max-batch-events`. |
-| `503 Service Unavailable` | `ServiceUnavailable { reason, detail }` | The event was fine, the broker was not. **The only retryable failure here.** |
+| `200 OK` | — | Durable: the broker acknowledged it under `acks=all`. Body is the created resource. |
+| `400 Bad Request` | `INVALID_ARGUMENT` | Not a CloudEvent this service accepts: unparseable body, no declared content mode, or a missing/ill-typed attribute. |
+| `400 Bad Request` | `OUT_OF_RANGE` | Well-formed, but `time` is outside the plausibility window. |
+| `401 Unauthorized` | `UNAUTHENTICATED` | No bearer token, or one that failed signature, `exp`, `nbf`, `iss` or `aud`. |
+| `403 Forbidden` | `PERMISSION_DENIED` | A verified token without the `events:write` scope. Retrying will not help. |
+| `413 Payload Too Large` | `INVALID_ARGUMENT` | Body over `max-event-bytes`, or batch over `max-batch-events`. `details[0].metadata` carries `limit`, `actual`, `unit`. |
+| `503 Service Unavailable` | `UNAVAILABLE` | The event was fine, the broker was not. **The only retryable failure here.** |
 
-`reason` is always a value from the closed set `Meters.Reasons` — it is literally the Prometheus tag value, so a
-client's error body and an operator's dashboard use the same vocabulary.
+**200, not 201, and not 202.** AIP-133 asks a Create to return the resource; 201 would oblige a `Location` header
+pointing at a `GET /v1/events/{event}` this service cannot serve, because it owns no storage. Promising a URL that
+answers 404 is worse than not promising one. And 202 would be a lie in the other direction: the response is only
+written after the broker has acknowledged the record, so nothing about it is pending.
 
-The status is chosen by the *runtime class* of the failure value (Tapir `oneOf`), so a 413 body can never be
+Success body — `Event`, and `name` is the field to store:
+
+```json
+{ "name": "events/%2Fgateway%2Fkitchen:evt-1", "id": "evt-1", "source": "/gateway/kitchen",
+  "eventType": "com.worxbend.iot.telemetry", "time": "2026-07-01T11:59:00Z",
+  "partitionKey": "/gateway/kitchen#kitchen-thermostat",
+  "destination": { "topic": "events.cloudevents.v1", "partition": 3, "offset": 42 } }
+```
+
+Failure body — one AIP-193 envelope for every status above:
+
+```json
+{ "error": { "code": 400, "message": "…", "status": "INVALID_ARGUMENT",
+             "details": [ { "reason": "malformed", "domain": "wolfram.worxbend.com", "metadata": {} } ] } }
+```
+
+**Branch on `error.status`, not on the HTTP code** — 400 covers three causes, and the canonical `google.rpc.Code`
+name is what a generated client switches on. `details[0].reason` is always a value from the closed set
+`Meters.Reasons`; it is literally the Prometheus tag value, so a client's error body and an operator's dashboard
+use the same vocabulary.
+
+The HTTP status is chosen by the *runtime class* of the failure value (Tapir `oneOf`), so a 413 body can never be
 served with a 400 status. `ApiModel.status` restates the mapping so a test can assert the two agree.
 
 ### `POST /v1/events:batchCreate` — Batch Create
 
 An `application/cloudevents-batch+json` document: a JSON array of structured-mode CloudEvents. A request whose
-`Content-Type` is not that media type is rejected 400 by `IngestApi.publishBatch` before the service is called.
+`Content-Type` is not that media type is rejected 400 by `IngestApi.batchCreate` before the service is called.
 
-This is a **distinct path rather than a third content mode on `/events`**, because a batch has a different
+This is a **distinct path rather than a third content mode on `/v1/events`**, because a batch has a different
 response shape and OpenAPI keys operations by `(path, method)` — one path serving two response schemas selected by
 request media type is a document no generated client can express.
 
 | Status | Meaning |
 | --- | --- |
-| `202 Accepted` | Every element was published. |
+| `200 OK` | Every element was published. |
 | `207 Multi-Status` | Some published, some refused; `entries` reports each by index. |
-| `400` / `413` / `503` | The *document* was rejected as a whole (not JSON, not an array, oversize body, too many elements). |
+| `400` / `401` / `403` / `413` / `503` | The *document* was rejected as a whole (not JSON, not an array, oversize body, too many elements), or the credential was. |
 
-Body: `BatchReport { accepted, rejected, entries: [ { index, accepted, id?, partitionKey?, partition?, offset?,
-reason?, detail? } ] }`.
+Body: `BatchCreateResponse { events: [Event], entries: [ { index, event?, error? } ], created, failed }`. `events`
+holds the successes in request order — that is the AIP-233 response shape — and `entries` holds every element, so
+an index is still resolvable. Exactly one of `event` and `error` is present on each entry.
 
-**Why 207 and not 4xx for a partial failure** (`ApiModel.report`). A batch in which some elements were refused is
+**This batch is not atomic, which is a deviation from AIP-233 and is deliberate.** AIP-233 specifies that a batch
+either wholly succeeds or wholly fails. That guarantee is not available here: the events go to Kafka one at a time
+and an acknowledged event cannot be unpublished, so "roll back the successes" is not an operation this service can
+perform.
+
+**Why 207 and not 4xx for a partial failure** (`ApiModel.batch`). A batch in which some elements were refused is
 not a failed request: the accepted events are already durable and must not be resent. A 400 would be actively
 harmful — a client applying the ordinary "retry on 4xx" rule would duplicate every event that succeeded. 207
 Multi-Status says exactly "look inside", which is the only truthful answer. The documented client contract is
-therefore: **retry only the entries with `accepted: false`.**
+therefore: **retry only the entries that carry an `error`.**
 
-Entries correlate **by index, not by `id`**: a CloudEvents `id` is only unique within a `source`, so one batch may
-legitimately carry two elements with the same id, and a malformed element may have no id at all.
+Entries correlate **by index, not by `id` or `name`**: a CloudEvents `id` is only unique within a `source`, so one
+batch may legitimately carry two elements with the same id, and a malformed element has no name at all — that is
+what makes it malformed.
 
 Elements are published **sequentially**, not with `Future.traverse`. Concurrency would let two events for the same
 device reach the producer's accumulator out of order, discarding the per-key ordering that `partitionKey` exists
 to provide. The serial cost is bounded because the batch itself is bounded by `max-batch-events`.
+
+### `POST /v1/events:validate` — Validate
+
+The same request shape as Create, and nothing is published. It runs `IngestionService.validate` — the identical
+pure function Create runs — so the two cannot drift: a check added to one is a check added to both.
+
+Body: `ValidateResponse { valid, event?, error? }`. On `valid: true`, `event` is the resource Create *would* have
+returned, with an empty `destination` (`topic: ""`, `partition: -1`, `offset: -1`) because nothing was written.
+The empty destination is deliberate rather than an `Option`: a client diffing a validate response against a later
+create response should see one field's contents change, not the whole message change shape.
+
+**Always 200 when the request itself is usable.** A rejected event is a *successful* validation with
+`valid: false` and the AIP-193 `error` body inline — the question was "would you accept this", and "no, because
+`time` is 200 days old" is an answer, not a failed request. The 4xx arm is reserved for the request being
+unusable: an unverifiable token (401/403), or a body over `max-event-bytes` (413), which cannot be validated
+because it is refused before it is read.
+
+This is the textbook AIP-136 custom method: it acts on the collection, it is not one of the five standard
+methods, and it has no side effect. It exists because the time window is *configuration* — a payload that
+validated during development can start failing in production, and no schema can express that. A producer's own
+test suite can point at this endpoint and find out from the running build.
 
 ### Operational routes
 
@@ -128,9 +188,16 @@ to provide. The serial cost is bounded because the batch itself is bounded by `m
 | `GET /docs` | **Swagger UI**, on the service's own port. "Try it out" is therefore a same-origin request: no CORS to configure, no second listener to expose. |
 | `GET /docs/openapi.yaml` | The same document as YAML. Generators and `jq` want the JSON; humans and `git diff` want this. |
 
-These are **plain Vert.x routes, not Tapir endpoints** (`AdminRoutes`). That makes their exclusion from
-`http.server.requests` structural: the metrics interceptor lives inside the Tapir interpreter, so it never sees
-them and no exclusion list can fall out of date. They are absent from the OpenAPI document for the same reason.
+None of these is authenticated, and none is in the OpenAPI document: the document is generated from
+`Endpoints.all`, which is the three `/v1` operations and nothing else.
+
+`/metrics`, `/health/*` and `/openapi.json` are **plain Vert.x routes, not Tapir endpoints** (`AdminRoutes`). That
+makes their exclusion from `http.server.requests` structural: the metrics interceptor lives inside the Tapir
+interpreter, so it never sees them and no exclusion list can fall out of date. `/docs` and `/docs/openapi.yaml`
+are the exception — they are `SwaggerUI` server endpoints mounted through the same interpreter as the API, which
+is what makes "Try it out" same-origin, and it means Swagger UI traffic *is* timed into `http.server.requests`
+under its own route templates. That is a handful of bounded template values on a route a human opens by hand, not
+the scrape loop the ADR's exclusion exists for.
 
 ### Kafka
 
@@ -215,9 +282,12 @@ Minting a token for a smoke test is in `docs/operations.md` §2.
 
 ## Configuration
 
-Namespace `wolfram` in `applications/wolfram/src/main/resources/application.conf`. Every value has a default;
-**none is mandatory in the "the process refuses to boot" sense**, but a configuration that cannot be parsed at all
-aborts the boot (`Main` throws rather than starting a service that would 503 on its first request).
+Namespace `wolfram` in `applications/wolfram/src/main/resources/application.conf`. Every value below has a default
+and none of them is mandatory. **The exception is the key material in `auth`**: `AUTH_ENABLED` defaults to `true`
+and there is no default secret, so a process started with neither `AUTH_SECRET` (or `AUTH_PUBLIC_KEY`) nor
+`AUTH_ENABLED=false` **refuses to boot** — see [Authentication](#authentication). A configuration that cannot be
+parsed at all aborts the boot for the same reason (`Main` throws rather than starting a service that would fail
+every request).
 
 | Env var | HOCON key | Default | Notes |
 | --- | --- | --- | --- |
@@ -251,15 +321,18 @@ Cross-cutting (from `modules/observability`):
 
 | Failure | Detection | Response |
 | --- | --- | --- |
+| No token, or one that does not verify | `JwtVerifier.verify`, before the body is looked at | `401`, `status=UNAUTHENTICATED`, with the check that failed named |
+| A verified token without `events:write` | ditto | `403`, `status=PERMISSION_DENIED` — retrying is pointless and the code says so |
 | Body over the size ceiling | `IngestionService.validate`, before any decoding | `413`, `reason=too-large`, counted on `ingest.events.rejected` |
 | Neither content mode declared | `HttpBinding.decode` | `400` with a sentence naming both headers it looked for, rather than a downstream "missing id" that sends the client looking in the wrong place |
 | Malformed JSON / not a CloudEvent | `HttpBinding.classify` splits kernel's message | `400`, `reason=malformed` |
 | Missing or ill-typed attribute | ditto | `400`, `reason=invalid-attributes` |
-| `time` missing or implausible | `TimeClamp.check` | `400`, `reason=invalid-attributes`, with the rendered time, the window, and the ingest clock in the message |
+| `time` missing or implausible | `TimeClamp.check` | `400` `status=OUT_OF_RANGE`, `reason=invalid-attributes`, with the rendered time, the window, and the ingest clock in the message |
 | Broker refuses / times out the record | producer callback, or a synchronous throw from `send` (metadata timeout, full accumulator, serialization) | `503`, `reason=unpersistable`; `kafka.produce.latency{outcome=failure}`; broker marked unreachable |
 | **Publish queue full** | `RejectedExecutionException` from the bounded sender | `503` "the publish queue is full"; broker marked unreachable |
 | Validated envelope cannot be Kafka-encoded | `KafkaCodecs.producerRecord` returns `Left` | Logged at **error** (it is a validation bug, not a client error) and answered `400` — the client's event is genuinely unrepresentable on this wire |
-| Unparseable configuration | `WolframConfig.load` in `Main` | Process aborts rather than booting and 503-ing on the first request |
+| Unparseable configuration | `WolframConfig.load` in `Main` | Process aborts rather than booting and failing every request |
+| Unusable auth configuration | `JwtVerifier.from` in `WolframApp.start` | Process aborts with a sentence naming the field — an unknown algorithm, an HMAC algorithm with no secret, a secret under 32 characters, an unparseable public key |
 
 **Backpressure is the single-threaded bounded sender** (`KafkaEventPublisher`). `KafkaProducer.send` is only
 *mostly* asynchronous — it blocks the caller while topic metadata is unknown or the accumulator is full, for up to
@@ -280,7 +353,7 @@ acknowledgement.
 
 **Shutdown order** (`WolframApp.close`, run from a JVM shutdown hook): HTTP server → publisher → telemetry →
 Vert.x. The publisher itself shuts the sender queue down first (no new records), then `flush()`es — those are
-records a client has *already been given a 202 for*, and dropping them would make the API a liar — then closes the
+records a client is *already holding a 200 for*, and dropping them would make the API a liar — then closes the
 producer with a bounded timeout so an unreachable broker cannot hold a rolling deploy open. Telemetry closes after
 the drain, not before, so the drain is the one part of shutdown that still has metrics and spans. Each step is
 bounded at 10 s. If the sender queue cannot drain in 5 s the remaining tasks are abandoned and the count is
@@ -301,8 +374,8 @@ All meters carry the common tags `service=wolfram`, `version`, `instance`. Names
 | `kafka.produce.latency` | timer | `topic`, `outcome` (`success`/`failure`) | Acknowledgement latency. **Broker errors have no separate counter** — they are the `outcome=failure` count of this timer, so the two can never disagree. |
 | `http.server.requests` | timer | `method`, `uri`, `status`, `outcome` | Timed by the Micrometer interceptor and by nothing else (`tapir-prometheus-metrics` is rejected in ADR §3.6 because it forks the metric family). `uri` is the **matched route template**, never the raw path; `Telemetry` caps that tag at 100 values as a backstop. |
 
-Plus the JVM/system binders registered by `Telemetry`. `/metrics` and `/health/*` never appear in
-`http.server.requests`.
+Plus the JVM/system binders registered by `Telemetry`. `/metrics`, `/health/*` and `/openapi.json` never appear in
+`http.server.requests`, because they are not Tapir endpoints; `/docs/**` does, because it is.
 
 **Liveness** is constant: the process is up and the event loop answers. It deliberately consults nothing. A
 liveness probe that checked Kafka would fail on every replica at once during a broker outage and restart them all,
@@ -329,14 +402,21 @@ Needs a Kafka broker with `events.cloudevents.v1` created (auto-creation is off 
 # broker + topics only
 docker compose -f deploy/docker-compose.yml up -d kafka kafka-init
 
-sbt wolfram/run                 # :8080; override with HTTP_PORT
+# AUTH_ENABLED defaults to true and there is no key default, so a local run needs
+# either a secret or an explicit opt-out. Pick one:
+AUTH_SECRET=a-local-development-secret-of-32-chars sbt wolfram/run   # :8080; override with HTTP_PORT
+AUTH_ENABLED=false sbt wolfram/run                                   # unauthenticated, said out loud
 ```
 
-Smoke test both content modes:
+Smoke test both content modes. With `AUTH_ENABLED=false` drop the `Authorization` header; otherwise mint a token
+against `AUTH_SECRET` the way `docs/operations.md` §2 does.
 
 ```bash
+TOKEN=…   # HS256 over AUTH_SECRET, with "scope":"events:write" and an "exp" in the future
+
 # binary mode
-curl -i -X POST localhost:8080/events \
+curl -i -X POST localhost:8080/v1/events \
+  -H "authorization: Bearer $TOKEN" \
   -H 'ce-specversion: 1.0' \
   -H 'ce-id: 1' \
   -H 'ce-source: urn:dev:kitchen' \
@@ -344,22 +424,32 @@ curl -i -X POST localhost:8080/events \
   -H "ce-time: $(date -u +%Y-%m-%dT%H:%M:%SZ)" \
   -H 'content-type: application/json' \
   -d '{"deviceId":"kitchen-1","value":21.5,"unit":"C"}'
+# 200 with the created resource; its `destination` says where on the log it landed.
 
 # structured mode
-curl -i -X POST localhost:8080/events \
+curl -i -X POST localhost:8080/v1/events \
+  -H "authorization: Bearer $TOKEN" \
   -H 'content-type: application/cloudevents+json' \
   -d "{\"specversion\":\"1.0\",\"id\":\"2\",\"source\":\"urn:dev:kitchen\",\
 \"type\":\"com.worxbend.iot.telemetry\",\"time\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\",\
 \"data\":{\"deviceId\":\"kitchen-1\",\"value\":21.6}}"
 
-curl -s localhost:8080/openapi.json | jq '.paths | keys'
+# would this be accepted? — no broker traffic either way
+curl -s -X POST localhost:8080/v1/events:validate \
+  -H "authorization: Bearer $TOKEN" \
+  -H 'content-type: application/cloudevents+json' \
+  -d '{"specversion":"1.0","id":"3","source":"urn:dev:kitchen","type":"x","time":"2001-01-01T00:00:00Z"}' | jq
+
+curl -s localhost:8080/openapi.json | jq '.paths | keys'   # unauthenticated, like every operational route
 curl -s localhost:8080/health/ready
 curl -s localhost:8080/metrics | grep ingest_events
+open localhost:8080/docs                                   # Swagger UI, same port
 ```
 
 Full stack: `sbt wolfram/Docker/publishLocal` then `docker compose -f deploy/docker-compose.yml up -d`, which
 publishes wolfram on host port **8081**.
 
-Tests: `sbt wolfram/test` (no Docker needed — the broker is stubbed behind `EventPublisher`, which is the entire
-reason that trait exists) and `sbt "wolfram/IT/testFull"` for the Testcontainers integration suite (`sbt verifyIt`
-runs the slow tier for the whole build).
+Tests: `sbt "wolfram/Test/testFull"` (no Docker needed — the broker is stubbed behind `EventPublisher`, which is
+the entire reason that trait exists) and `sbt "wolfram/IT/testFull"` for the Testcontainers integration suite.
+`sbt verify` and `sbt verifyIt` run the fast and slow tiers for the whole build. Note the sbt 2 inversion: bare
+`test` is *incremental*, so `testFull` is the one that runs everything.

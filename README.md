@@ -18,7 +18,7 @@ rather than their frameworks, so a name does not have to change if a stack does.
 | Service | Stack | Responsibility |
 | --- | --- | --- |
 | **wolfram** | Tapir on Vert.x 5 | HTTP ingestion. A JWT-authenticated, AIP-shaped `/v1/events` API with Swagger UI at `/docs`. Validates CloudEvents and publishes to Kafka. Owns no state. |
-| **cobalt** | Pekko Streams Kafka + Cask | Consumes, decodes and persists events. Cask serves only metrics and health. |
+| **cobalt** | Pekko Streams Kafka + Cask | Consumes, decodes and persists events, and runs the migrations. Cask serves the admin API: metrics, health, consumer lifecycle control and DLQ inspect/replay. |
 | **ferrite** | Play 3 + Twirl/htmx | The web application: PostgreSQL, search, and the UI. Never sees Kafka. |
 
 ```
@@ -101,7 +101,8 @@ docker compose config -q  # validates interpolation and the mandatory vars
 docker compose up -d
 ```
 
-Then the UI is at <http://localhost:9000/events>, ingestion at <http://localhost:8081/events>, Prometheus at
+Then the UI is at <http://localhost:9000/events>, ingestion at `POST http://localhost:8081/v1/events` (bearer
+token required — see the smoke test) with Swagger UI at <http://localhost:8081/docs>, Prometheus at
 `:9090` and Grafana at `:3000` with the **Event observatory** dashboard already provisioned. See
 [docs/operations.md](docs/operations.md) for the smoke test, the runbooks and the environment-variable reference.
 
