@@ -1077,3 +1077,58 @@ Filter bar with dimension autocomplete from `events.device`/`dim_*`; capped-cand
 Everything in §3 marked **✅R** was verified by a research run but **not re-fetched in this session**: pureconfig, quicklens, scala-logging, cask, vertx-core, `tapir-core`/`-json-circe`/`-vertx-server`, scalatest 3.2.20, scalacheck 1.19.0, munit-scalacheck 1.3.0, circe-parser/generic, sbt-scalafmt, sbt-header, sbt-scoverage, all Docker images, all GitHub Actions, MkDocs/mkdocs-material, and the Tailwind 4.3.3 standalone binary. Phase 0 must resolve the full dependency graph (`sbt update` on every module) before any application code is written — that is the empirical re-verification, and it is a Phase 0 exit criterion.
 
 Two claims are **behavioural, not registry-based**, and were verified by running code rather than by me: (a) the Twirl `-new-syntax` hard error and the `-Wconf` path filter fix; (b) `AshScriptPlugin`/bash-absence and `DockerPlugin`'s `noTrigger`. Both are cheap to re-confirm and both are Phase 0/Phase 6 exit criteria.
+---
+
+## 13. Amendment (as built) — shared-library invariants
+
+Three defects found while hardening `modules/kernel` and `modules/eventing`. None changes a decision above; each closes a
+gap between what a section promises and what the code did. Recorded here because in every case the *promise* is the
+thing worth keeping.
+
+**§6.3 — the permalink round trip is only an identity for a filter with one leaf per slot, and `encode` now says so.**
+The codec's contract is that a link never renders results the filter it was made from excludes. `Filter.and` happily
+builds `And(TypeIn(a), TypeIn(b))` — an intersection — and `encode` flattened it to `type=a&type=b`, which `decode`
+reads as the *union*. The same shape on a single-valued parameter (`severity`, `q`, `data`, a repeated `ext.<name>`)
+produced a link `decode` then refused as `Repeated`: an unopenable permalink. `encode` now returns
+`FilterError.NotPermalinkable` when two leaves want the same parameter, which is the route this section already defines
+for `Or` and `Not` — the content-hashed saved search, which stores the AST and does not have to flatten it.
+`PayloadCmp` is exempt: repeating it is how the grammar spells a range (`data.t=>18&data.t=<24`), and that repetition
+does round-trip.
+
+**§6.3 — percent-decoding works in code points, not UTF-16 units.** The hand-written decoder walked `charAt`, so an
+astral character (an emoji in a `q=` term) was split into two lone surrogates, each of which encodes to `?` in UTF-8.
+The search silently became a search for something else, with no error. Browsers percent-encode the query, so this only
+ever bit a URL pasted from a chat client or built by hand — which is exactly the population "hand-editable" was chosen
+to serve.
+
+**§4.3 — `ContentMode.write` replaces the binding's headers rather than merging into them.** After a write, `of(h)`
+must report the mode just written and `read(h, value)` must return the event just written — for any header set, not
+only an empty one. A `Serializer` is handed whatever headers the caller put on the record, so "the carrier is fresh" was
+a habit, not a guarantee: a structured write into headers still carrying `ce_specversion` (a replayer copying a consumed
+record's headers) produced a record `of` reports as *binary*, so every attribute came from the previous event and the
+structured body was mistaken for its payload; a binary write inherited the previous event's `ce_<extension>` headers.
+`write` now clears `ce_*` and `content-type` first. `traceparent`, `tracestate` and a caller's own bookkeeping survive —
+those describe the transport of the record, not the event in it.
+
+### Considered and not done
+
+**No cap on `Values`/`Tags`.** Every other leaf value type is bounded (`ExtValue` 256, `UserText` 512, `NumLit` by
+precision and scale, `JsonPath` 8 segments, `JsonLit` depth 8) and these two are not, which reads as an inconsistency.
+It is not one: §6.2 names "a 3-value and a 300-value filter share one plan-cache entry" as a designed-for property of
+`col = ANY(?)`, so a cap would contradict a decision above to fix nothing observed. The practical ceiling on a filter
+built from a query string is the HTTP server's request-line limit.
+
+**The `Observation` decoder registry stays a private `Map` that must be edited.** It looks like a closed extension
+point. It cannot be anything else: `Observation` is a sealed enum in the kernel, so no other module can add a case, and
+the open case is already `Unrecognised` — the total fallback §4.2 exists for. A registration API would buy global
+mutable state and cost `from`'s totality.
+
+**`KafkaHeaderCarrier` stays a duplicate of `observability.TextCarrier`.** Merging them means `modules/eventing`
+depending on `modules/observability`, which §3.3 forbids, or a fifth module holding one three-method trait. The
+duplication is nine lines and the binding is one line in each service that sees both.
+
+**`DeadLetter.reason` stays a `String`.** It is adjacent to `detail` in the constructor and swapping them would put an
+unbounded parser message into `consume.records.poison{reason}` — the cardinality failure §7.1 calls the most likely way
+to take Prometheus down. An opaque type would not prevent it: the value also arrives from `DeadLetter.decoder`, which
+must read whatever a DLQ record holds if old records are to stay readable. Every value that reaches the meter today
+comes from `DecodeFailure.reason` or `Meters.Reasons`, both closed sets; the constraint is enforced there.
