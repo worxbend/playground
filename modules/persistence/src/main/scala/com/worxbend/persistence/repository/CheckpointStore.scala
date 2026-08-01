@@ -24,6 +24,7 @@ package com.worxbend.persistence.repository
 import com.augustnagro.magnum.DbCodec
 import com.augustnagro.magnum.DbTx
 import com.augustnagro.magnum.Transactor
+import com.augustnagro.magnum.batchUpdate
 import com.augustnagro.magnum.connect
 import com.augustnagro.magnum.sql
 import com.augustnagro.magnum.transact
@@ -107,8 +108,17 @@ object CheckpointStore:
 final class PostgresCheckpointStore(read: Transactor, write: Transactor)(using ExecutionContext)
     extends CheckpointStore:
 
+  /** One JDBC batch, not one statement per partition.
+    *
+    * This runs inside the consumer's write transaction, once per `groupedWithin` batch, and a consumer assigned `n`
+    * partitions checkpoints `n` rows every time. Executed one at a time each row is a round trip the transaction cannot
+    * overlap with anything, so the checkpoint's cost was `n × RTT` added to a write that is otherwise a single batched
+    * insert — a cost invisible on a laptop and equal to the insert's own on a consumer with twenty-four partitions and
+    * a millisecond of network. `addBatch`/`executeBatch` sends them together, which is what the insert beside it
+    * already does.
+    */
   def record(groupId: String, owner: Option[String], positions: Vector[CheckpointWrite])(using DbTx): Unit =
-    positions.foreach: position =>
+    val _ = batchUpdate(positions): position =>
       // `records` accumulates rather than being overwritten, so the column answers "how much has this partition ever
       // moved" — a monotone counter an operator can watch — instead of "how big was the last batch", which the batch
       // meters already report.
@@ -116,7 +126,7 @@ final class PostgresCheckpointStore(read: Transactor, write: Transactor)(using E
       // The `WHERE` on the update is what makes a late or duplicated write harmless: a rebalance can hand the same
       // partition to another replica mid-flight, and without the guard the older position would overwrite the newer
       // one and manufacture a replay. Monotonicity is enforced by the database, not by the caller's ordering.
-      val _ = sql"""
+      sql"""
         INSERT INTO events.consumer_checkpoint (group_id, topic, partition, next_offset, records, owner, updated_at)
         VALUES ($groupId, ${position.topic}, ${position.partition}, ${position.nextOffset}, ${position.records},
                 $owner, now())
@@ -126,7 +136,7 @@ final class PostgresCheckpointStore(read: Transactor, write: Transactor)(using E
               owner       = EXCLUDED.owner,
               updated_at  = now()
           WHERE EXCLUDED.next_offset > events.consumer_checkpoint.next_offset
-      """.update.run()
+      """.update
 
   def load(groupId: String): Future[Vector[Checkpoint]] =
     Future:

@@ -103,6 +103,13 @@ octets would produce a digest that could never be recomputed from what was store
 digest that *can* be recomputed from the stored row — which is what makes it useful for detecting silent corruption and
 cross-partition duplicates.
 
+**The rendering is produced once and both used.** `NewEvent` carries the `noSpaces` string it hashed, and the insert
+binds *that string* rather than handing the `Json` back to a codec that would render it a second time. The saving is
+per record on the consume path and it is the largest single cost there: rendering a 1.5 KB CloudEvent measures at
+~4.2 µs against ~0.9 µs for the SHA-256 over it, so the second rendering was roughly half of the write path's
+per-record CPU. The correctness half matters as much — the digest is now over the bytes that were sent, not over a
+second rendering that merely ought to have been equal to them.
+
 ### Table constraints
 
 ```sql
@@ -369,21 +376,39 @@ hand-editable. Cursors are a separate mechanism and are legitimately opaque — 
 |---|---|---|
 | Search page | `SELECT occurred_at, event_uid, ingested_at, ce_id, ce_source, ce_type, ce_subject, device_id, room_id, person_id, severity, severity_rank, metric_value FROM events.cloud_event WHERE … ORDER BY occurred_at DESC, event_uid DESC LIMIT n` | (2)–(5) + partition pruning |
 | Detail | same columns `+ raw`, `WHERE occurred_at = ? AND event_uid = ?` | `cloud_event_pk` |
-| Facets | `WITH cand AS MATERIALIZED (SELECT dims … LIMIT 50000)` then one `GROUP BY GROUPING SETS ((ce_type),(ce_source),(device_id),(room_id),(person_id),(severity),())` | whichever of (2)–(11) the filter selects |
-| Tag facet | `cand CROSS JOIN LATERAL unnest(cand.tags)` | (9) via the candidate set |
+| Facets | `WITH cand AS MATERIALIZED (SELECT dims … LIMIT 50000)`, then `GROUP BY GROUPING SETS ((ce_type),(ce_source),(device_id),(room_id),(person_id),(severity),())` `UNION ALL` the tag pass — **one statement** | whichever of (2)–(11) the filter selects |
+| Tag facet | the `UNION ALL` branch: `cand CROSS JOIN LATERAL unnest(cand.tags)` | (9) via the candidate set |
 | Histogram | `generate_series(…) LEFT JOIN (SELECT date_bin(…), count(*) … GROUP BY 1)` | (2)–(5) + pruning |
 | Result total | `SELECT count(*) FROM (SELECT 1 FROM … LIMIT 10001) t` | as the filter selects |
 
 **The list projection omits `data` and `raw`**, so the planner never de-TOASTs payloads for rows the user will not
 open. Detail fetches them by primary key.
 
-**`MATERIALIZED` on the candidate CTE is not optional.** Without it the planner may inline the CTE into each grouping
-set and re-apply the filter, turning one capped scan into several uncapped ones and deleting the cap's entire purpose.
+**Both facet passes are one statement, and that is a cost decision.** They read the same candidate set, so writing them
+as two statements meant splicing `WITH cand AS MATERIALIZED (… LIMIT 50000)` into each — and *running the capped
+fact-table scan twice per page view* for one panel. A CTE referenced twice inside one statement is evaluated once, so
+the tag pass now arrives as a `UNION ALL` branch reading the same tuplestore. `FilterAccessPathIT` asserts the plan
+holds exactly one `CTE cand` and exactly two `CTE Scan on cand`, and that nothing after the first consumer names the
+fact table. The tag branch carries a `gid` of `-1` — `grouping()` over six columns returns 0–63, so a negative value
+cannot collide — and the tags are re-sorted in Scala, because `UNION ALL` promises the branches no ordering.
+
+**`MATERIALIZED` on the candidate CTE is not optional**, and merging the passes gives it a second reason. Without it
+the planner may inline the CTE into each grouping set *and* into the tag branch, re-applying the filter each time and
+turning one capped scan into seven uncapped ones — deleting the cap's entire purpose.
 When the cap is reached (50 000 by default, 200 000 at
 most), every facet count is a lower bound and the UI renders "50,000+" — the same honest
 approximation Kibana and GitHub ship, and a signed-off product decision rather than a hidden implementation detail.
 Totals are bounded the same way: `SELECT 1` *inside* the subquery, because the `LIMIT` can only stop a scan that is
 producing rows.
+
+**The candidate set is whatever the filter selects, in whatever order the plan produces it.** There is no `ORDER BY`
+inside the CTE and there must not be one — sorting 10⁸ rows to take the newest 50 000 would cost far more than the
+facets are worth. The consequence is that on a filter with **no time bound at all** the 50 000 candidates are an
+arbitrary slice of history rather than a recent one, so the facet counts on the unfiltered landing page describe a
+different population from the result list beside them. Every filter the UI produces from the filter bar or a histogram
+bar carries `from`/`until`, so this is reachable only from a bare `/events`. It is listed under
+[open items](#open-items) rather than fixed here because the fix is a decision about what the landing page searches,
+not about SQL.
 
 **The histogram's `generate_series` skeleton** is what makes an empty hour render as a zero bar. Without it a quiet
 period disappears from the chart and the shape of the data becomes a lie told by omission. The window is re-bounded in
@@ -397,12 +422,23 @@ first bucket.
 These are provisioned by the migration but not yet read or maintained by any code, and are listed so nobody mistakes
 DDL for behaviour:
 
-- **The rolling partition job.** No `CREATE TABLE … PARTITION OF` runs anywhere outside the migration, so events after
-  `2026-09-01` land in `cloud_event_default`.
-- **The MV refresh job.** `events.event_rollup_hourly` is populated once, by the migration. Nothing refreshes it, and
-  no query reads it — ferrite's histogram currently goes to the fact table.
 - **Dimension-table population.** `events.device`, `room`, `person` and `dim_event_type` have no writer, so
   autocomplete has nothing to complete against yet.
 - **`events.saved_search`** has no reader or writer; long filters are not yet persisted.
+- **An unbounded search does not prune.** `/events` with no query string compiles to `WHERE TRUE`, so the page, its
+  facet candidate set and its bounded total all read every partition; only the histogram defaults to a window. The
+  `LIMIT`s keep each of them finite, but the facets then describe an arbitrary 50 000 rows rather than the ones on
+  screen. Giving the default page the same 24-hour window the histogram already assumes would fix both, and is a
+  product decision about the landing page rather than a schema one.
+- **`severity >= warn` has no access path.** Index (11) is partial on `severity_rank >= 50`, which is `error`. A
+  predicate implies that only at or above 50, so `>= error`, `>= critical` and above are index scans and `>= warn`
+  (40) — a filter one click of the severity facet produces — is a sequential scan of the fact table.
+  `FilterAccessPathIT` pins all three, so the cliff is recorded rather than discovered during an incident. Moving the
+  index's threshold to 40 would close it, and 50 is the same constant as `Severity.Error` and cobalt's alert feed:
+  changing it changes what this system calls an alert, which is not a change to make inside a query plan.
+
+The rolling partition job and the MV refresh job used to be listed here and no longer belong: both ship, in
+`modules/persistence/.../maintenance`, driven by cobalt's `MaintenanceJobs`, and `events.event_rollup_hourly` is read
+by ferrite's overview page through `OverviewRepository`.
 
 See [the event model](../event-model.md) for what is stored in `raw` and why it is the canonical form.

@@ -29,20 +29,26 @@ import com.augustnagro.magnum.batchUpdate
 import com.augustnagro.magnum.connect
 import com.augustnagro.magnum.transact
 import com.worxbend.kernel.search.Filter
-import com.worxbend.persistence.Codecs
 import com.worxbend.persistence.Sql
 import com.worxbend.persistence.Sql.++
 import com.worxbend.persistence.search.Cursor
 import com.worxbend.persistence.search.FilterSql
 import com.worxbend.persistence.search.SortDirection
+import java.sql.PreparedStatement
+import java.sql.ResultSet
+import java.sql.Types
 import scala.concurrent.ExecutionContext
 import scala.concurrent.Future
 
-/** One row of the `GROUPING SETS` facet pass.
+/** One row of the facet pass.
   *
   * Six nullable dimension columns of which exactly one is meaningful per row, selected by `gid`. That shape is what a
-  * single-pass grouping-sets query returns; reshaping it into something sane happens in Scala rather than as six
-  * `UNION ALL` branches in SQL, each of which would be another scan of the candidate set.
+  * grouping-sets query returns; reshaping it into something sane happens in Scala rather than as six `UNION ALL`
+  * branches in SQL, each of which would be another scan of the candidate set.
+  *
+  * Tag rows arrive in the same shape, carrying [[PostgresEventRepository.TagGid]] in `gid` and the tag in `ceType`.
+  * They cannot share the `GROUP BY` — one row carries several tags — but they *can* share the candidate set, and
+  * sharing it is the whole reason they share this row type. See [[PostgresEventRepository.facetsSql]].
   */
 final private[repository] case class FacetRow(
   gid: Int,
@@ -90,11 +96,7 @@ final class PostgresEventRepository(read: Transactor, write: Transactor)(using e
       SearchPage(rows, nextCursor(request, rows))
 
   def facets(request: FacetRequest): Future[Facets] =
-    Future:
-      connect(read):
-        val dimensionRows = facetDimensionsSql(request).query[FacetRow].run()
-        val tagRows = facetTagsSql(request).query[FacetValue].run()
-        reshape(dimensionRows, tagRows, request)
+    Future(reshape(connect(read)(facetsSql(request).query[FacetRow].run()), request))
 
   def histogram(request: HistogramRequest): Future[Vector[HistogramBucket]] =
     Future(connect(read)(histogramSql(request).query[HistogramBucket].run()))
@@ -137,8 +139,15 @@ final class PostgresEventRepository(read: Transactor, write: Transactor)(using e
     if rows.sizeIs < request.limit then None
     else rows.lastOption.map(row => Cursor(row.occurredAt, row.eventUid, request.fingerprint).encode)
 
-  private def reshape(rows: Vector[FacetRow], tags: Vector[FacetValue], request: FacetRequest): Facets =
+  /** Splits one result set back into the six dimensions, the tags and the grand total.
+    *
+    * Tags are re-sorted here rather than trusted to arrive sorted: `UNION ALL` gives the branches no ordering
+    * guarantee, and the `ORDER BY` inside the tag branch exists only to decide *which* tags survive its `LIMIT`.
+    * Sorting the survivors — at most `perDimension` of them — is what makes two loads of the same page agree.
+    */
+  private def reshape(rows: Vector[FacetRow], request: FacetRequest): Facets =
     val candidates = rows.find(_.gid == FacetDimension.TotalMask).map(_.count).getOrElse(0L)
+    val byCount: FacetValue => (Long, String) = value => (-value.count, value.value)
     val dimensions = rows
       .flatMap: row =>
         FacetDimension
@@ -147,8 +156,11 @@ final class PostgresEventRepository(read: Transactor, write: Transactor)(using e
           .flatMap(dimension => valueOf(dimension, row).map(value => dimension -> FacetValue(value, row.count)))
       .groupMap((dimension, _) => dimension)((_, value) => value)
       .view
-      .mapValues(values => values.sortBy(value => (-value.count, value.value)).take(request.perDimension))
+      .mapValues(values => values.sortBy(byCount).take(request.perDimension))
       .toMap
+    val tags = rows
+      .collect { case row if row.gid == TagGid => FacetValue(row.ceType.getOrElse(""), row.count) }
+      .sortBy(byCount)
     Facets(dimensions, tags, candidates, candidates >= request.candidateCap)
 
 /** The statement builders.
@@ -177,35 +189,49 @@ object PostgresEventRepository:
       order(request.sort) ++
       Sql.lit(" LIMIT ") ++ Sql.bind(request.limit)
 
-  /** The capped candidate set both facet passes share.
+  /** The `gid` a tag row carries.
     *
-    * `MATERIALIZED` is not optional: without it the planner is free to inline the CTE into each grouping set and
-    * re-apply the filter, turning one capped scan into several uncapped ones and deleting the cap's whole purpose.
+    * `grouping()` over six arguments returns 0–63, so a negative value cannot collide with a dimension mask or with
+    * [[FacetDimension.TotalMask]]. That is what lets the tag branch share a row type — and therefore a statement, and
+    * therefore a candidate set — with the dimensions.
     */
-  private def candidates(request: FacetRequest): Frag =
+  private[repository] val TagGid: Int = -1
+
+  /** Every facet the panel shows, over one candidate set, in one statement.
+    *
+    * **This used to be two statements and that was the most expensive thing on the search page.** The dimensions and
+    * the tags each spliced their own copy of the capped candidate CTE, so `/events` ran the fact-table scan the cap
+    * bounds — up to `candidateCap` rows, 50 000 by default — *twice* per page view, for one panel. A CTE referenced
+    * twice inside one statement is evaluated once, whatever the planner decides about the rest of the query, so putting
+    * both passes in one statement halves that scan and removes a round trip. `FilterAccessPathIT` asserts the plan
+    * holds exactly one `CTE cand`, exactly two `CTE Scan on cand`, and no mention of the fact table after the first of
+    * them.
+    *
+    * `MATERIALIZED` is still not optional, and now for two reasons: without it the planner is free to inline the CTE
+    * into each grouping set *and* into the tag branch, re-applying the filter each time and turning one capped scan
+    * into seven uncapped ones.
+    *
+    * The trailing `()` grouping set is the grand total, which is how the candidate count — and therefore the "was the
+    * cap reached" flag — comes back without a third query. The argument order of `grouping(...)` is what
+    * [[FacetDimension.groupingMask]] encodes; changing one without the other relabels every facet.
+    *
+    * Tags cannot join the `GROUP BY`: one row carries several, so they are counted over an `unnest` and arrive as a
+    * `UNION ALL` branch. Its `NULL::text` padding is explicit rather than bare `NULL` so the branch's column types do
+    * not depend on union type resolution reading them off the other branch.
+    */
+  private[persistence] def facetsSql(request: FacetRequest): Frag =
     Sql.lit("WITH cand AS MATERIALIZED (SELECT ce_type, ce_source, device_id, room_id, person_id, ") ++
       Sql.lit("severity, tags FROM events.cloud_event") ++
       FilterSql.whereOf(request.filter) ++
-      Sql.lit(" LIMIT ") ++ Sql.bind(request.candidateCap) ++ Sql.lit(") ")
-
-  /** Six facets in one pass.
-    *
-    * The trailing `()` grouping set is the grand total, which is how the candidate count — and therefore the "was the
-    * cap reached" flag — comes back without a second query. The argument order of `grouping(...)` is what
-    * [[FacetDimension.groupingMask]] encodes; changing one without the other relabels every facet.
-    */
-  private[persistence] def facetDimensionsSql(request: FacetRequest): Frag =
-    candidates(request) ++
+      Sql.lit(" LIMIT ") ++ Sql.bind(request.candidateCap) ++ Sql.lit(") ") ++
       Sql.lit("SELECT grouping(ce_type, ce_source, device_id, room_id, person_id, severity), ") ++
       Sql.lit("ce_type, ce_source, device_id, room_id, person_id, severity, count(*) FROM cand ") ++
       Sql.lit("GROUP BY GROUPING SETS ((ce_type), (ce_source), (device_id), (room_id), (person_id), ") ++
-      Sql.lit("(severity), ())")
-
-  /** Tags need their own pass: one row can carry several, so they cannot share a `GROUP BY` with scalar dimensions. */
-  private[persistence] def facetTagsSql(request: FacetRequest): Frag =
-    candidates(request) ++
-      Sql.lit("SELECT t, count(*) FROM cand CROSS JOIN LATERAL unnest(cand.tags) AS t ") ++
-      Sql.lit("GROUP BY t ORDER BY 2 DESC, 1 LIMIT ") ++ Sql.bind(request.perDimension)
+      // The `-1` here is [[TagGid]]; the two are read together by `reshape` and have to be edited together.
+      Sql.lit("(severity), ()) UNION ALL SELECT -1, tagged.t, NULL::text, NULL::text, NULL::text, ") ++
+      Sql.lit("NULL::text, NULL::text, tagged.n FROM (SELECT t, count(*) AS n FROM cand ") ++
+      Sql.lit("CROSS JOIN LATERAL unnest(cand.tags) AS t GROUP BY t ORDER BY 2 DESC, 1 LIMIT ") ++
+      Sql.bind(request.perDimension) ++ Sql.lit(") AS tagged")
 
   /** Bucketed counts with a `generate_series` skeleton.
     *
@@ -252,9 +278,31 @@ object PostgresEventRepository:
   private[persistence] def insertSql(event: NewEvent): Frag =
     Sql.lit("INSERT INTO events.cloud_event (occurred_at, raw, payload_sha256) VALUES (") ++
       Sql.bind(event.occurredAt) ++ Sql.lit(", ") ++
-      Sql.bind(event.raw)(using Codecs.jsonb) ++ Sql.lit("::jsonb, ") ++
+      Sql.bind(event.canonical)(using renderedJsonb) ++ Sql.lit("::jsonb, ") ++
       Sql.bind(event.payloadSha256) ++
       Sql.lit(") ON CONFLICT (occurred_at, ce_source, ce_id) DO NOTHING")
+
+  /** Binds a JSON document that has already been rendered.
+    *
+    * Byte-for-byte the same thing on the wire as `Codecs.jsonb` — `setObject(…, Types.OTHER)`, so the value travels as
+    * an unknown-typed literal and the server coerces it at the `::jsonb` cast — and different in what it costs. That
+    * codec takes an `io.circe.Json` and renders it at bind time, which on the insert path is the *second* rendering of
+    * that document: [[NewEvent.of]] already produced one to hash. Rendering a 1.5 KB CloudEvent measures at ~4.2 µs
+    * against ~0.9 µs for the SHA-256 over it, so this ran roughly half of the write path's per-record CPU for nothing.
+    *
+    * Reading is implemented because the interface requires it, not because anything calls it: this codec only ever
+    * appears in an `INSERT`.
+    */
+  private val renderedJsonb: DbCodec[String] = new DbCodec[String]:
+
+    def queryRepr: String = "?"
+
+    def cols: IArray[Int] = IArray(Types.OTHER)
+
+    def readSingle(rs: ResultSet, pos: Int): String = rs.getString(pos)
+
+    def writeSingle(value: String, ps: PreparedStatement, pos: Int): Unit =
+      ps.setObject(pos, value, Types.OTHER)
 
   /** The keyset predicate, compiled by hand.
     *

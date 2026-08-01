@@ -197,8 +197,15 @@ object TailService:
     *
     * Two seconds is a compromise with a name on both sides: below it the page stops feeling like a feed and starts
     * feeling like a poll (and multiplies the pool's load by the number of tabs), above it an operator watching a
-    * deployment sees events arrive in visible clumps. It is also exactly the read pool's `statement_timeout`, so a tick
-    * can never overlap the one before it even in the worst case the pool permits.
+    * deployment sees events arrive in visible clumps.
+    *
+    * **It is not what stops two ticks of the same tail overlapping.** That used to be claimed here on the grounds that
+    * the interval equals the read pool's `statement_timeout`, and the arithmetic does not survive contact with the
+    * pool: a tick waits for a connection (up to `connection-timeout`, 3 s) and for a dispatcher thread *before* the
+    * statement starts, so its wall time can exceed the interval comfortably. Non-overlap is a property of the stream
+    * topology — `TailController` threads the cursor through `scanAsync`, which runs one future at a time, and
+    * `Source.tick` drops a tick the downstream is not ready for. Anything that replaced `scanAsync` with `mapAsync`
+    * would break it, and the timeout would not notice.
     */
   val PollInterval: FiniteDuration = 2.seconds
 
@@ -210,8 +217,18 @@ object TailService:
     */
   val MaxRowsPerTick: Int = 50
 
-  /** Tails one replica will serve at once. Eight read connections, one query per tail per two seconds: at this cap the
-    * tail feature can consume at most a few index seeks a second, which is a rounding error next to one search.
+  /** Tails one replica will serve at once.
+    *
+    * The arithmetic, written out because it is the whole justification for the number: 16 tails at one query per
+    * [[PollInterval]] is 8 queries a second, each a keyset seek returning at most [[MaxRowsPerTick]] rows and each
+    * borrowing one of the read pool's eight connections and one of the eight `SearchExecutionContext` threads for its
+    * duration. At a millisecond a query that is under 1 % of either resource — a rounding error next to one search
+    * page, which issues four.
+    *
+    * The number that would break it is not the tail count but the per-tick *duration*. The seek is bounded by the
+    * cursor, which sits at the newest row the tail has seen, so the scan is over a suffix of one partition however
+    * broad the rest of the filter is; and the read pool's `statement_timeout` caps the worst case at two seconds. Eight
+    * simultaneous worst cases would hold the whole dispatcher, which is why the cap is here and not at twice this.
     */
   val MaxConcurrent: Int = 16
 

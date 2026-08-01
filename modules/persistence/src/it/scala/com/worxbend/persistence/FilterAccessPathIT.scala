@@ -30,15 +30,19 @@ import com.worxbend.kernel.event.Payload
 import com.worxbend.kernel.event.Source
 import com.worxbend.kernel.search.Filter
 import com.worxbend.kernel.search.NumOp
+import com.worxbend.kernel.search.Severity
 import com.worxbend.persistence.repository.EventRepository
+import com.worxbend.persistence.repository.FacetRequest
 import com.worxbend.persistence.repository.NewEvent
 import com.worxbend.persistence.repository.PostgresEventRepository
 import com.worxbend.persistence.repository.SearchRequest
+import com.worxbend.persistence.search.Cursor
 import com.worxbend.persistence.search.FilterSql
 import com.worxbend.persistence.search.SortDirection
 import io.circe.Json
 import java.sql.PreparedStatement
 import java.time.OffsetDateTime
+import java.util.UUID
 import scala.util.Using
 
 /** The two open-ended search dimensions — a numeric comparison against a payload path, and equality against a
@@ -70,11 +74,17 @@ final class FilterAccessPathIT extends PostgresSuite:
 
   private val tenanted = 5
 
+  /** Alert-severity events, so the partial index over `severity_rank >= 50` has something in it. An empty index is one
+    * the planner can pick for the wrong reason.
+    */
+  private val alerting = 7
+
   override def beforeAll(): Unit =
     super.beforeAll()
     truncateEvents()
     val _ = await(repository.insertAll((0 until corpus).toVector.map(reading)))
     val _ = await(repository.insertAll((0 until tenanted).toVector.map(tenant)))
+    val _ = await(repository.insertAll((0 until alerting).toVector.map(alert)))
     analyse()
 
   private def force[A](result: Either[String, A]): A = result.fold(message => fail(message), identity)
@@ -119,6 +129,25 @@ final class FilterAccessPathIT extends PostgresSuite:
         "sequence" -> AttrValue.Num(index)
       ),
       payload = Payload.Structured(Json.obj("deviceId" -> Json.fromString("gateway-2")))
+    )
+    force(NewEvent.from(envelope))
+
+  /** An event at `critical`, which `events.severity_rank()` maps to 70 — inside the `>= 50` partial index. Carries no
+    * `value`, so it does not disturb the payload-comparison counts above.
+    */
+  private def alert(index: Int): NewEvent =
+    val envelope = Envelope(
+      id = force(EventId(s"alert-$index")),
+      source = force(Source("/gateways/3")),
+      eventType = force(EventType("com.worxbend.iot.alarm")),
+      time = Some(base.plusHours(2).plusSeconds(index.toLong)),
+      subject = None,
+      dataContentType = None,
+      schema = None,
+      extensions = Map.empty,
+      payload = Payload.Structured(
+        Json.obj("deviceId" -> Json.fromString("smoke-1"), "severity" -> Json.fromString("critical"))
+      )
     )
     force(NewEvent.from(envelope))
 
@@ -207,6 +236,52 @@ final class FilterAccessPathIT extends PostgresSuite:
       s"expected the range form to scan every entry ($corpus); it returned $unselective"
     )
 
+  test("the facet panel costs one pass over the fact table, not one per pass"):
+    // This is the plan-level evidence for merging the two facet statements into one. The dimensions and the tags used
+    // to carry a copy each of `WITH cand AS MATERIALIZED (… LIMIT 50000)`, so every page view ran the capped
+    // fact-table scan twice for one panel. In one statement the CTE is defined once and read twice.
+    val filter = force(Filter.deviceIn(Vector("kitchen-1")))
+    val plan = planOfStatement(PostgresEventRepository.facetsSql(force(FacetRequest.of(Some(filter)))), analyse = true)
+    assertEquals(occurrences(plan, "CTE cand"), 1, plan)
+    assertEquals(occurrences(plan, "CTE Scan on cand"), 2, plan)
+    // `Storage:` on the CTE scans is PostgreSQL saying it kept the tuplestore rather than re-running the subquery.
+    assert(plan.contains("Storage:"), s"the candidate set was not materialised:\n$plan")
+    // And the fact table is named only inside the CTE — everything after the first consumer reads the tuplestore.
+    val consumers = plan.linesIterator.dropWhile(!_.contains("CTE Scan on cand")).mkString("\n")
+    assert(!consumers.contains("cloud_event"), s"a facet pass went back to the fact table:\n$plan")
+
+  test("the alert filter reaches its partial index; one severity level below it, nothing does"):
+    // Index (11) is `(occurred_at DESC) WHERE severity_rank >= 50`, and 50 is `Severity.Error`. A predicate implies
+    // that index's own predicate only at or above 50, so `>= error`, `>= critical` and above are index scans and
+    // `>= warn` (40) has no access path at all — with sequential scans priced out of reach the planner still takes
+    // one, which it only does when nothing else exists.
+    //
+    // This is recorded rather than fixed: lowering the index threshold is a change to what this system calls an
+    // alert, and that constant is shared with `Severity.Error` and cobalt's alert feed.
+    val alerts = planOf(Filter.severityAtLeast(Severity.Error))
+    assert(alerts.contains("Index Scan"), s"the alert feed's filter lost its index:\n$alerts")
+    assert(!alerts.contains("Seq Scan"), s"the alert feed's filter fell back to a scan:\n$alerts")
+    val higher = planOf(Filter.severityAtLeast(Severity.Critical))
+    assert(higher.contains("Index Scan"), s"a predicate implying `>= 50` should still reach index (11):\n$higher")
+    val belowThreshold = planOf(Filter.severityAtLeast(Severity.Warn))
+    assert(belowThreshold.contains("Seq Scan"), s"`severity >= warn` unexpectedly found an index:\n$belowThreshold")
+
+  test("a page's ordering comes from an index, never from a sort"):
+    // The whole keyset design rests on this: with the order supplied by the index, `LIMIT n` stops after n rows and
+    // page 10 000 costs what page 1 costs. A `Sort` node anywhere in this plan means the server is ordering the entire
+    // match set before taking fifty of it, which is the cost curve `OFFSET` has and this schema exists to avoid.
+    val filter = force(Filter.typeIn(Vector("com.worxbend.iot.telemetry")))
+    val first = force(SearchRequest.first(Some(filter), SortDirection.Newest, 50))
+    val firstPlan = planOfStatement(PostgresEventRepository.searchSql(first), analyse = false)
+    assert(!hasSortNode(firstPlan), s"the first page is sorted rather than ordered by an index:\n$firstPlan")
+
+    val cursor = Cursor(base.plusSeconds(100), UUID.randomUUID(), first.fingerprint)
+    val seeking = force(SearchRequest.of(Some(filter), SortDirection.Newest, 50, Some(cursor.encode)))
+    val seekPlan = planOfStatement(PostgresEventRepository.searchSql(seeking), analyse = false)
+    assert(!hasSortNode(seekPlan), s"the keyset page is sorted rather than sought:\n$seekPlan")
+    // `Merge Append` is what preserves the order across partitions; an `Append` would need a Sort above it.
+    assert(seekPlan.contains("Merge Append"), s"partitions were not merged in order:\n$seekPlan")
+
   // ---------------------------------------------------------------------------------------------------- plumbing
 
   /** Binds a compiled fragment's single parameter.
@@ -223,6 +298,35 @@ final class FilterAccessPathIT extends PostgresSuite:
   private def planOf(filter: Filter): String =
     val frag = FilterSql.compile(filter)
     explain(frag.sqlString, binderFor(frag), analyse = false)
+
+  /** The plan for a whole statement the repository builds, rather than for a predicate spliced into a probe query.
+    *
+    * `enable_seqscan = off` for the same reason as [[explain]]: on a few hundred rows a sequential scan is genuinely
+    * cheaper than any index, so a plan taken at this scale answers "what is cheap here" and not "what is possible at
+    * all". Pricing the scan out of reach turns it back into the second question, which is the only one whose answer is
+    * still true on ten million rows.
+    */
+  private def planOfStatement(frag: Frag, analyse: Boolean): String =
+    withConnection: connection =>
+      set(connection, "SET enable_seqscan = off")
+      try
+        val options = if analyse then "(ANALYZE, TIMING OFF, SUMMARY OFF, COSTS OFF)" else "(COSTS OFF)"
+        Using.resource(connection.prepareStatement(s"EXPLAIN $options ${frag.sqlString}")): statement =>
+          val _ = frag.writer.write(statement, 1)
+          Using.resource(statement.executeQuery()): rs =>
+            Iterator.continually(rs).takeWhile(_.next()).map(_.getString(1)).mkString("\n")
+      finally set(connection, "RESET enable_seqscan")
+
+  private def occurrences(plan: String, node: String): Int = plan.linesIterator.count(_.contains(node))
+
+  /** A `Sort` **node**, not the `Sort Key:` line a `Merge Append` carries.
+    *
+    * The distinction is the entire assertion: `Sort Key:` under a `Merge Append` says the ordering is being *preserved*
+    * across partitions, which is the plan this schema is built for; a `Sort` node says the ordering is being produced,
+    * which means every matching row is read before fifty of them are returned.
+    */
+  private def hasSortNode(plan: String): Boolean =
+    plan.linesIterator.map(_.trim.stripPrefix("->").trim).exists(line => line == "Sort" || line.startsWith("Sort  ("))
 
   /** The plan for a hand-written predicate with no parameters. */
   private def rawPlan(predicate: String): String = explain(predicate, _ => (), analyse = false)
