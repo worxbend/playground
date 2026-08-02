@@ -627,5 +627,7 @@ case where nobody is watching.
 
 ## See also
 
+- `CONTRIBUTING.md` — the design standard, not the mechanics: what makes a module deep, where information leaks,
+  how to define an error out of existence, and the red flags to check a diff against before opening a PR.
 - `docs/adr/0000-architecture.md` — the contract: dependency table, schema DDL, index rationale, risks.
 - `docs/operations.md` — deployment, environment variables, runbooks, backup and retention.

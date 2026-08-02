@@ -158,6 +158,11 @@ requests that carry a token; the `play.filters.disabled += CSRFFilter` line was 
 - `docs/services/{wolfram,cobalt,ferrite}.md` — one page per service.
 - `docs/operations.md` — runbooks, environment variables, metrics, and §8 "Known limitations".
 - `docs/event-model.md`, `docs/data/schema.md`, `docs/development.md`.
+- `CONTRIBUTING.md` — **the design standard, and it applies to you.** Deep modules, information hiding, defining
+  errors out of existence, the red-flag list to run your own diff against, and a section on the failure modes
+  specific to agents: verify before asserting, a test that asserts nothing looks green, report what you couldn't
+  do rather than papering over it.
+- `docs/architecture/maintainers.md` — recipes for common changes, and the trap catalogue.
 
 This codebase documents **why**, not what. Scaladoc on a public type explains the decision and names the failure
 mode it avoids. Match that register: terse, concrete, no marketing, and never a comment that restates the code.

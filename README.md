@@ -120,6 +120,9 @@ token required — see the smoke test) with Swagger UI at <http://localhost:8081
 - [docs/event-model.md](docs/event-model.md) and [docs/data/schema.md](docs/data/schema.md) — the wire contract and
   the database.
 - [docs/development.md](docs/development.md) — build, test tiers, module layout and the dependency rule.
+- [CONTRIBUTING.md](CONTRIBUTING.md) — the design standard a change is held to, framed on *A Philosophy of
+  Software Design*: deep modules, information hiding, defining errors out of existence, and the red-flag
+  checklist to run your own diff against.
 
 ## Licence
 
