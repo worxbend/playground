@@ -1,0 +1,27 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 160 160" width="160" height="160" role="img" aria-label="playground event observatory">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#22d3ee"/>
+      <stop offset="55%" stop-color="#6366f1"/>
+      <stop offset="100%" stop-color="#a855f7"/>
+    </linearGradient>
+  </defs>
+
+  <!-- observatory sweep: three concentric arcs opening to the right -->
+  <g fill="none" stroke="url(#g)" stroke-linecap="round">
+    <path d="M80 22 A58 58 0 0 1 138 80" stroke-width="7"/>
+    <path d="M80 42 A38 38 0 0 1 118 80" stroke-width="7" opacity="0.75"/>
+    <path d="M80 60 A20 20 0 0 1 100 80" stroke-width="7" opacity="0.5"/>
+  </g>
+
+  <!-- the event stream entering the aperture -->
+  <g fill="url(#g)">
+    <circle cx="24" cy="110" r="6"/>
+    <circle cx="48" cy="110" r="6" opacity="0.8"/>
+    <circle cx="72" cy="110" r="6" opacity="0.6"/>
+  </g>
+  <path d="M84 110 H132" stroke="url(#g)" stroke-width="7" stroke-linecap="round" fill="none" opacity="0.45"/>
+
+  <!-- the observed event, held at the focus -->
+  <rect x="66" y="66" width="28" height="28" rx="5" transform="rotate(45 80 80)" fill="url(#g)"/>
+</svg>
