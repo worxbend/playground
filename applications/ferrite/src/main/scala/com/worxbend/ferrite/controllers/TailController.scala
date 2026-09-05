@@ -28,7 +28,6 @@ import com.worxbend.ferrite.tail.TailService
 import com.worxbend.ferrite.web.Query
 import com.worxbend.ferrite.web.view.Presenter
 import com.worxbend.kernel.Rfc3339
-import com.worxbend.kernel.search.Filter
 import jakarta.inject.Inject
 import jakarta.inject.Singleton
 import java.time.Clock
@@ -94,7 +93,7 @@ final class TailController @Inject() (cc: ControllerComponents, service: TailSer
         BadRequest(errors.map(_.message).mkString("\n")).as(TEXT)
       case Right(_) if !service.hasCapacity => busy
       case Right(query)                     =>
-        Ok.chunked(tailSource(query.filter, cursor))
+        Ok.chunked(tailSource(query, cursor))
           // A cached event stream is a contradiction, and `X-Accel-Buffering` is the one header nginx needs before it
           // will forward chunks instead of holding them until the response ends — which for a tail is never.
           .withHeaders(CACHE_CONTROL -> "no-store", "X-Accel-Buffering" -> "no")
@@ -113,7 +112,8 @@ final class TailController @Inject() (cc: ControllerComponents, service: TailSer
     * `Source.tick` drops a tick when the downstream is not ready rather than queueing it, which is the backpressure
     * this feature wants: a slow client falls behind in *time*, never in a growing buffer in the server's heap.
     */
-  private def tailSource(filter: Option[Filter], cursor: Option[TailCursor]): Source[EventSource.Event, ?] =
+  private def tailSource(query: SearchQuery, cursor: Option[TailCursor]): Source[EventSource.Event, ?] =
+    val filter = query.filter
     // A stream can be cancelled before the lazy factory ever runs — a client that disconnects between the headers and
     // the first demand. The flag is what keeps the count from going negative in that case, and it makes the release
     // idempotent so the same termination cannot be counted twice.
@@ -129,7 +129,7 @@ final class TailController @Inject() (cc: ControllerComponents, service: TailSer
             .tick(TailService.PollInterval, TailService.PollInterval, ())
             .scanAsync(TailBatch(start, Vector.empty))((batch, _) => service.poll(filter, batch.cursor))
             .drop(1)
-            .mapConcat(frames)
+            .mapConcat(frames(_, query))
         }
       }
       .watchTermination() { (_, done) =>
@@ -137,8 +137,8 @@ final class TailController @Inject() (cc: ControllerComponents, service: TailSer
         NotUsed
       }
 
-  private def frames(batch: TailBatch): Vector[EventSource.Event] =
-    TailController.frames(batch, OffsetDateTime.now(clock))
+  private def frames(batch: TailBatch, query: SearchQuery): Vector[EventSource.Event] =
+    TailController.frames(batch, OffsetDateTime.now(clock), query)
 
   private def single(pairs: Vector[(String, String)], key: String): Option[String] =
     pairs.collectFirst { case (k, v) if k == key => v }
@@ -167,12 +167,16 @@ object TailController:
     *
     * The `id` is the event's uid, which is what the client de-duplicates on — and what the browser sends back as
     * `Last-Event-ID` when it reconnects on its own.
+    *
+    * `search` is the filter this tail is watching, and it goes into each row's drill-down link for the same reason it
+    * does on the search page: opening an event from a live feed and pressing "back" must return to the feed's filter,
+    * not to an unfiltered list.
     */
-  def frames(batch: TailBatch, now: OffsetDateTime): Vector[EventSource.Event] =
+  def frames(batch: TailBatch, now: OffsetDateTime, search: SearchQuery): Vector[EventSource.Event] =
     if batch.rows.isEmpty then Vector(EventSource.Event(Rfc3339.render(now), None, Some(HeartbeatEvent)))
     else
       batch.rows.map { summary =>
-        val html = views.html.fragments.rows(Vector(Presenter.row(summary, now)), None).body
+        val html = views.html.fragments.rows(Vector(Presenter.row(summary, now, search)), None).body
         EventSource.Event(sseSafe(html), Some(summary.eventUid.toString), Some(RowEvent))
       }
 

@@ -28,17 +28,27 @@
         <ul class="facet-values" aria-labelledby="facet-@facet.key">
           @for(entry <- facet.entries) {
             <li>
-              <a class="facet-entry @if(entry.selected){is-selected}"
-                 href="@entry.url"
-                 hx-get="@entry.url"
-                 hx-target="#results"
-                 hx-swap="innerHTML"
-                 hx-push-url="true"
-                 hx-indicator="#busy"
-                 @if(entry.selected){aria-current="true"}>
-                <span class="facet-value">@entry.label</span>
-                <span class="facet-count">@entry.count</span>
-              </a>
+              @for(url <- entry.url) {
+                <a class="facet-entry @if(entry.selected){is-selected}"
+                   href="@url"
+                   hx-get="@url"
+                   hx-target="#results"
+                   hx-swap="innerHTML"
+                   hx-push-url="true"
+                   hx-indicator="#busy"
+                   @if(entry.selected){aria-current="true"}>
+                  <span class="facet-value">@entry.label</span>
+                  <span class="facet-count">@entry.count</span>
+                </a>
+              }
+              @* A value the filter grammar cannot express — a producer's own severity word — renders as text rather
+                 than as a link that 400s. Same decision as the overview's breakdown rows, made in Presenter. *@
+              @if(entry.url.isEmpty) {
+                <span class="facet-entry is-unlinked" title="This value has no equivalent search filter">
+                  <span class="facet-value">@entry.label</span>
+                  <span class="facet-count">@entry.count</span>
+                </span>
+              }
             </li>
           }
         </ul>

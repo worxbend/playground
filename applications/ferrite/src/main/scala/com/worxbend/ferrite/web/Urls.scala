@@ -34,8 +34,9 @@ import java.util.UUID
   * against the routers by `UrlRoutingSuite`. If a builder and its route ever disagree, that suite fails at compile-test
   * time rather than in a browser.
   *
-  * Paths only. Query strings are composed by [[Query]] and appended by [[eventsQuery]], because a permalink is data the
-  * user can edit (ADR §6.3) and must not be assembled by concatenation at each call site.
+  * Paths only. Query strings are composed by [[Query]] and appended by [[events]], [[overview]], [[live]] and
+  * [[event]], because a permalink is data the user can edit (ADR §6.3) and must not be assembled by concatenation at
+  * each call site.
   */
 object Urls:
 
@@ -82,13 +83,23 @@ object Urls:
   /** The live-tail stream for a filter, with an already-rendered query string (no leading `?`). */
   def live(query: String): String = if query.isEmpty then Live else s"$Live?$query"
 
-  /** The detail page for one event.
+  /** The detail page for one event, **carrying the search it was opened from**.
     *
     * Takes the two halves of the primary key rather than a repository type: this object is presentation, and letting a
     * `EventRef` in here would put a persistence type on the path from a Twirl template to the router.
+    *
+    * `search` is an already-rendered list query string, and it rides along verbatim so the detail page can hand it
+    * straight back as "Back to results" — the detail request's own query string, minus [[AtParam]], *is* the list URL.
+    * Without it that reconstruction always produced the bare `/events`, and an operator triaging a filtered feed lost
+    * their filter on every event they opened. It is a required argument rather than a defaulted one because the default
+    * was the bug.
+    *
+    * `at` is rendered first so it survives a hand-truncated link: it is half of a partitioned primary key and the page
+    * cannot be served without it, whereas losing the tail of the search only widens the list behind the back button.
     */
-  def event(occurredAt: OffsetDateTime, eventUid: UUID): String =
-    s"$Events/$eventUid?${Query.render(Vector(AtParam -> Rfc3339.render(occurredAt)))}"
+  def event(occurredAt: OffsetDateTime, eventUid: UUID, search: String): String =
+    val at = Query.render(Vector(AtParam -> Rfc3339.render(occurredAt)))
+    if search.isEmpty then s"$Events/$eventUid?$at" else s"$Events/$eventUid?$at&$search"
 
   /** A static asset, cache-busted by the build version.
     *

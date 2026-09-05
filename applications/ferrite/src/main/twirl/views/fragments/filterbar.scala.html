@@ -30,8 +30,10 @@
   @* The permalink grammar is versioned and the version is mandatory, so the form always sends it. *@
   <input type="hidden" name="v" value="@bar.version">
 
-  @* Facet selections and payload predicates have no input of their own; without these they would be dropped the
-     moment the user typed in the search box. *@
+  @* Everything else in the search: facet selections, payload predicates, and the sort and limit controls, none of
+     which has an input of its own. Without these they are dropped the moment the user types in the search box.
+     The list is the complement of what this form renders, decided in Presenter.filterBar — so a parameter can only
+     be lost here by being rendered wrong, never by being forgotten. *@
   @for((key, value) <- bar.hidden) {
     <input type="hidden" name="@key" value="@value">
   }
@@ -61,10 +63,12 @@
 
   <div class="filter-field">
     <label for="severity">Severity at least</label>
+    @* Which option is selected is decided in the presenter, against the CANONICAL level: `warning`, `err` and
+       `emerg` are all valid spellings the facet panel itself emits, and matching on the label here reported an
+       applied filter as "Any" — after which the next submit sent that "Any" and cleared it. *@
     <select id="severity" name="severity">
-      <option value="" @if(bar.severity.isEmpty){selected}>Any</option>
-      @for(level <- com.worxbend.kernel.search.Severity.values.toSeq) {
-        <option value="&gt;=@level.label" @if(bar.severity == level.label){selected}>@level.label</option>
+      @for(option <- bar.severities) {
+        <option value="@option.value" @if(option.selected){selected}>@option.label</option>
       }
     </select>
   </div>

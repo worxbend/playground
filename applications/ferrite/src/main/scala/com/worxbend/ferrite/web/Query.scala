@@ -21,8 +21,7 @@
 
 package com.worxbend.ferrite.web
 
-import java.nio.charset.StandardCharsets.UTF_8
-import scala.annotation.tailrec
+import com.worxbend.kernel.search.PercentCodec
 
 /** Query-string editing for the filter bar, the facet panel and the "load more" cursor.
   *
@@ -32,15 +31,15 @@ import scala.annotation.tailrec
   * filter, and the one thing this UI must never do is silently drop a parameter it could not parse (ADR §6.3). Editing
   * pairs keeps a malformed value visible in the URL and in the filter bar, where the user can fix it.
   *
-  * Encoding matches `FilterQuery`'s own codec in `modules/kernel`: the same safe set, so `:` and `/` in a CloudEvents
-  * `source` stay legible, and `+` is always escaped on the way out and always read as a space on the way in. It is
-  * re-implemented rather than shared because that codec is private to the kernel and exporting it would put a URL
-  * concern into the domain module.
+  * **The escaping is [[com.worxbend.kernel.search.PercentCodec]]'s and is not restated here.** There is one permalink
+  * escaping rule and the module that owns the format owns it. This object used to carry its own copy, written from that
+  * codec's Scaladoc and claiming to match it; the two then disagreed about astral characters — an emoji in a `q=` term
+  * decoded to `??` here and to itself there — for as long as nobody compared them. What is local to this layer is only
+  * the *reading* of a broken escape: the filter bar always needs a string to put back in front of the user, so
+  * [[decode]] is `decodeLenient` and the strict reading stays with the codec, where a mangled fragment becomes a
+  * reportable error.
   */
 object Query:
-
-  private val Safe: Set[Char] = (('A' to 'Z') ++ ('a' to 'z') ++ ('0' to '9')).toSet ++
-    Set('-', '.', '_', '~', ':', '/', '@', '*')
 
   /** Splits a raw query string into decoded pairs, preserving order and repeats.
     *
@@ -85,32 +84,9 @@ object Query:
   def toggle(pairs: Vector[(String, String)], key: String, value: String): Vector[(String, String)] =
     if pairs.contains(key -> value) then remove(pairs, key, value) else add(pairs, key, value)
 
-  def encode(raw: String): String =
-    raw
-      .getBytes(UTF_8)
-      .iterator
-      .map { byte =>
-        val unsigned = byte & 0xff
-        if Safe(unsigned.toChar) then unsigned.toChar.toString else f"%%$unsigned%02X"
-      }
-      .mkString
+  def encode(raw: String): String = PercentCodec.encode(raw)
 
   /** Lenient by design: an invalid escape is kept verbatim rather than raising, so the caller always gets a string to
-    * put back in front of the user.
+    * put back in front of the user. The kernel's strict reading of the same grammar reports it instead.
     */
-  def decode(raw: String): String =
-    @tailrec def go(index: Int, acc: Vector[Byte]): Vector[Byte] =
-      if index >= raw.length then acc
-      else
-        raw.charAt(index) match
-          case '%' if index + 2 < raw.length && hexByte(raw.charAt(index + 1), raw.charAt(index + 2)).isDefined =>
-            go(index + 3, acc ++ hexByte(raw.charAt(index + 1), raw.charAt(index + 2)).toVector)
-          case '+' => go(index + 1, acc :+ ' '.toByte)
-          case ch  => go(index + 1, acc ++ ch.toString.getBytes(UTF_8).toVector)
-
-    String(go(0, Vector.empty).toArray, UTF_8)
-
-  private def hexByte(high: Char, low: Char): Option[Byte] =
-    val h = Character.digit(high, 16)
-    val l = Character.digit(low, 16)
-    if h < 0 || l < 0 then None else Some(((h << 4) | l).toByte)
+  def decode(raw: String): String = PercentCodec.decodeLenient(raw)

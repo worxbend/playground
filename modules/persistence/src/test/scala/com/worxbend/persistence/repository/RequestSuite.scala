@@ -94,6 +94,24 @@ final class RequestSuite extends munit.FunSuite:
       val buckets = span.toSeconds / width.toSeconds
       assert(buckets <= HistogramRequest.MaxBuckets, s"$span produced $buckets buckets")
 
+  test("a window wider than the ladder is still capped, rather than falling back to the top rung"):
+    // `Ladder.last` is 30 days, which caps out at about ten years. Beyond that the old `getOrElse(Ladder.last)`
+    // returned 30 days anyway: a 9999-year window meant ~121,700 buckets, one `generate_series` row and one `<li>`
+    // each, from one unauthenticated GET.
+    val from = OffsetDateTime.parse("0001-01-01T00:00:00Z")
+    Vector(11L, 50L, 500L, 9998L).foreach: years =>
+      val until = from.plusYears(years)
+      val width = HistogramRequest.widthFor(from, until)
+      val buckets = java.time.Duration.between(from, until).getSeconds / width.toSeconds
+      assert(buckets <= HistogramRequest.MaxBuckets, s"$years years produced $buckets buckets of $width")
+      assertEquals(width.toSeconds % HistogramRequest.Ladder.last.toSeconds, 0L, s"$width is not a whole top rung")
+
+  test("a request can never be built with more buckets than the cap"):
+    val from = OffsetDateTime.parse("0001-01-01T00:00:00Z")
+    val request = force(HistogramRequest.of(None, from, from.plusYears(9998)))
+    val buckets = java.time.Duration.between(request.from, request.until).getSeconds / request.width.toSeconds
+    assert(buckets <= HistogramRequest.MaxBuckets, s"$buckets buckets")
+
   test("an empty or inverted histogram window is rejected"):
     val instant = OffsetDateTime.parse("2026-07-01T00:00:00Z")
     assert(HistogramRequest.of(None, instant, instant).isLeft)

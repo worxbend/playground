@@ -21,6 +21,7 @@
 
 package com.worxbend.kernel.search
 
+import com.worxbend.kernel.Rfc3339
 import io.circe.Json
 import java.time.OffsetDateTime
 
@@ -94,13 +95,24 @@ object Filter:
 
   /** A time window with neither bound is not a filter, it is the absence of one — and it would compile to a `WHERE`
     * clause that prunes no partitions while looking like it does. An inverted or empty window is always a mistake.
+    *
+    * Both bounds are also range-checked, which is what makes this leaf keep the promise the rest of the grammar makes:
+    * every value here has been through a smart constructor that bounds it, because every value here is
+    * attacker-controlled from a URL. This was the one leaf that only checked *relative* order. `Rfc3339.parse` is the
+    * other half of the guard and catches the same value one layer earlier, but the two are deliberately independent —
+    * the histogram drill-down and the overview links build `Occurred` from `OffsetDateTime`s that never passed through
+    * a parser, and a bound that only guards the textual entry point is not a bound.
     */
   def occurred(from: Option[OffsetDateTime], until: Option[OffsetDateTime]): Either[String, Filter] =
     (from, until) match
       case (None, None)                         => Left("a time range needs at least one bound")
       case (Some(f), Some(u)) if !f.isBefore(u) =>
         Left(s"time range is empty: from '$f' is not before until '$u'")
-      case _ => Right(Occurred(from, until))
+      case _ =>
+        Vector(from, until).flatten.find(bound => !Rfc3339.inRange(bound)) match
+          case Some(bad) =>
+            Left(s"time bound '$bad' is outside the years ${Rfc3339.MinYear}-${Rfc3339.MaxYear} this store can hold")
+          case None => Right(Occurred(from, until))
 
   def typeIn(values: Iterable[String]): Either[String, Filter] = Values.of(values).map(TypeIn.apply)
   def sourceIn(values: Iterable[String]): Either[String, Filter] = Values.of(values).map(SourceIn.apply)

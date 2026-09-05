@@ -39,6 +39,7 @@ import play.api.test.Helpers.header
 import play.api.test.Helpers.status
 import play.api.test.Helpers.writeableOf_AnyContentAsEmpty
 import scala.concurrent.Future
+import scala.jdk.CollectionConverters.*
 
 /** Fragment or page — the one decision that makes htmx work without duplicating markup.
   *
@@ -121,6 +122,42 @@ final class EventsControllerSuite extends FunSuite:
       search.SearchQuery.parse("v=1&type=a").map(_.filter)
     )
 
+  test("the URL a filter-bar submit produces is a search, end to end"):
+    // Not a constructed query string: the one the rendered form serialises. Every earlier assertion about the bar is
+    // about a piece of this loop, and the loop is what a user does — type in the box, get results, keep the sort.
+    val repository = Fixtures.StubRepository()
+    val controller = Fixtures.controller(repository)
+    val arrived = Jsoup.parse(body(Helpers.call(controller.list, get(Urls.events("v=1&device=kitchen-1&sort=oldest")))))
+    val submit = arrived
+      .select("form#filter-form input[name], form#filter-form select[name]")
+      .asScala
+      .toVector
+      .map { control =>
+        val value =
+          if control.tagName() == "select" then
+            Option(control.selectFirst("option[selected]")).map(_.attr("value")).getOrElse("")
+          else if control.id() == "q" then "kitchen" // what the user just typed
+          else control.attr("value")
+        control.attr("name") -> value
+      }
+    val next = Helpers.call(controller.list, get(Urls.events(web.Query.render(submit))))
+    // A 400 here is the whole of the original defect: `from=&until=&severity=` read as three invalid values.
+    assertEquals(status(next), Status.OK, body(next))
+    val request = repository.lastSearch.get().getOrElse(fail("the repository was never asked for a page"))
+    // Everything the user had is still applied: the facet they clicked, the order they chose, and the text typed.
+    assertEquals(request.sort, com.worxbend.persistence.search.SortDirection.Oldest)
+    val leaves = request.filter.toVector.flatMap(com.worxbend.kernel.search.Filter.leaves)
+    assert(
+      leaves.exists {
+        case com.worxbend.kernel.search.Filter.DeviceIn(vs) => vs.contains("kitchen-1"); case _ => false
+      },
+      leaves.toString
+    )
+    assert(
+      leaves.exists { case com.worxbend.kernel.search.Filter.FullText(_) => true; case _ => false },
+      leaves.toString
+    )
+
   test("a rejected permalink is a 400 that still renders the filter bar with the offending value"):
     val controller = Fixtures.controller(Fixtures.StubRepository())
     val result = Helpers.call(controller.list, get(Urls.events("v=1&from=yesterday")))
@@ -156,10 +193,49 @@ final class EventsControllerSuite extends FunSuite:
     val summary = Fixtures.summary()
     val repository = Fixtures.StubRepository(detail = Some(EventDetail(summary, Fixtures.rawEvent)))
     val controller = Fixtures.controller(repository)
-    val url = Urls.event(summary.occurredAt, summary.eventUid)
+    val url = Urls.event(summary.occurredAt, summary.eventUid, "")
     val result = Helpers.call(controller.detail(summary.eventUid.toString), get(url))
     assertEquals(status(result), Status.OK)
     assertEquals(repository.lastRef.get(), Some(EventRef(summary.occurredAt, summary.eventUid)))
+
+  test("a drill-down and the way back both carry the search the operator was looking at"):
+    // `backUrl` reconstructs the list URL from the detail request's own query string, so the drill-down link is the
+    // only thing that can carry the filter. Emitting `?at=…` alone made "Back to results" land on an unfiltered
+    // list every time — an operator triaging a filtered feed lost the filter on every event they opened.
+    val summary = Fixtures.summary()
+    val repository = Fixtures.StubRepository(detail = Some(EventDetail(summary, Fixtures.rawEvent)))
+    val controller = Fixtures.controller(repository)
+    val list = Jsoup.parse(body(Helpers.call(controller.list, get(Urls.events("v=1&device=kitchen-1&sort=oldest")))))
+    val detailUrl = list.select("tr.event-row a.row-open").attr("href")
+    assert(detailUrl.contains("device=kitchen-1"), s"the drill-down dropped the search: $detailUrl")
+
+    val page = Jsoup.parse(body(Helpers.call(controller.detail(summary.eventUid.toString), get(detailUrl))))
+    val back = page.select(".detail-header a.button").attr("href")
+    val restored = search.SearchQuery.parse(back.dropWhile(_ != '?').drop(1)).getOrElse(fail(s"back url: $back"))
+    assertEquals(restored.filter, search.SearchQuery.parse("v=1&device=kitchen-1").getOrElse(fail("filter")).filter)
+    assertEquals(restored.sort, com.worxbend.persistence.search.SortDirection.Oldest)
+
+  test("a repository failure is rendered like every other response, not swapped in as a whole document"):
+    // A 2 s statement timeout or an exhausted pool used to propagate out of the action, so Play's error handler
+    // answered with a full <html> 500 carrying no Vary — which htmx then spliced inside <section id="results">,
+    // and which a shared proxy may cache against the un-varied URL.
+    val controller = Fixtures.controller(Fixtures.FailingRepository())
+    val fragment = Helpers.call(controller.list, get(Urls.events("v=1"), Hx.RequestHeader -> "true"))
+    assertEquals(status(fragment), Status.SERVICE_UNAVAILABLE)
+    assertEquals(header(Hx.Vary, fragment), Some(Hx.RequestHeader))
+    assert(!body(fragment).contains("<html"), "an htmx failure must not splice a document into the results region")
+
+    val page = Helpers.call(controller.list, get(Urls.events("v=1")))
+    assertEquals(status(page), Status.SERVICE_UNAVAILABLE)
+    assertEquals(header(Hx.Vary, page), Some(Hx.RequestHeader))
+    assert(body(page).contains("<html"), "a browser navigation still gets a document")
+
+  test("a detail lookup that fails is the same rendered failure, not an unhandled exception"):
+    val controller = Fixtures.controller(Fixtures.FailingRepository())
+    val url = Urls.event(Fixtures.Now, Fixtures.FirstUid, "")
+    val result = Helpers.call(controller.detail(Fixtures.FirstUid.toString), get(url))
+    assertEquals(status(result), Status.SERVICE_UNAVAILABLE)
+    assertEquals(header(Hx.Vary, result), Some(Hx.RequestHeader))
 
   test("a detail URL without 'at' is a bad request, not a full-partition scan"):
     val controller = Fixtures.controller(Fixtures.StubRepository())
@@ -168,7 +244,7 @@ final class EventsControllerSuite extends FunSuite:
 
   test("an unknown event is a 404 with a way back"):
     val controller = Fixtures.controller(Fixtures.StubRepository(detail = None))
-    val url = Urls.event(Fixtures.Now, Fixtures.FirstUid)
+    val url = Urls.event(Fixtures.Now, Fixtures.FirstUid, "")
     val result = Helpers.call(controller.detail(Fixtures.FirstUid.toString), get(url))
     assertEquals(status(result), Status.NOT_FOUND)
     assert(body(result).contains("No such event"))

@@ -99,9 +99,16 @@ object Presenter:
   // Rows
   // ---------------------------------------------------------------------------------------------------------------
 
-  def row(summary: EventSummary, now: OffsetDateTime): EventRow =
+  /** One row of a list, and the list it belongs to.
+    *
+    * `search` is not decoration: the detail page reconstructs "Back to results" from its own query string, so the
+    * drill-down link is the only thing that can carry the filter across. It was `at=` alone, so every drill-down
+    * silently landed the operator back on an unfiltered list. A required parameter rather than a defaulted one — a
+    * default here is exactly the shape the bug had.
+    */
+  def row(summary: EventSummary, now: OffsetDateTime, search: SearchQuery): EventRow =
     EventRow(
-      detailUrl = Urls.event(summary.occurredAt, summary.eventUid),
+      detailUrl = Urls.event(summary.occurredAt, summary.eventUid, search.permalink),
       occurredAt = Rfc3339.render(summary.occurredAt),
       occurredAtLabel = Format.absolute(summary.occurredAt),
       relative = Format.relative(summary.occurredAt, now),
@@ -197,7 +204,9 @@ object Presenter:
       val selected = query.raw.collect { case (k, v) if k == key => v }.toSet
       val entries = source.dimensions.getOrElse(dimension, Vector.empty).map { value =>
         val isSelected =
-          if dimension == FacetDimension.Severity then selected.exists(_.stripPrefix(">=") == value.value)
+          if dimension == FacetDimension.Severity then
+            // Both sides canonicalised, so `>=warning` in the URL recognises the `warn` entry it selected.
+            query.severityFloor.exists(floor => SearchQuery.parseSeverity(value.value).contains(floor))
           else selected.contains(value.value)
         FacetEntry(
           value = value.value,
@@ -206,7 +215,7 @@ object Presenter:
           // number — ADR §6.3 makes that honesty a product decision, not an implementation detail.
           count = if source.capped then s"${Format.count(value.count)}+" else Format.count(value.count),
           selected = isSelected,
-          url = Urls.events(facetLink(query, dimension, key, value.value, isSelected))
+          url = facetLink(query, dimension, key, value.value, isSelected).map(Urls.events)
         )
       }
       Facet(key = key, label = FacetLabels.getOrElse(dimension, key), entries = entries)
@@ -227,40 +236,60 @@ object Presenter:
           label = value.value,
           count = if source.capped then s"${Format.count(value.count)}+" else Format.count(value.count),
           selected = selected.contains(value.value),
-          url = Urls.events(query.toggled(TagKey, value.value))
+          url = Some(Urls.events(query.toggled(TagKey, value.value)))
         )
       }
     )
 
+  /** The search one facet value stands for, or `None` when the grammar cannot express it.
+    *
+    * Severity is the case that forces the `Option`, and the guard is
+    * [[com.worxbend.ferrite.search.SearchQuery.severityAtLeast]] — the same one [[OverviewPresenter.link]] uses,
+    * because it is the same fact about the same grammar and this panel is where a private second copy of it went
+    * missing.
+    */
   private def facetLink(
     query: SearchQuery,
     dimension: FacetDimension,
     key: String,
     value: String,
     selected: Boolean
-  ): String =
-    if dimension != FacetDimension.Severity then query.toggled(key, value)
-    else if selected then query.link(Query.remove(_, key))
-    else query.link(Query.set(_, key, s">=$value"))
+  ): Option[String] =
+    if dimension != FacetDimension.Severity then Some(query.toggled(key, value))
+    else if selected then Some(query.withoutSeverity)
+    else query.severityAtLeast(value)
 
   // ---------------------------------------------------------------------------------------------------------------
   // Filter bar
   // ---------------------------------------------------------------------------------------------------------------
+
+  /** Parameters the bar renders a control for. Everything else in the search travels as a hidden field, so this set is
+    * the *whole* of the difference between "what the form shows" and "what the form submits".
+    *
+    * `v` is in it because the template emits the version itself — it is mandatory and unconditional, not a value
+    * carried over — and a second hidden input would send it twice.
+    */
+  private val BoundKeys: Set[String] = Set(
+    SearchQuery.VersionKey,
+    SearchQuery.TextKey,
+    SearchQuery.FromKey,
+    SearchQuery.UntilKey,
+    SearchQuery.SeverityKey
+  )
 
   /** The filter bar, built from the *raw* query pairs rather than from the parsed AST.
     *
     * That is what lets a broken permalink render: `?from=yesterday` has no AST, but the user still has to see
     * `yesterday` in the From box with the error attached to it. Re-rendering from the AST would blank the field and
     * leave them guessing which parameter the message referred to.
+    *
+    * **`hidden` is [[com.worxbend.ferrite.search.SearchQuery.fields]] minus [[BoundKeys]], and that subtraction is the
+    * whole contract.** Read from `query.raw` it was the filter half only — which by construction excludes `sort` and
+    * `limit`, so submitting the bar threw them away. Taking the complement of what is rendered means a parameter can
+    * only be lost by being rendered wrong, never by being forgotten, and `TemplateSuite` submits the rendered form back
+    * to prove it.
     */
   def filterBar(query: SearchQuery, errors: Vector[FilterError]): FilterBar =
-    val bound = Set(
-      SearchQuery.VersionKey,
-      SearchQuery.TextKey,
-      SearchQuery.FromKey,
-      SearchQuery.UntilKey,
-      SearchQuery.SeverityKey
-    )
     def first(key: String): String = query.raw.collectFirst { case (k, v) if k == key => v }.getOrElse("")
 
     FilterBar(
@@ -269,17 +298,27 @@ object Presenter:
       text = first(SearchQuery.TextKey),
       from = first(SearchQuery.FromKey),
       until = first(SearchQuery.UntilKey),
-      severity = first(SearchQuery.SeverityKey).stripPrefix(">="),
-      sort = SearchQuery.sortLabel(query.sort),
-      limit = query.limit.toString,
-      // Everything the bar has no input for travels as a hidden field, or submitting the form would silently drop
-      // every facet the user has clicked.
-      hidden = query.raw.filterNot((key, _) => bound(key)),
+      severities = severities(query),
+      hidden = query.fields.filterNot((key, _) => BoundKeys(key)),
       chips = chips(query),
       problems = problems(errors),
       permalink = Urls.events(query.permalink),
       clearUrl = Urls.Events
     )
+
+  /** The severity dropdown, with the current floor already resolved.
+    *
+    * The option *values* are the permalink spelling and the selection is decided against the canonicalised floor, so
+    * every alias the grammar accepts — and the facet panel emits — comes back as the level it means rather than as
+    * "Any". A dropdown that shows "Any" for an applied filter is not merely wrong on screen: the next submit sends what
+    * it is showing, which is how a filter the user never touched disappears.
+    */
+  def severities(query: SearchQuery): Vector[SeverityOption] =
+    val floor = query.severityFloor
+    SeverityOption("", "Any", floor.isEmpty) +:
+      Severity.values.toVector.map { level =>
+        SeverityOption(s"${SearchQuery.AtLeast}${level.label}", level.label, floor.contains(level))
+      }
 
   def chips(query: SearchQuery): Vector[Chip] =
     ChipLabels.flatMap { (key, label) =>
@@ -308,7 +347,7 @@ object Presenter:
   // ---------------------------------------------------------------------------------------------------------------
 
   def results(outcome: SearchOutcome, query: SearchQuery, now: OffsetDateTime): Results =
-    val rows = outcome.page.rows.map(row(_, now))
+    val rows = outcome.page.rows.map(row(_, now, query))
     val total = Format.boundedCount(outcome.total, SearchService.TotalCap.toLong)
     Results(
       rows = rows,
@@ -382,17 +421,17 @@ object Presenter:
     * only the refined form would hide exactly the information someone opens this page to find. The raw JSON is the
     * authority; the decoded panel is the convenience.
     */
-  def detail(detail: EventDetail, now: OffsetDateTime, backUrl: String): Detail =
+  def detail(detail: EventDetail, now: OffsetDateTime, search: SearchQuery): Detail =
     val envelope = Envelope.decoder.decodeJson(detail.raw).toOption
     Detail(
-      row = row(detail.summary, now),
+      row = row(detail.summary, now, search),
       attributes = attributes(detail),
       extensions = envelope.toVector.flatMap(
         _.extensions.toVector.sortBy((name, _) => name).map((name, value) => Field(name, value.toJson.noSpaces))
       ),
       observation = envelope.fold(undecodable)(e => observation(Observation.from(e))),
       raw = detail.raw.spaces2,
-      backUrl = backUrl
+      backUrl = Urls.events(search.permalink)
     )
 
   private def attributes(detail: EventDetail): Vector[Field] =
@@ -486,6 +525,28 @@ object Presenter:
           "retention window disappears in one step rather than gradually.",
       problems = Vector.empty,
       suggestions = Vector(Suggestion("Back to events", backUrl))
+    )
+
+  /** The store-did-not-answer state: the one failure this application cannot describe in terms of the request.
+    *
+    * **503 and not 500.** Everything above this point is pure and covered by tests; what fails here is a query, and the
+    * two ways it fails in practice — the read pool's two-second `statement_timeout` and pool exhaustion — are both
+    * "this replica cannot serve right now", which is the one status a load balancer and a monitor both read correctly.
+    * A 500 invites someone to look for a broken URL.
+    *
+    * The cause is deliberately not in the message. It is logged; a `SQLException` on a page is a stack trace with a
+    * stylesheet, and the operator reading it is not the one who can act on it.
+    */
+  def unavailable(backUrl: String): Failure =
+    Failure(
+      status = 503,
+      title = "The event store did not answer",
+      message =
+        "This search was not run, so nothing below is a partial result. Searches are given a short statement " +
+          "timeout and a small read pool on purpose; if this persists, the pool and the slow-query log say which " +
+          "of the two ran out.",
+      problems = Vector.empty,
+      suggestions = Vector(Suggestion("Try the search again", backUrl))
     )
 
   /** The rejected-request state: a cursor that does not belong to this filter, or a limit outside its bounds. */

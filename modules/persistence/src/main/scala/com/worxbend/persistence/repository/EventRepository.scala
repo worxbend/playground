@@ -167,7 +167,14 @@ object FacetRequest:
     else if perDimension < 1 then Left("facet size must be at least 1")
     else Right(FacetRequest(filter, candidateCap, perDimension))
 
-/** A histogram query over a half-open window, with a server-chosen bucket width. */
+/** A histogram query over a half-open window, with a server-chosen bucket width.
+  *
+  * No instance holds more buckets than [[HistogramRequest.MaxBuckets]] — `(until - from) / width` is checked, not hoped
+  * for. That is an invariant of *this* type and not a consequence of whatever bounds the filter grammar happens to
+  * impose: every bucket becomes a `generate_series` row, a presenter `Bar` carrying a re-rendered query string and an
+  * `<li>` in the response, so the cap is the only thing standing between one GET and a page measured in hundreds of
+  * megabytes.
+  */
 final case class HistogramRequest private (
   filter: Option[Filter],
   from: OffsetDateTime,
@@ -220,13 +227,53 @@ object HistogramRequest:
     30.days
   )
 
+  /** The coarsest width this module will ever choose: the largest whole number of top-rung steps a `FiniteDuration` can
+    * hold, which is a shade over 292 years. `FiniteDuration` is nanosecond-backed, so anything wider throws from its
+    * own constructor — a bucket width is not the place to discover that.
+    */
+  val MaxWidth: FiniteDuration =
+    val rung = Ladder.last.toSeconds
+    ((Long.MaxValue / 1000000000L) / rung * rung).seconds
+
+  /** A bucket width satisfying [[MaxBuckets]], from the ladder wherever the ladder reaches.
+    *
+    * **The ladder does not always reach.** Its top rung is 30 days, so the last rung that can satisfy the cap covers a
+    * window of about ten years; past that, `find` returns nothing. The fallback used to be `Ladder.last` itself, which
+    * is not a width for a wide window but a width for a narrow one applied to a wide one: a 9999-year `from=` — which
+    * the filter grammar accepted until `com.worxbend.kernel.Rfc3339` grew a year bound — produced roughly 121,700
+    * buckets rather than 120, and every one of them became a row, a `Bar` and an `<li>`.
+    *
+    * Beyond the ladder the width becomes a whole multiple of the top rung. That keeps the one property the ladder
+    * exists for — boundaries a human can read off a calendar, here whole 30-day blocks — while making the cap
+    * arithmetic rather than a lookup that may miss. It is a *second* guard and not a replacement for bounding the
+    * filter's timestamps: the cap is a property of the histogram, and a caller building a `HistogramRequest` from
+    * `OffsetDateTime`s that never came from a URL must not be able to defeat it.
+    */
   def widthFor(from: OffsetDateTime, until: OffsetDateTime): FiniteDuration =
     val span = math.max(1L, Duration.between(from, until).getSeconds)
-    Ladder.find(step => span / step.toSeconds <= MaxBuckets).getOrElse(Ladder.last)
+    Ladder.find(step => span / step.toSeconds <= MaxBuckets).getOrElse(beyondLadder(span))
 
+  private def beyondLadder(span: Long): FiniteDuration =
+    val rung = Ladder.last.toSeconds
+    val perStride = rung * MaxBuckets
+    val strides = math.max(1L, math.min(MaxWidth.toSeconds / rung, (span + perStride - 1) / perStride))
+    (strides * rung).seconds
+
+  /** Builds the request, re-checking [[MaxBuckets]] rather than trusting [[widthFor]] to have achieved it.
+    *
+    * The re-check is not belt-and-braces: [[MaxWidth]] is a real ceiling, so a window wider than
+    * `MaxBuckets * MaxWidth` — around 35,000 years, unreachable through `Rfc3339`'s year bound but expressible in an
+    * `OffsetDateTime` — genuinely cannot be bucketed. Saying so is better than silently drawing a chart with a million
+    * bars, and it is what makes the invariant on this type true by construction rather than by argument.
+    */
   def of(filter: Option[Filter], from: OffsetDateTime, until: OffsetDateTime): Either[String, HistogramRequest] =
     if !from.isBefore(until) then Left(s"histogram window is empty: '$from' is not before '$until'")
-    else Right(HistogramRequest(filter, from, until, widthFor(from, until)))
+    else
+      val width = widthFor(from, until)
+      val buckets = Duration.between(from, until).getSeconds / width.toSeconds
+      if buckets > MaxBuckets then
+        Left(s"histogram window '$from' to '$until' needs $buckets buckets, more than the $MaxBuckets this chart draws")
+      else Right(HistogramRequest(filter, from, until, width))
 
 /** The database surface the two consuming services need, and nothing else.
   *

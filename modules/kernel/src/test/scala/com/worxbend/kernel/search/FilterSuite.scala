@@ -49,6 +49,19 @@ final class FilterSuite extends munit.ScalaCheckSuite:
     assert(Filter.occurred(None, Some(t1)).isRight)
     assert(Filter.occurred(Some(t0), Some(t1)).isRight)
 
+  test("a time bound outside the storable range is rejected, like every other leaf's value"):
+    // `Rfc3339.parse` guards the permalink, but this leaf is also built directly — by the histogram narrowing links
+    // and by any future caller — so the bound is the constructor's, not the codec's. A year 999999999 bound compiles
+    // to `occurred_at >= ?` and PostgreSQL answers `22008 datetime field overflow`.
+    val far = OffsetDateTime.parse("+999999999-01-01T00:00:00Z")
+    assert(Filter.occurred(Some(far), None).isLeft)
+    assert(Filter.occurred(None, Some(far)).isLeft)
+    assert(Filter.occurred(Some(t0), Some(far)).isLeft)
+    assert(Filter.occurred(Some(OffsetDateTime.MIN), Some(t0)).isLeft)
+
+  test("the last instant a four-digit year can name is still a legal bound"):
+    assert(Filter.occurred(Some(t0), Some(OffsetDateTime.parse("9999-12-31T23:59:59Z"))).isRight)
+
   test("empty and blank value lists are rejected"):
     assert(Filter.typeIn(Nil).isLeft)
     assert(Filter.deviceIn(Vector("a", " ")).isLeft)

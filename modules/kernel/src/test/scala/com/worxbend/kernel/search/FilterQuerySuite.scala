@@ -205,6 +205,16 @@ final class FilterQuerySuite extends munit.ScalaCheckSuite:
     val filter = FilterGenerators.force(Filter.fullText("🔥 kitchen 🧯"))
     assertEquals(FilterQuery.encode(Some(filter)).map(FilterQuery.decode), Right(Right(Some(filter))))
 
+  test("a time bound no timestamptz could hold is reported, not handed to the database"):
+    // The one leaf that used to have no domain bound. `OffsetDateTime.parse` accepts the expanded-year form, so this
+    // link decoded cleanly, compiled to `occurred_at >= ?` and turned a promised-total codec into a 500.
+    val decoded = FilterQuery.decode("v=1&from=%2B999999999-01-01T00:00:00Z")
+    assert(decoded.isLeft, decoded.toString)
+    assert(
+      decoded.swap.exists(_.exists { case FilterError.Invalid("from", _) => true; case _ => false }),
+      decoded.toString
+    )
+
   test("a filter with Or or Not has no permalink and says so"):
     val a = FilterGenerators.force(Filter.typeIn(Vector("a")))
     val b = FilterGenerators.force(Filter.deviceIn(Vector("b")))
@@ -310,10 +320,43 @@ final class FilterQuerySuite extends munit.ScalaCheckSuite:
       case FilterError.Invalid("data.value", _) => true; case _ => false
     })
     assert(reason("v=1&ext.Tenant=acme").exists { case FilterError.Invalid("ext.Tenant", _) => true; case _ => false })
-    assert(reason("v=1&ext.tenantid=").exists { case FilterError.Invalid("ext.tenantid", _) => true; case _ => false })
     // A near miss on the prefix itself is an unknown parameter, not a payload filter with an odd name.
     assertEquals(FilterQuery.decode("v=1&dataX=1"), Left(Vector(FilterError.UnknownParameter("dataX"))))
     assertEquals(FilterQuery.decode("v=1&extension.a=1"), Left(Vector(FilterError.UnknownParameter("extension.a"))))
+
+  test("a present-but-empty parameter is absent, in every slot of the grammar"):
+    // What forces this: a browser submitting `<form method="get">` serialises EVERY named control, and spells "the
+    // user left this one alone" as the empty string. `?v=1&q=kitchen&from=&until=&severity=` is therefore an ordinary
+    // search, and reading those three as values that failed to parse made every search launched from a filter bar a
+    // 400. The form cannot avoid sending them — only a `disabled` control is omitted, and ferrite's bar has to work
+    // with JavaScript switched off — so the codec is the only place this can be answered.
+    //
+    // It costs nothing, which is the other half of the argument: NO leaf in this grammar accepts the empty string.
+    // `ExtValue`, `SearchText`, `JsonPath`, `NumLit`, `Rfc3339`, `Severity`, `JsonLit` and `Values` each reject it, so
+    // an empty value cannot express a filter and dropping one cannot drop a constraint. It is not the "silently
+    // widened result set" ADR §6.3 forbids; there was never a narrowing to lose.
+    assertEquals(FilterQuery.decode("v=1&q=kitchen&from=&until=&severity="), FilterQuery.decode("v=1&q=kitchen"))
+    assertEquals(FilterQuery.decode("v=1&type=&device=&tag=&data=&data.t=&ext.tenantid="), Right(None))
+    // The version is not exempt: a form that failed to send it is as unreadable as a link that omitted it.
+    assertEquals(FilterQuery.decode("v=&type=a"), Left(Vector(FilterError.MissingVersion)))
+    // And a value the user actually typed still gets its error, whitespace included. Only the empty string is a
+    // form saying nothing; "  " is a mistake, and telling them so is more use than ignoring it.
+    assert(FilterQuery.decode("v=1&from=%20").isLeft)
+
+  test("an unknown parameter is still unknown when its value is empty"):
+    // The guard on the guard. Dropping empty values is scoped to what a parameter SAYS; it must not decide whether
+    // the parameter belongs. `sevrity=` is a misspelling of a real filter, and the first version of the empty-value
+    // fix dropped the pair before the unknown-key check ever saw it — so the typo vanished, the search silently ran
+    // without the severity constraint the user believed they had applied, and the wider result set that came back
+    // was indistinguishable from a correct one. That is the exact failure ADR §6.3 forbids, reintroduced by the fix
+    // meant to honour it, which is why it gets its own test rather than a line in the one above.
+    assertEquals(FilterQuery.decode("v=1&sevrity="), Left(Vector(FilterError.UnknownParameter("sevrity"))))
+    assertEquals(FilterQuery.decode("v=1&colour=&q=kitchen"), Left(Vector(FilterError.UnknownParameter("colour"))))
+    // Reported once, not once per occurrence, and still reported alongside a real value's error.
+    assertEquals(FilterQuery.decode("v=1&colour=&colour="), Left(Vector(FilterError.UnknownParameter("colour"))))
+    val mixed = FilterQuery.decode("v=1&sevrity=&from=%20").swap.getOrElse(Vector.empty)
+    assert(mixed.contains(FilterError.UnknownParameter("sevrity")), mixed)
+    assert(mixed.exists { case FilterError.Invalid("from", _) => true; case _ => false }, mixed)
 
   test("a comparison value no smart constructor would accept never reaches the AST"):
     // `1E+2000000000` is a valid BigDecimal with one significant digit. Rendering it as a jsonpath literal allocates

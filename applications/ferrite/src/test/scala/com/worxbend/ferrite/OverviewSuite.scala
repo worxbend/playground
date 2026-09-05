@@ -165,6 +165,12 @@ final class OverviewSuite extends FunSuite:
     assertEquals(error.tagName(), "a")
     assert(error.attr("href").contains("severity"), error.attr("href"))
 
+  test("a rollup that will not answer is a rendered failure, not an unhandled exception"):
+    val controller = Fixtures.overviewController(rollup = Fixtures.FailingOverviewRepository())
+    val result = Helpers.call(controller.index, get(Urls.Root))
+    assertEquals(status(result), Status.SERVICE_UNAVAILABLE)
+    assert(contentAsString(result).contains("<html"), "the overview has one representation and it is a document")
+
   test("every volume bar links to its own bucket, not to the whole window"):
     val document = render()
     val bars = document.select(".volume .histogram-bar a")

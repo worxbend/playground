@@ -60,6 +60,10 @@ final class TailSuite extends FunSuite:
 
   private val at = Fixtures.Now.minusMinutes(1)
 
+  /** The filter a tail is watching. Rows framed from it carry it into their drill-down links. */
+  private val tailed =
+    com.worxbend.ferrite.search.SearchQuery.parse("v=1&device=kitchen-1").getOrElse(fail("the tail filter"))
+
   // ----------------------------------------------------------------------------------------------------- cursors
 
   test("a cursor needs both halves of the primary key"):
@@ -123,7 +127,8 @@ final class TailSuite extends FunSuite:
 
   test("a row is framed as a `row` event carrying the rendered table row, keyed by uid"):
     val summary = Fixtures.summary()
-    val frames = TailController.frames(TailBatch(TailCursor(at, summary.eventUid), Vector(summary)), Fixtures.Now)
+    val frames =
+      TailController.frames(TailBatch(TailCursor(at, summary.eventUid), Vector(summary)), Fixtures.Now, tailed)
     assertEquals(frames.size, 1)
     val frame = frames.head
     assertEquals(frame.name, Some(TailController.RowEvent))
@@ -137,16 +142,18 @@ final class TailSuite extends FunSuite:
 
   test("the framed event is valid SSE: an event name and every line of the body as a data field"):
     val summary = Fixtures.summary()
-    val formatted = TailController.frames(TailBatch(TailCursor(at, summary.eventUid), Vector(summary)), Fixtures.Now)
-      .head
-      .formatted
+    val formatted =
+      TailController.frames(TailBatch(TailCursor(at, summary.eventUid), Vector(summary)), Fixtures.Now, tailed)
+        .head
+        .formatted
     assert(formatted.contains(s"event: ${TailController.RowEvent}"), formatted)
     assert(formatted.contains("data: "), formatted)
     // A frame that does not end in a blank line is a frame the browser never delivers.
     assert(formatted.endsWith("\n\n"), formatted.takeRight(10))
 
   test("an empty tick is a heartbeat, so a dead connection is distinguishable from a quiet one"):
-    val frames = TailController.frames(TailBatch(TailCursor(at, TailService.NilUid), Vector.empty), Fixtures.Now)
+    val frames =
+      TailController.frames(TailBatch(TailCursor(at, TailService.NilUid), Vector.empty), Fixtures.Now, tailed)
     assertEquals(frames.map(_.name), Vector(Some(TailController.HeartbeatEvent)))
     assertEquals(frames.head.data, Some(Rfc3339.render(Fixtures.Now)))
 

@@ -22,9 +22,7 @@
 package com.worxbend.kernel.search
 
 import com.worxbend.kernel.Rfc3339
-import java.nio.charset.StandardCharsets.UTF_8
 import java.time.OffsetDateTime
-import scala.annotation.tailrec
 import scala.util.Try
 
 /** The permalink codec (ADR §6.3).
@@ -63,7 +61,7 @@ import scala.util.Try
   *   - **Two escaping problems instead of none.** With the value carrying `path`, `op` and `number`, the codec has to
   *     find the operator inside a string that may legitimately contain `>` or `:` (an extension value routinely does —
   *     `traceparent` is colon-delimited). The prefixed form puts the delimiter in the query string's own `=`, which is
-  *     already unambiguous because [[Percent]] escapes every `=` inside a key or a value.
+  *     already unambiguous because [[PercentCodec]] escapes every `=` inside a key or a value.
   *   - **Editing stays a URL edit.** Every other filter family in this grammar is `key=value`, and the UI's whole
   *     navigation model is "change one parameter" — `Query.remove(pairs, key, value)` removes a chip, a facet click
   *     toggles a pair. A predicate hidden inside a value would need its own parser in the presentation layer just to
@@ -118,7 +116,7 @@ object FilterQuery:
       perLeaf <- collected
       _ <- oneLeafPerSlot(perLeaf)
     yield ((VersionKey -> Version) +: perLeaf.flatMap((_, params) => params))
-      .map((key, value) => s"${Percent.encode(key)}=${Percent.encode(value)}")
+      .map((key, value) => s"${PercentCodec.encode(key)}=${PercentCodec.encode(value)}")
       .mkString("&")
 
   /** The permalink slot a leaf occupies, or `None` for a leaf whose slot may legitimately hold several.
@@ -162,14 +160,39 @@ object FilterQuery:
 
   /** Parses a permalink. Accepts a leading `?`. `Right(None)` means "a valid link with no filters" — the landing page —
     * which is a different answer from an error and the UI treats it differently.
+    *
+    * **A present-but-empty parameter is absent, not invalid.** `?v=1&q=kitchen&from=&severity=` is not a malformed
+    * link: it is what a browser sends when a `<form method="get">` is submitted, because a form serialises every named
+    * control it has and spells "the user left this one alone" as the empty string. Reading `from=` as a timestamp that
+    * failed to parse turned every search launched from a filter bar into a 400 with problems the user could not act on
+    * — the boxes they were being told to fix were already empty. Answering it here rather than in the form is not a
+    * preference: only a `disabled` control is left out of a submit, so a bar that must work with JavaScript off cannot
+    * omit its empty fields.
+    *
+    * It also costs nothing, which is what makes it a definition rather than a concession: **no leaf in this grammar
+    * accepts the empty string.** [[ExtValue]], [[UserText]], [[JsonPath]], [[NumLit]], [[Tag]], [[Values]],
+    * [[JsonLit]], `Rfc3339.parse` and [[Severity.parse]] each reject it — [[ExtValue]]'s own comment gives the reason
+    * in full — so an empty value cannot express a filter, and dropping one cannot drop a constraint. This is not the
+    * silently-widened result set ADR §6.3 forbids; there was no narrowing to lose.
+    *
+    * Whitespace is deliberately *not* folded in with it. `from=%20` is a value someone typed and got wrong, and it
+    * still gets its error: only the empty string is a form saying nothing.
+    *
+    * **The drop is scoped to the value, never to the key.** "No leaf accepts the empty string" justifies ignoring what
+    * an empty parameter *says*; it justifies nothing about whether the parameter should be here at all. `?v=1&sevrity=`
+    * is a typo, and a typo whose value happens to be empty is still a typo — so [[FilterError.UnknownParameter]] is
+    * decided over every well-formed pair, before emptiness is considered. Folding the two together would have made a
+    * misspelled filter vanish in silence and hand back a *wider* result set that looks exactly like a correct one: the
+    * precise failure ADR §6.3 forbids, reintroduced by the fix that was meant to honour it.
     */
   def decode(queryString: String): Either[Vector[FilterError], Option[Filter]] =
     val fragments = queryString.stripPrefix("?").split('&').iterator.filter(_.nonEmpty).toVector
     val split = fragments.map(splitPair)
     val malformed = split.collect { case Left(error) => error }
-    val pairs = split.collect { case Right(pair) => pair }
+    val wellFormed = split.collect { case Right(pair) => pair }
+    val pairs = wellFormed.filterNot((_, value) => value.isEmpty)
     val (leafErrors, leaves) = buildLeaves(pairs)
-    val errors = malformed ++ versionErrors(pairs) ++ leafErrors
+    val errors = malformed ++ unknownKeys(wellFormed) ++ versionErrors(pairs) ++ leafErrors
     if errors.nonEmpty then Left(errors)
     else if leaves.isEmpty then Right(None)
     else Filter.and(leaves).left.map(reason => Vector(FilterError.NotPermalinkable(reason))).map(Some.apply)
@@ -204,8 +227,8 @@ object FilterQuery:
     val (rawKey, rawValue) =
       if separator < 0 then (fragment, "") else (fragment.take(separator), fragment.drop(separator + 1))
     for
-      key <- Percent.decode(rawKey).left.map(reason => FilterError.Malformed(fragment, reason))
-      value <- Percent.decode(rawValue).left.map(reason => FilterError.Malformed(fragment, reason))
+      key <- PercentCodec.decode(rawKey).left.map(reason => FilterError.Malformed(fragment, reason))
+      value <- PercentCodec.decode(rawValue).left.map(reason => FilterError.Malformed(fragment, reason))
     yield (key, value)
 
   private def versionErrors(pairs: Vector[(String, String)]): Vector[FilterError] =
@@ -231,13 +254,6 @@ object FilterQuery:
         .sortBy((key, _) => key)
         .flatMap: (key, values) =>
           values.map(value => make(key.drop(prefix.length), value).left.map(FilterError.Invalid(key, _)))
-
-    val unknown =
-      byKey.keysIterator
-        .filterNot(key => Known(key) || key.startsWith(PathPrefix) || key.startsWith(ExtensionPrefix))
-        .toVector
-        .sorted
-        .map(FilterError.UnknownParameter.apply)
 
     // A repeated `ext.<name>` is reported for a reason the fixed single-valued keys do not share: the grammar has
     // only equality on an extension, so two values for one name conjoin into a predicate no row can satisfy. Building
@@ -266,8 +282,21 @@ object FilterQuery:
         prefixedLeaves(ExtensionPrefix)(Filter.extensionEq) ++
         one(TextKey).toVector.map(textLeaf)
 
-    val errors = unknown ++ repeated ++ results.collect { case Left(error) => error }
+    val errors = repeated ++ results.collect { case Left(error) => error }
     (errors, results.collect { case Right(filter) => filter })
+
+  /** Names this grammar does not recognise, over the pairs as they arrived.
+    *
+    * Separate from [[buildLeaves]], and given the *unfiltered* pairs, because a key is unknown whether or not it
+    * carries a value — see [[decode]]. Every other check here reads a value, so it only ever sees the populated set.
+    */
+  private def unknownKeys(pairs: Vector[(String, String)]): Vector[FilterError] =
+    pairs
+      .map((key, _) => key)
+      .distinct
+      .filterNot(key => Known(key) || key.startsWith(PathPrefix) || key.startsWith(ExtensionPrefix))
+      .sorted
+      .map(FilterError.UnknownParameter.apply)
 
   private type Result = Either[FilterError, Filter]
 
@@ -311,52 +340,3 @@ object FilterQuery:
       value <- Try(BigDecimal(number)).toEither.left.map(_ => s"'$number' is not a number")
       leaf <- Filter.payloadCmp(path, op, value)
     yield leaf
-
-/** Percent-encoding for the permalink.
-  *
-  * Hand-rolled rather than `java.net.URLEncoder` for one reason: `URLEncoder` escapes `:` and `/`, which turns every
-  * `source` and `dataschema` in a link into unreadable noise and defeats the "hand-editable" requirement. The safe set
-  * below keeps those legible while escaping everything that could change how the string parses. `+` is always escaped
-  * on the way out and always decoded as a space on the way in, which is what a human pasting a form-encoded URL expects
-  * and still round-trips exactly.
-  */
-private object Percent:
-
-  private val Safe: Set[Char] = (('A' to 'Z') ++ ('a' to 'z') ++ ('0' to '9')).toSet ++
-    Set('-', '.', '_', '~', ':', '/', '@', '*')
-
-  def encode(raw: String): String =
-    val pieces = raw.getBytes(UTF_8).iterator.map { byte =>
-      val unsigned = byte & 0xff
-      if Safe(unsigned.toChar) then unsigned.toChar.toString else f"%%$unsigned%02X"
-    }
-    pieces.mkString
-
-  def decode(raw: String): Either[String, String] =
-    @tailrec def go(index: Int, acc: Vector[Byte]): Either[String, Vector[Byte]] =
-      if index >= raw.length then Right(acc)
-      else
-        raw.charAt(index) match
-          case '%' =>
-            if index + 2 >= raw.length then Left(s"truncated percent escape at $index")
-            else
-              hexByte(raw.charAt(index + 1), raw.charAt(index + 2)) match
-                case None       => Left(s"invalid percent escape '${raw.substring(index, index + 3)}'")
-                case Some(byte) => go(index + 3, acc :+ byte)
-          case '+' => go(index + 1, acc :+ ' '.toByte)
-          case ch  =>
-            // A code point, not a `char`. Encoding a lone surrogate as UTF-8 yields `?`, so taking one UTF-16 unit at
-            // a time turned every astral character — an emoji in a `q=` term — into two question marks, silently
-            // changing the search a hand-written link asked for. Browsers percent-encode the query, which is why this
-            // only ever bit a URL pasted from a chat client or built by hand.
-            val paired =
-              Character.isHighSurrogate(ch) && index + 1 < raw.length && Character.isLowSurrogate(raw.charAt(index + 1))
-            val next = if paired then index + 2 else index + 1
-            go(next, acc ++ raw.substring(index, next).getBytes(UTF_8).toVector)
-
-    go(0, Vector.empty).map(bytes => String(bytes.toArray, UTF_8))
-
-  private def hexByte(high: Char, low: Char): Option[Byte] =
-    val h = Character.digit(high, 16)
-    val l = Character.digit(low, 16)
-    if h < 0 || l < 0 then None else Some(((h << 4) | l).toByte)

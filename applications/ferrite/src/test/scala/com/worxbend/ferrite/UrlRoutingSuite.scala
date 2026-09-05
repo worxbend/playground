@@ -63,11 +63,11 @@ final class UrlRoutingSuite extends FunSuite:
     assert(Paths.Events.unapplySeq(request(Urls.live(""))).isEmpty)
 
   test("an event detail URL is matched and yields the event id back"):
-    val url = Urls.event(at, Fixtures.FirstUid)
+    val url = Urls.event(at, Fixtures.FirstUid, "")
     assertEquals(Paths.Event.unapplySeq(request(url)), Some(List(Fixtures.FirstUid.toString)))
 
   test("the detail URL carries occurred_at as a query parameter, so the path stays a single clean segment"):
-    val url = Urls.event(at, Fixtures.FirstUid)
+    val url = Urls.event(at, Fixtures.FirstUid, "")
     val query = FakeRequest("GET", url).getQueryString(Urls.AtParam)
     // Percent-encoded on the way out, decoded by Play on the way in, and byte-identical in between.
     assertEquals(query, Some("2026-07-26T10:15:30+02:00"))
@@ -93,7 +93,7 @@ final class UrlRoutingSuite extends FunSuite:
     assert(router.routes.isDefinedAt(FakeRequest("GET", Urls.overview("range=30d"))))
     assert(router.routes.isDefinedAt(FakeRequest("GET", Urls.events(""))))
     assert(router.routes.isDefinedAt(FakeRequest("GET", Urls.events("v=1&device=kitchen-1"))))
-    assert(router.routes.isDefinedAt(FakeRequest("GET", Urls.event(at, Fixtures.FirstUid))))
+    assert(router.routes.isDefinedAt(FakeRequest("GET", Urls.event(at, Fixtures.FirstUid, ""))))
     assert(router.routes.isDefinedAt(FakeRequest("GET", Urls.live("v=1&device=kitchen-1"))))
     assert(!router.routes.isDefinedAt(FakeRequest("GET", "/nope")))
 

@@ -41,6 +41,24 @@ final class SearchQuerySuite extends FunSuite:
   test("an empty query string is a valid search with no filter, not an error"):
     assertEquals(SearchQuery.parse(""), Right(SearchQuery(None, SortDirection.Newest, 50, None, Vector.empty)))
 
+  test("a blank-valued parameter means absent, because that is how an HTML form spells 'unset'"):
+    // The filter bar serialises every named control it has, so typing one character in the search box sends
+    // `from=&until=&severity=`. Reading present-but-empty as INVALID made essentially every search launched from the
+    // UI a 400 with three bogus problems; only the landing page, which carries no parameters at all, ever worked.
+    val parsed = SearchQuery.parse("v=1&q=kitchen&from=&until=&severity=").getOrElse(fail("a submitted form"))
+    val leaves = parsed.filter.toVector.flatMap(Filter.leaves)
+    assertEquals(leaves.size, 1, s"only the text box was filled in, but got $leaves")
+    assert(leaves.exists { case Filter.FullText(_) => true; case _ => false }, leaves.toString)
+    // And it is absent from the rendered form too, or the next submit would carry a parameter nobody asked for.
+    assert(!parsed.raw.exists((_, value) => value.isEmpty), parsed.raw.toString)
+    assert(!parsed.permalink.contains("from="), parsed.permalink)
+
+  test("a blank control parameter is absent as well, not a malformed sort or limit"):
+    val parsed = SearchQuery.parse("v=1&type=a&sort=&limit=&cursor=").getOrElse(fail("a submitted form"))
+    assertEquals(parsed.sort, SortDirection.Newest)
+    assertEquals(parsed.limit, SearchRequest.DefaultLimit)
+    assertEquals(parsed.cursor, None)
+
   test("a versioned query string becomes the kernel filter it describes"):
     val parsed = SearchQuery.parse("?v=1&type=com.worxbend.iot.alarm&device=kitchen-1&severity=%3E%3Dwarn")
     val filter = parsed.map(_.filter).getOrElse(fail("expected a parsed query"))

@@ -67,6 +67,25 @@ final class Rfc3339Suite extends munit.ScalaCheckSuite:
     assert(Rfc3339.parse("").isLeft)
     assert(Rfc3339.parse("2026-07-26").isLeft)
 
+  test("a year outside RFC 3339's four digits is rejected, not carried on towards a timestamptz"):
+    // `OffsetDateTime.parse` accepts the ISO 8601 expanded year form, RFC 3339 does not, and neither does anything
+    // downstream: `?from=%2B999999999-01-01T00:00:00Z` used to reach `occurred_at >= ?` as a bind parameter.
+    assert(Rfc3339.parse("+999999999-01-01T00:00:00Z").isLeft)
+    assert(Rfc3339.parse("+10000-01-01T00:00:00Z").isLeft)
+    assert(Rfc3339.parse("-0001-01-01T00:00:00Z").isLeft)
+    assert(Rfc3339.parse("-999999999-01-01T00:00:00Z").isLeft)
+
+  test("the whole four-digit year range is still accepted"):
+    assert(Rfc3339.parse("0000-01-01T00:00:00Z").isRight)
+    assert(Rfc3339.parse("0001-01-01T00:00:00Z").isRight)
+    assert(Rfc3339.parse("9999-12-31T23:59:59.999999999Z").isRight)
+
+  test("the accepted range is exactly the range render can spell"):
+    assert(Rfc3339.inRange(OffsetDateTime.parse("9999-12-31T23:59:59Z")))
+    assert(!Rfc3339.inRange(OffsetDateTime.parse("+10000-01-01T00:00:00Z")))
+    assert(!Rfc3339.inRange(OffsetDateTime.MAX))
+    assert(!Rfc3339.inRange(OffsetDateTime.MIN))
+
   property("render then parse is the identity"):
     forAll(genTimestamp): timestamp =>
       Rfc3339.parse(Rfc3339.render(timestamp)) == Right(timestamp)

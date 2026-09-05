@@ -59,13 +59,16 @@ final class OverviewController @Inject() (cc: ControllerComponents, service: Ove
 
   def index: Action[AnyContent] = Action.async: request =>
     val range = OverviewRange.parse(request.getQueryString(OverviewRange.Key))
-    service.load(range).map {
-      // Unreachable for the three ranges the enum admits; kept so a fourth added without a matching window fails
-      // visibly here instead of rendering an empty chart that looks like a quiet system.
-      case Left(reason) =>
-        val model = Presenter.rejected(reason, Urls.Events)
-        Status(model.status)(views.html.pages.failure(model, None)(request))
-      case Right(overview) =>
-        val page = OverviewPresenter.page(overview, OffsetDateTime.now(clock))
-        Ok(views.html.pages.overview(page)(request))
-    }
+    // The rollup is four queries; a `recover` on each would be four chances to forget one. See `Unhandled`.
+    Unhandled.recovered(request, request.uri) {
+      service.load(range).map {
+        // Unreachable for the three ranges the enum admits; kept so a fourth added without a matching window fails
+        // visibly here instead of rendering an empty chart that looks like a quiet system.
+        case Left(reason) =>
+          val model = Presenter.rejected(reason, Urls.Events)
+          Status(model.status)(views.html.pages.failure(model, None)(request))
+        case Right(overview) =>
+          val page = OverviewPresenter.page(overview, OffsetDateTime.now(clock))
+          Ok(views.html.pages.overview(page)(request))
+      }
+    }(model => Status(model.status)(views.html.pages.failure(model, None)(request)))

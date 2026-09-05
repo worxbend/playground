@@ -182,6 +182,34 @@ object Fixtures:
     def insertAll(events: Vector[NewEvent]): Future[Long] =
       Future.failed(UnsupportedOperationException("ferrite is a reader"))
 
+  /** The failure mode the read path actually has: a `Future` that fails.
+    *
+    * A two-second `statement_timeout` and a pool of eight are both reachable under load, and neither is a rejection the
+    * service can see coming — which is why the interesting assertion is what the *controller* does with it, not whether
+    * the repository can fail.
+    */
+  final class FailingRepository(reason: String = "canceling statement due to statement timeout")
+      extends EventRepository:
+
+    private def refused[A]: Future[A] = Future.failed(java.sql.SQLException(reason))
+
+    def search(request: SearchRequest): Future[SearchPage] = refused
+    def facets(request: FacetRequest): Future[Facets] = refused
+    def histogram(request: HistogramRequest): Future[Vector[HistogramBucket]] = refused
+    def find(ref: EventRef): Future[Option[EventDetail]] = refused
+    def countAtMost(filter: Option[Filter], cap: Int): Future[Long] = refused
+    def insertAll(events: Vector[NewEvent]): Future[Long] = refused
+
+  /** The same, for the rollup the overview reads. */
+  final class FailingOverviewRepository extends OverviewRepository:
+
+    private def refused[A]: Future[A] = Future.failed(java.sql.SQLException("the rollup is unavailable"))
+
+    def volume(request: OverviewRequest): Future[Vector[VolumePoint]] = refused
+    def breakdown(dimension: RollupDimension, request: OverviewRequest): Future[Vector[RollupSlice]] = refused
+    def totals(request: OverviewRequest): Future[RollupTotals] = refused
+    def freshness(): Future[Option[OffsetDateTime]] = refused
+
   /** One actor system for the whole suite run.
     *
     * It is built from the real `application.conf`, which is what proves `database.search-dispatcher` exists and is

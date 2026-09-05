@@ -23,11 +23,11 @@ package com.worxbend.ferrite.web.view
 
 import com.worxbend.ferrite.overview.Overview
 import com.worxbend.ferrite.overview.OverviewRange
+import com.worxbend.ferrite.overview.OverviewService
 import com.worxbend.ferrite.search.SearchQuery
 import com.worxbend.ferrite.web.Query
 import com.worxbend.ferrite.web.Urls
 import com.worxbend.kernel.Rfc3339
-import com.worxbend.kernel.search.Severity
 import com.worxbend.persistence.repository.RollupDimension
 import com.worxbend.persistence.repository.RollupSlice
 import com.worxbend.persistence.repository.VolumePoint
@@ -58,6 +58,7 @@ object OverviewPresenter:
 
   def page(overview: Overview, now: OffsetDateTime): OverviewPage =
     val base = windowQuery(overview.window.from, overview.window.until)
+    val alerts = alertQuery(base)
     OverviewPage(
       ranges = ranges(overview.range),
       rangeLabel = overview.range.label,
@@ -70,8 +71,8 @@ object OverviewPresenter:
         panel(RollupDimension.Type, "Event types", overview.types, overview.totals.events, base),
         panel(RollupDimension.Severity, "Severity mix", overview.severities, overview.totals.events, base)
       ),
-      alerts = overview.alerts.map(Presenter.row(_, now)),
-      alertsUrl = Urls.events(base.link(Query.set(_, SearchQuery.SeverityKey, s">=$severityLabel"))),
+      alerts = overview.alerts.map(Presenter.row(_, now, alerts)),
+      alertsUrl = Urls.events(alerts.permalink),
       alertsNote =
         if overview.alerts.nonEmpty then ""
         else s"Nothing at $severityLabel or above in the last ${overview.range.label.toLowerCase}.",
@@ -114,7 +115,7 @@ object OverviewPresenter:
         // The share is the reading, not the count: "412" means nothing without the denominator, and an operator
         // comparing two days is comparing rates whether or not the page helps them.
         detail = s"${percent(errors, events)} of traffic at $severityLabel or above",
-        url = Urls.events(base.link(Query.set(_, SearchQuery.SeverityKey, s">=$severityLabel"))),
+        url = Urls.events(alertQuery(base).permalink),
         tone = if errors > 0 then Presenter.tone(Some(severityLabel)) else ""
       ),
       peak.fold(
@@ -202,15 +203,14 @@ object OverviewPresenter:
 
   /** The search one breakdown row stands for, or `None` when the grammar cannot express it.
     *
-    * Severity is the case that forces the `Option`. The filter grammar has only `SeverityAtLeast` (ADR §6.1), so a
-    * severity row means "at least this level" and a value the domain does not recognise — including the rollup's own
-    * `'none'` placeholder for events that carried no severity at all — has no expressible search. Emitting `>=none`
-    * would produce a link that 400s, which is worse than a row that is plainly not clickable.
+    * Severity is the case that forces the `Option`: the filter grammar has only `SeverityAtLeast` (ADR §6.1), so the
+    * rollup's own `'none'` placeholder for events that carried no severity has no expressible search. The guard is
+    * [[com.worxbend.ferrite.search.SearchQuery.severityAtLeast]] and not a local `Severity.parse`, because the search
+    * facet panel needs the same one and having written it twice is how that panel came to be shipped without it.
     */
   def link(dimension: RollupDimension, value: String, base: SearchQuery): Option[String] = dimension match
-    case RollupDimension.Severity =>
-      Severity.parse(value).toOption.map(level => base.link(Query.set(_, dimension.filterKey, s">=${level.label}")))
-    case _ => Option.when(value.nonEmpty)(base.toggled(dimension.filterKey, value))
+    case RollupDimension.Severity => base.severityAtLeast(value)
+    case _                        => Option.when(value.nonEmpty)(base.toggled(dimension.filterKey, value))
 
   /** The window every link on the page carries.
     *
@@ -228,6 +228,12 @@ object OverviewPresenter:
       )
     )
 
+  /** The page window narrowed to "at least an alert", which the errors tile, the alert feed's link and the rows in that
+    * feed all stand for. One value, so the three cannot describe different searches.
+    */
+  private def alertQuery(base: SearchQuery): SearchQuery =
+    SearchQuery.lenient(base.withSeverity(OverviewService.AlertLevel))
+
   /** One bucket's half-open window, replacing the page window. */
   private def bucketQuery(base: SearchQuery, bucket: OffsetDateTime, width: FiniteDuration): String =
     base.within(Rfc3339.render(bucket), Rfc3339.render(bucket.plusSeconds(width.toSeconds)))
@@ -239,7 +245,7 @@ object OverviewPresenter:
   /** What the alert tile and the alert feed mean by "error or above", spelled once so the tile, the feed's link and the
     * query that produced the rows cannot disagree.
     */
-  private val severityLabel: String = com.worxbend.ferrite.overview.OverviewService.AlertLevel.label
+  private val severityLabel: String = OverviewService.AlertLevel.label
 
   /** The staleness sentence.
     *

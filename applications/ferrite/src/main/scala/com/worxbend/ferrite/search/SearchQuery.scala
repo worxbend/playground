@@ -25,6 +25,7 @@ import com.worxbend.ferrite.web.Query
 import com.worxbend.kernel.search.Filter
 import com.worxbend.kernel.search.FilterError
 import com.worxbend.kernel.search.FilterQuery
+import com.worxbend.kernel.search.Severity
 import com.worxbend.persistence.repository.SearchRequest
 import com.worxbend.persistence.search.SortDirection
 import scala.util.Try
@@ -53,6 +54,16 @@ final case class SearchQuery(
   raw: Vector[(String, String)]
 ):
 
+  /** **Every parameter this search is spelled as**, in the order a permalink renders them: the filter half with the
+    * grammar version re-stamped, then each control whose value is not the default.
+    *
+    * The one list, and the reason this type exists rather than a bag of strings. [[permalink]] renders it and the
+    * filter bar hides whatever it has no input for, so the URL a user copies and the fields a form submits are the same
+    * set of pairs by construction. Building the hidden fields from [[raw]] instead is what silently reset `sort` and
+    * `limit` on every keystroke: `raw` is the *filter* half and never held a control at all.
+    */
+  def fields: Vector[(String, String)] = fieldsOf(identity)
+
   /** The one query-string builder. Everything the UI links to is `link` with a different edit.
     *
     * Two invariants it enforces that no call site should have to remember:
@@ -63,13 +74,15 @@ final case class SearchQuery(
     *     replaying one against an edited filter is exactly the mistake `Fingerprint` exists to catch. Editing the
     *     filter always restarts at page one.
     */
-  def link(edit: Vector[(String, String)] => Vector[(String, String)]): String =
+  def link(edit: Vector[(String, String)] => Vector[(String, String)]): String = Query.render(fieldsOf(edit))
+
+  private def fieldsOf(edit: Vector[(String, String)] => Vector[(String, String)]): Vector[(String, String)] =
     val edited = edit(raw)
     val versioned = if edited.isEmpty then edited else Query.set(edited, SearchQuery.VersionKey, FilterQuery.Version)
-    Query.render(controls(versioned))
+    controls(versioned)
 
   /** The canonical, shareable form of "what I am looking at". */
-  def permalink: String = link(identity)
+  def permalink: String = Query.render(fields)
 
   /** The same query resumed from `next`. The cursor is appended after the controls, so it is always last and a
     * hand-truncated URL degrades to page one rather than to a different filter.
@@ -88,6 +101,34 @@ final case class SearchQuery(
   /** This query narrowed to a half-open time window — what clicking a histogram bar means. */
   def within(from: String, until: String): String =
     link(pairs => Query.set(Query.set(pairs, SearchQuery.FromKey, from), SearchQuery.UntilKey, until))
+
+  /** The severity floor this search asks for, canonicalised.
+    *
+    * Read through `Severity.parse` and not off the string, so `>=warning` and `>=warn` are one floor and not two. A
+    * facet panel that compared the raw text reported its own link as unselected and could never be toggled off.
+    *
+    * `None` covers both "no severity parameter" and "a value the grammar cannot express", because nothing that reads a
+    * floor can act on the difference. What reports it is the `FilterError` the codec already produced.
+    */
+  def severityFloor: Option[Severity] =
+    raw.collectFirst { case (SearchQuery.SeverityKey, value) => value }.flatMap(SearchQuery.parseSeverity)
+
+  /** This query with the severity floor set. The only place `>=` is spelled outside the kernel codec. */
+  def withSeverity(level: Severity): String =
+    link(Query.set(_, SearchQuery.SeverityKey, s"${SearchQuery.AtLeast}${level.label}"))
+
+  /** This query with the severity floor cleared — what clicking the selected severity facet means. */
+  def withoutSeverity: String = link(Query.remove(_, SearchQuery.SeverityKey))
+
+  /** The search "at least this severity" for a severity string a **producer** chose, or `None` when it is not one.
+    *
+    * The guard, in the one place both presenters can reach it. `events.severity` is `lower(raw #>> '{data,severity}')`
+    * and the rollup stores `coalesce(severity, 'none')`, so both the facet panel and the overview's breakdown offer
+    * values the grammar has no `SeverityAtLeast` for. Emitting `>=low` produces a link that 400s, which is worse than a
+    * row that is plainly not clickable — and the two presenters each having their own copy of that sentence is how one
+    * of them came to be missing it.
+    */
+  def severityAtLeast(value: String): Option[String] = SearchQuery.parseSeverity(value).map(withSeverity)
 
   /** Non-default controls re-attached to an edited filter query. Defaults are omitted so a shared URL stays short. */
   private def controls(pairs: Vector[(String, String)]): Vector[(String, String)] =
@@ -129,6 +170,19 @@ object SearchQuery:
 
   val DefaultSort: SortDirection = SortDirection.Newest
 
+  /** How the permalink grammar spells a severity threshold. `SeverityAtLeast` is the only severity predicate there is
+    * (ADR §6.1), so a bare label means the same thing — but everything this application *emits* is prefixed, or two
+    * URLs would describe one filter and a facet could not recognise its own selection.
+    */
+  val AtLeast: String = ">="
+
+  /** A severity as a permalink value reads it: the prefix is optional and the aliases the database folds are accepted,
+    * exactly as `FilterQuery` does it. Canonical or nothing — the caller gets a `Severity` and cannot re-emit the
+    * producer's spelling by accident.
+    */
+  def parseSeverity(value: String): Option[Severity] =
+    Severity.parse(value.stripPrefix(AtLeast).trim).toOption
+
   private val NewestLabel: String = "newest"
   private val OldestLabel: String = "oldest"
 
@@ -151,6 +205,16 @@ object SearchQuery:
         else Right(value)
       }
 
+  /** The parameters a query string actually states, split into the control half and the filter half.
+    *
+    * **Present-but-empty is absent.** `FilterQuery.decode` says why — a form serialises every named control and spells
+    * "untouched" as the empty string — and applies the same rule to the filter half it is handed. It is applied here as
+    * well because it governs the *controls*, which never reach that codec, and because [[raw]] is what the filter bar
+    * echoes and the permalink renders: a pair dropped on the way in must not reappear on the way out.
+    */
+  private def stated(rawQueryString: String): (Vector[(String, String)], Vector[(String, String)]) =
+    Query.parse(rawQueryString).filterNot((_, value) => value.isEmpty).partition((key, _) => ControlKeys(key))
+
   /** Parses a raw query string (with or without a leading `?`).
     *
     * An **empty filter half means no filter, not an error.** `FilterQuery` requires an explicit `v=1` precisely so a
@@ -159,8 +223,7 @@ object SearchQuery:
     * query the UI itself produces is versioned, and only a truly empty query takes the shortcut below.
     */
   def parse(rawQueryString: String): Either[Vector[FilterError], SearchQuery] =
-    val pairs = Query.parse(rawQueryString)
-    val (control, filterPairs) = pairs.partition((key, _) => ControlKeys(key))
+    val (control, filterPairs) = stated(rawQueryString)
 
     def single(key: String): Either[Vector[FilterError], Option[String]] =
       control.collect { case (k, v) if k == key => v } match
@@ -192,17 +255,33 @@ object SearchQuery:
         f <- filter
       yield SearchQuery(f, s, l, c.filter(_.nonEmpty), filterPairs)
 
-  /** The same query string with every failure ignored: no filter, default controls, but the raw pairs preserved.
+  /** The same query string with every failure ignored: no filter, the controls it could read, the raw pairs preserved.
     *
-    * Exists for exactly one caller — the error path. ADR §6.3 requires a rejected permalink to come back *in the filter
-    * bar*, with each bad value still visible in the input that produced it, rather than as a bare error page that
-    * leaves the user holding a URL they cannot see or edit. That needs a `SearchQuery` even though there is no valid
-    * query, and this is it. It is never used to run a search: `filter` is `None` here because the parse failed, not
-    * because the user asked for everything, and running it would answer a question nobody posed.
+    * Two callers, and the same reason underneath both: something has to render a search it must not run.
+    *
+    *   - The **error path**. ADR §6.3 requires a rejected permalink to come back *in the filter bar*, with each bad
+    *     value still visible in the input that produced it, rather than as a bare error page that leaves the user
+    *     holding a URL they cannot see or edit. That needs a `SearchQuery` even though there is no valid query.
+    *   - The **detail page**, which has to reproduce the list its reader came from without re-running or re-validating
+    *     it. A filter that 400s the list must not also 400 the event somebody clicked through to.
+    *
+    * `filter` is `None` because nothing here was validated, not because the user asked for everything, so this value is
+    * never used to run a search — it would answer a question nobody posed. A control that *does* parse is kept: `sort`
+    * and `limit` are what the bar and the back-link have to carry, and defaulting them silently would drop exactly the
+    * parameter this method exists to preserve. `cursor` is deliberately not: a position inside a result set that was
+    * never produced is meaningless.
     */
   def lenient(rawQueryString: String): SearchQuery =
-    val (_, filterPairs) = Query.parse(rawQueryString).partition((key, _) => ControlKeys(key))
-    SearchQuery(None, DefaultSort, SearchRequest.DefaultLimit, None, filterPairs)
+    val (control, filterPairs) = stated(rawQueryString)
+    def one[A](key: String, default: A)(parse: String => Either[FilterError, A]): A =
+      control.collectFirst { case (k, v) if k == key => v }.flatMap(parse(_).toOption).getOrElse(default)
+    SearchQuery(
+      None,
+      one(SortKey, DefaultSort)(parseSort),
+      one(LimitKey, SearchRequest.DefaultLimit)(parseLimit),
+      None,
+      filterPairs
+    )
 
   /** The payload and extension predicates of a rendered filter bar, as dismissible chips.
     *

@@ -40,7 +40,11 @@ import scala.concurrent.Future
   *   record — safe here, because the insert is idempotent, and still wrong.
   * @param records
   *   how many records this checkpoint accounts for, cumulative. The cheapest way to tell an *idle* partition from a
-  *   *stuck* one: both have a static `nextOffset`, only one has a static count.
+  *   *stuck* one: both have a static `nextOffset`, only one has a static count. **Accounted for, not written:** the
+  *   writer counts every record whose offset this position covers, dead letters included, because that is the set
+  *   `nextOffset` is derived from and the two must describe the same batch. It is also only a diagnostic — a batch that
+  *   has to be bisected writes each half separately and the halves overlap, so treat the count as a floor on activity
+  *   rather than as an exact tally.
   */
 final case class Checkpoint(
   groupId: String,

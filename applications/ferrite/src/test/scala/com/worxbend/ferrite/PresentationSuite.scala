@@ -73,6 +73,17 @@ final class PresentationSuite extends FunSuite:
     assertEquals(Format.orAbsent(Some("")), Format.Absent)
     assertEquals(Format.orAbsent(Some("kitchen-1")), "kitchen-1")
 
+  // ------------------------------------------------------------------------------------------- query strings
+
+  test("an unescaped astral character survives the query-string codec"):
+    // `?q=🔥` is the shape a URL pasted from a chat client has. Re-encoding one UTF-16 unit at a time turned it into
+    // `??`, so the service searched for two question marks — a filter silently different from the one in the link.
+    assertEquals(Query.decode("smoke 🔥"), "smoke 🔥")
+    assertEquals(Query.decode(Query.encode("smoke 🔥")), "smoke 🔥")
+    assertEquals(Query.parse("q=%F0%9F%94%A5"), Vector("q" -> "🔥"))
+    // Still lenient: a broken escape comes back verbatim so the filter bar has something to show the user.
+    assertEquals(Query.decode("100%"), "100%")
+
   // --------------------------------------------------------------------------------------------------- rows
 
   test("severity aliases colour the way they rank, so the UI agrees with its own filter"):
@@ -83,9 +94,12 @@ final class PresentationSuite extends FunSuite:
     assertEquals(Presenter.tone(Some("not-a-severity")), Presenter.UnknownSeverity)
 
   test("a row links to a detail URL carrying both halves of the primary key"):
-    val row = Presenter.row(Fixtures.summary(), now)
+    val query = SearchQuery.parse("v=1&device=kitchen-1").getOrElse(fail("query"))
+    val row = Presenter.row(Fixtures.summary(), now, query)
     assert(row.detailUrl.startsWith(s"/events/${Fixtures.FirstUid}?"), row.detailUrl)
     assert(row.detailUrl.contains("at="), row.detailUrl)
+    // And the search it was opened from, or "Back to results" lands on an unfiltered list.
+    assert(row.detailUrl.contains("device=kitchen-1"), row.detailUrl)
     assertEquals(row.relative, "4 m ago")
 
   // ----------------------------------------------------------------------------------------------- histogram
@@ -124,16 +138,63 @@ final class PresentationSuite extends FunSuite:
     val device = Presenter.facets(Fixtures.facets, query).find(_.key == "device").getOrElse(fail("device facet"))
     val selected = device.entries.find(_.value == "kitchen-1").getOrElse(fail("kitchen-1"))
     assertEquals(selected.selected, true)
-    assert(!selected.url.contains("device=kitchen-1"), selected.url)
+    assert(!selected.url.exists(_.contains("device=kitchen-1")), selected.url.toString)
     val other = device.entries.find(_.value == "hall-2").getOrElse(fail("hall-2"))
     assertEquals(other.selected, false)
-    assert(other.url.contains("device=hall-2"), other.url)
+    assert(other.url.exists(_.contains("device=hall-2")), other.url.toString)
 
   test("severity is a threshold, not a set, so its facet link sets '>=' rather than accumulating values"):
     val query = SearchQuery.parse("v=1").getOrElse(fail("query"))
     val severity = Presenter.facets(Fixtures.facets, query).find(_.key == "severity").getOrElse(fail("severity"))
     val warn = severity.entries.find(_.value == "warn").getOrElse(fail("warn"))
-    assert(warn.url.contains("severity=%3E%3Dwarn"), warn.url)
+    assert(warn.url.exists(_.contains("severity=%3E%3Dwarn")), warn.url.toString)
+
+  test("every facet link this panel emits is a search that parses"):
+    // The severity column is `lower(raw #>> '{data,severity}')` — an arbitrary producer string. A device emitting
+    // "low" put a `low` entry in the panel whose link was `?severity=%3E%3Dlow`, and clicking it was a 400.
+    val query = SearchQuery.parse("v=1").getOrElse(fail("query"))
+    val odd = Fixtures.facets.copy(dimensions =
+      Fixtures.facets.dimensions.updated(
+        FacetDimension.Severity,
+        Vector(
+          com.worxbend.persistence.repository.FacetValue("warning", 4L),
+          com.worxbend.persistence.repository.FacetValue("low", 2L)
+        )
+      )
+    )
+    Presenter.facets(odd, query).flatMap(_.entries).flatMap(_.url).foreach { url =>
+      val parsed = SearchQuery.parse(url.dropWhile((c: Char) => c != '?').drop(1))
+      assert(parsed.isRight, s"a facet link that cannot be opened: $url (${parsed.swap.getOrElse(Vector.empty)})")
+    }
+    // And `low` is still shown and counted — it is simply not a link, exactly as the overview does it.
+    val low = Presenter
+      .facets(odd, query)
+      .find(_.key == SearchQuery.SeverityKey)
+      .flatMap(_.entries.find(_.value == "low"))
+      .getOrElse(fail("the 'low' facet value must still be visible"))
+    assertEquals(low.url, None)
+
+  test("an alias severity facet links to the canonical spelling, so it can be toggled off again"):
+    val odd = Fixtures.facets.copy(dimensions =
+      Fixtures.facets.dimensions
+        .updated(FacetDimension.Severity, Vector(com.worxbend.persistence.repository.FacetValue("warning", 4L)))
+    )
+    val query = SearchQuery.parse("v=1").getOrElse(fail("query"))
+    val entry = Presenter
+      .facets(odd, query)
+      .find(_.key == SearchQuery.SeverityKey)
+      .flatMap(_.entries.headOption)
+      .getOrElse(fail("the severity facet"))
+    val url = entry.url.getOrElse(fail("'warning' ranks, so it has an expressible search"))
+    assert(url.contains("severity=%3E%3Dwarn&") || url.endsWith("severity=%3E%3Dwarn"), url)
+    // And the same panel rendered against that link reports the entry as selected, so a second click clears it.
+    val selected = SearchQuery.parse(url.dropWhile((c: Char) => c != '?').drop(1)).getOrElse(fail("the link"))
+    val again = Presenter
+      .facets(odd, selected)
+      .find(_.key == SearchQuery.SeverityKey)
+      .flatMap(_.entries.headOption)
+      .getOrElse(fail("the severity facet"))
+    assertEquals(again.selected, true, "a selected facet that cannot be toggled off is a filter with no way out")
 
   test("capped facet counts are rendered as lower bounds"):
     val query = SearchQuery.parse("v=1").getOrElse(fail("query"))
@@ -151,9 +212,17 @@ final class PresentationSuite extends FunSuite:
     assertEquals(bar.hidden, Vector("type" -> "a", "device" -> "kitchen-1"))
     assertEquals(bar.chips.map(_.value), Vector("a", "kitchen-1"))
 
-  test("severity is shown without its '>=' prefix, because the label already says 'at least'"):
-    val query = SearchQuery.lenient("v=1&severity=>=warn")
-    assertEquals(Presenter.filterBar(query, Vector.empty).severity, "warn")
+  test("the severity dropdown resolves its selection against the canonical level, aliases included"):
+    def selected(queryString: String): Option[String] =
+      Presenter.filterBar(SearchQuery.lenient(queryString), Vector.empty).severities.find(_.selected).map(_.value)
+    assertEquals(selected("v=1&severity=>=warn"), Some(">=warn"))
+    // Every spelling `Severity.parse` accepts, and the facet panel emits, has to land on the level it means.
+    assertEquals(selected("v=1&severity=>=warning"), Some(">=warn"))
+    assertEquals(selected("v=1&severity=emerg"), Some(">=fatal"))
+    assertEquals(selected("v=1"), Some(""))
+    // A value the grammar cannot express reports as "Any" — there is no option for it — and the error beside the
+    // bar is what names it. Submitting "Any" then clears it, which is what the user is looking at.
+    assertEquals(selected("v=1&severity=>=low"), Some(""))
 
   test("each rejected parameter is reported against the input that produced it"):
     val errors = SearchQuery.parse("v=1&from=yesterday").swap.getOrElse(Vector.empty)
@@ -267,4 +336,4 @@ final class PresentationSuite extends FunSuite:
     val tags = Presenter.facets(Fixtures.facets, query).find(_.key == Presenter.TagKey).getOrElse(fail("tag facet"))
     val indoor = tags.entries.find(_.value == "indoor").getOrElse(fail("indoor"))
     assertEquals(indoor.selected, false)
-    assert(indoor.url.contains("tag=indoor"), indoor.url)
+    assert(indoor.url.exists(_.contains("tag=indoor")), indoor.url.toString)

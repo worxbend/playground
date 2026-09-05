@@ -244,6 +244,44 @@ final class TemplateSuite extends FunSuite:
       assertEquals(document.select(s"label[for=$id]").size(), 1, s"no label for #$id")
     }
 
+  // ------------------------------------------------------------------------------------------ filter round trip
+
+  /** The query string a browser would send if the user submitted the rendered bar.
+    *
+    * A form serialises every named control, so this is the whole of what the server gets back — and the only honest way
+    * to assert that the bar can reproduce the search it was rendered from. Asserting on the view model instead would
+    * miss precisely the failures that matter: a field the presenter populated and the template never rendered.
+    */
+  private def submitted(document: Document): String =
+    val controls = document.select("form#filter-form input[name], form#filter-form select[name]").asScala.toVector
+    com.worxbend.ferrite.web.Query.render(controls.map { control =>
+      val value =
+        if control.tagName() == "select" then
+          Option(control.selectFirst("option[selected]")).map(_.attr("value")).getOrElse("")
+        else control.attr("value")
+      control.attr("name") -> value
+    })
+
+  private def bar(queryString: String): Document =
+    val query = SearchQuery.parse(queryString).getOrElse(fail(s"'$queryString' did not parse"))
+    Jsoup.parse(views.html.fragments.filterbar(Presenter.filterBar(query, Vector.empty)).body)
+
+  test("submitting the filter bar reproduces the search it was rendered from"):
+    val source = "v=1&q=kitchen&device=kitchen-1&severity=%3E%3Dwarn&sort=oldest&limit=200"
+    val original = SearchQuery.parse(source).getOrElse(fail("the source query did not parse"))
+    val resubmitted = SearchQuery.parse(submitted(bar(source))).getOrElse(fail("the submitted form did not parse"))
+    assertEquals(resubmitted.filter, original.filter)
+    // `sort` and `limit` have no input of their own, so they must ride along as hidden fields. Without them a user
+    // on ?sort=oldest&limit=200 who types one character is flipped back to newest-first and 50 rows, silently.
+    assertEquals(resubmitted.sort, original.sort)
+    assertEquals(resubmitted.limit, original.limit)
+
+  test("an alias spelling of a severity survives the round trip instead of reading as 'Any'"):
+    // `warning` is accepted by Severity.parse and is what the facet panel emits from a producer string. A dropdown
+    // that compares against the canonical label only reports an applied filter as no filter.
+    val resubmitted = SearchQuery.parse(submitted(bar("v=1&severity=%3E%3Dwarning"))).getOrElse(fail("submitted"))
+    assertEquals(resubmitted.filter, SearchQuery.parse("v=1&severity=%3E%3Dwarn").getOrElse(fail("canonical")).filter)
+
   test("active filters appear as dismissible chips"):
     val document = page("v=1&device=kitchen-1", Vector(Fixtures.summary()))
     val chip = document.select(".filter-chips .chip").first()
@@ -282,7 +320,7 @@ final class TemplateSuite extends FunSuite:
   // -------------------------------------------------------------------------------------------------- detail
 
   test("the detail view shows the decoded observation and the raw CloudEvent"):
-    val detail = Presenter.detail(EventDetail(Fixtures.summary(), Fixtures.rawEvent), now, "/events")
+    val detail = Presenter.detail(EventDetail(Fixtures.summary(), Fixtures.rawEvent), now, SearchQuery.lenient("v=1"))
     val document = Jsoup.parse(views.html.pages.detail(detail)(request).body)
     assertEquals(document.select("section[aria-labelledby=observation-heading] .observation-kind").text(), "Telemetry")
     assertEquals(document.select("section[aria-labelledby=raw-heading] pre.raw-json").size(), 1)

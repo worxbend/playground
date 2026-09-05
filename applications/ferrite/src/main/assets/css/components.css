@@ -681,6 +681,16 @@ body[data-density="compact"] {
   color: var(--accent);
 }
 
+/* A facet value with no expressible search: shown, counted, and plainly not clickable. */
+.facet-entry.is-unlinked {
+  color: var(--text-muted);
+  cursor: default;
+}
+
+.facet-entry.is-unlinked:hover {
+  background: transparent;
+}
+
 .facet-value {
   overflow: hidden;
   text-overflow: ellipsis;

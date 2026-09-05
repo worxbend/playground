@@ -55,7 +55,8 @@ import scala.util.Try
   * with just the region that changed. The fragment templates are the same templates the page wraps, so there is no
   * second copy of the table to keep in sync — that single decision (ADR §8.4, implemented in [[Hx]]) is what makes htmx
   * pay for itself here rather than doubling the markup. Every response from this controller carries `Vary: HX-Request`,
-  * without exception, including the error ones.
+  * without exception, including the error ones — which is why every repository call is inside [[Unhandled.recovered]]:
+  * a `Future` that fails otherwise leaves through Play's own handler, and that response carries none of this.
   *
   * **Which fragment** is decided by the request, not by a separate endpoint:
   *
@@ -73,35 +74,38 @@ final class EventsController @Inject() (cc: ControllerComponents, service: Searc
 
   /** The list, filtered, paged and faceted. */
   def list: Action[AnyContent] = Action.async: request =>
-    SearchQuery.parse(request.rawQueryString) match
-      case Left(errors) =>
-        // The rejected permalink comes back IN the filter bar, every bad value still in the input that produced it
-        // (ADR §6.3). An error page without the bar would leave the user holding a URL they can neither see nor edit.
-        val bar = Presenter.filterBar(SearchQuery.lenient(request.rawQueryString), errors)
-        Future.successful(failure(Presenter.badQuery(errors), Some(bar), request))
-      case Right(query) =>
-        val now = OffsetDateTime.now(clock)
-        if Hx.isFragment(request) && query.cursor.isDefined then
-          service.page(query).map {
-            case Left(reason) => failure(Presenter.rejected(reason, Urls.events(query.permalink)), None, request)
-            case Right(page)  =>
-              val rows = page.rows.map(Presenter.row(_, now))
-              val more = page.nextCursor.map(cursor => Urls.events(query.continuation(cursor)))
-              Ok(views.html.fragments.rows(rows, more)).varyOnHx
-          }
-        else
-          service.search(query).map {
-            case Left(reason)   => failure(Presenter.rejected(reason, Urls.events(query.permalink)), None, request)
-            case Right(outcome) =>
-              val model = EventsPage(Presenter.filterBar(query, Vector.empty), Presenter.results(outcome, query, now))
-              if Hx.isFragment(request) then
-                // The push-url header keeps the address bar honest when the swap came from the filter bar: the URL a
-                // user copies must be the search they are looking at, not the one they arrived with.
-                Ok(views.html.fragments.results(model.results))
-                  .withHeaders(Hx.PushUrlHeader -> Urls.events(query.permalink))
-                  .varyOnHx
-              else Ok(views.html.pages.events(model)(request)).varyOnHx
-          }
+    Unhandled.recovered(request, request.uri) {
+      SearchQuery.parse(request.rawQueryString) match
+        case Left(errors) =>
+          // The rejected permalink comes back IN the filter bar, every bad value still in the input that produced it
+          // (ADR §6.3). An error page without the bar would leave the user holding a URL they can neither see nor
+          // edit.
+          val bar = Presenter.filterBar(SearchQuery.lenient(request.rawQueryString), errors)
+          Future.successful(failure(Presenter.badQuery(errors), Some(bar), request))
+        case Right(query) =>
+          val now = OffsetDateTime.now(clock)
+          if Hx.isFragment(request) && query.cursor.isDefined then
+            service.page(query).map {
+              case Left(reason) => failure(Presenter.rejected(reason, Urls.events(query.permalink)), None, request)
+              case Right(page)  =>
+                val rows = page.rows.map(Presenter.row(_, now, query))
+                val more = page.nextCursor.map(cursor => Urls.events(query.continuation(cursor)))
+                Ok(views.html.fragments.rows(rows, more)).varyOnHx
+            }
+          else
+            service.search(query).map {
+              case Left(reason)   => failure(Presenter.rejected(reason, Urls.events(query.permalink)), None, request)
+              case Right(outcome) =>
+                val model = EventsPage(Presenter.filterBar(query, Vector.empty), Presenter.results(outcome, query, now))
+                if Hx.isFragment(request) then
+                  // The push-url header keeps the address bar honest when the swap came from the filter bar: the URL
+                  // a user copies must be the search they are looking at, not the one they arrived with.
+                  Ok(views.html.fragments.results(model.results))
+                    .withHeaders(Hx.PushUrlHeader -> Urls.events(query.permalink))
+                    .varyOnHx
+                else Ok(views.html.pages.events(model)(request)).varyOnHx
+            }
+    }(failure(_, None, request))
 
   /** One event: the decoded observation and the raw CloudEvent side by side.
     *
@@ -110,17 +114,20 @@ final class EventsController @Inject() (cc: ControllerComponents, service: Searc
     * `at` is therefore a bad request and not a "search harder".
     */
   def detail(rawEventUid: String): Action[AnyContent] = Action.async: request =>
-    val back = backUrl(request)
-    reference(rawEventUid, request) match
-      case Left(reason) => Future.successful(failure(Presenter.rejected(reason, back), None, request))
-      case Right(ref)   =>
-        service.detail(ref).map {
-          case None        => failure(Presenter.notFound(back), None, request)
-          case Some(found) =>
-            val model = Presenter.detail(found, OffsetDateTime.now(clock), back)
-            if Hx.isFragment(request) then Ok(views.html.fragments.detail(model)).varyOnHx
-            else Ok(views.html.pages.detail(model)(request)).varyOnHx
-        }
+    val search = searchOf(request)
+    val back = Urls.events(search.permalink)
+    Unhandled.recovered(request, back) {
+      reference(rawEventUid, request) match
+        case Left(reason) => Future.successful(failure(Presenter.rejected(reason, back), None, request))
+        case Right(ref)   =>
+          service.detail(ref).map {
+            case None        => failure(Presenter.notFound(back), None, request)
+            case Some(found) =>
+              val model = Presenter.detail(found, OffsetDateTime.now(clock), search)
+              if Hx.isFragment(request) then Ok(views.html.fragments.detail(model)).varyOnHx
+              else Ok(views.html.pages.detail(model)(request)).varyOnHx
+          }
+    }(failure(_, None, request))
 
   private def reference(rawEventUid: String, request: RequestHeader): Either[String, EventRef] =
     for
@@ -129,11 +136,17 @@ final class EventsController @Inject() (cc: ControllerComponents, service: Searc
       at <- Rfc3339.parse(raw)
     yield EventRef(at, uid)
 
-  /** The list URL a detail page came from: this request's query string minus the key of the event being shown. Keeps
-    * the user's search alive across a drill-down instead of dumping them back on an unfiltered list.
+  /** The list a detail page came from: this request's query string minus the key of the event being shown.
+    *
+    * That reconstruction only works because [[Urls.event]] puts the search into the drill-down link in the first place;
+    * the two are one mechanism and neither is any use alone. It keeps the user's search alive across a drill-down
+    * instead of dumping them back on an unfiltered list.
+    *
+    * Read **leniently**: this page is echoing a filter, not running one, and a link whose filter the list would reject
+    * must still open the event somebody clicked through to. The rejection is the list's to report, on the way back.
     */
-  private def backUrl(request: RequestHeader): String =
-    Urls.events(Query.render(Query.remove(Query.parse(request.rawQueryString), Urls.AtParam)))
+  private def searchOf(request: RequestHeader): SearchQuery =
+    SearchQuery.lenient(Query.render(Query.remove(Query.parse(request.rawQueryString), Urls.AtParam)))
 
   /** Renders a [[Failure]] at its own status code, as a fragment or a page depending on the request.
     *
