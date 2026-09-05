@@ -48,6 +48,20 @@ final class BatchProcessorSuite extends munit.FunSuite:
 
   private def good(id: String): DecodedRecord = decoded(Fixtures.record(Fixtures.envelope(id)))
 
+  /** A record whose committable offset is the record's own, so a checkpoint assertion means something. */
+  private def at(id: String, partition: Int, offset: Long): DecodedRecord =
+    RecordDecoder(Fixtures.source, Tracing.noop.tracer).decode(
+      Fixtures.committableMessage(
+        Fixtures.record(Fixtures.envelope(id), partition, offset),
+        Fixtures.offsetFor(partition, offset)
+      )
+    )
+
+  private def poisonAt(partition: Int, offset: Long): DecodedRecord =
+    RecordDecoder(Fixtures.source, Tracing.noop.tracer).decode(
+      Fixtures.committableMessage(Fixtures.malformedRecord(partition, offset), Fixtures.offsetFor(partition, offset))
+    )
+
   private def processor(
     repository: Fixtures.RecordingRepository,
     deadLetters: Fixtures.RecordingDeadLetters,
@@ -55,6 +69,23 @@ final class BatchProcessorSuite extends munit.FunSuite:
     attempts: Int = 3
   ): BatchProcessor =
     BatchProcessor(repository, deadLetters, metrics, Fixtures.source, attempts, () => Future.unit)
+
+  /** The same processor, externalising its offsets — which is how cobalt actually runs it. */
+  private def checkpointing(
+    repository: Fixtures.RecordingRepository,
+    deadLetters: Fixtures.RecordingDeadLetters,
+    metrics: ConsumerMetrics,
+    attempts: Int = 3
+  ): BatchProcessor =
+    BatchProcessor(
+      repository,
+      deadLetters,
+      metrics,
+      Fixtures.source,
+      attempts,
+      () => Future.unit,
+      checkpoint = Some(BatchProcessor.Checkpointing(Fixtures.GroupId, Some("replica-1")))
+    )
 
   private def idOf(event: NewEvent): String = event.raw.hcursor.get[String]("id").getOrElse("?")
 
@@ -169,6 +200,96 @@ final class BatchProcessorSuite extends munit.FunSuite:
         .process(Vector(decoded(Fixtures.malformedRecord())))
         .failed
         .map(error => assertEquals(error.getMessage, "the DLQ is unavailable"))
+
+  // --- the checkpoint and the Kafka commit must describe the same position ------------------------------------------
+  //
+  // Every test below asserts one invariant: whatever offsets `process` hands to the committer, the externalised
+  // checkpoint says the same thing. Break it and `consume.checkpoint.divergence` — the gauge whose documented healthy
+  // value is zero — reports a permanent gap, and `POST /admin/consumer:restart?target=stored` rewinds the group onto
+  // records it has already dead-lettered.
+
+  test("a batch of nothing but poison still checkpoints past it"):
+    // The whole poll dead-lettered, so there is no insert to hang the offsets off — and that is exactly the batch
+    // whose position must still be recorded, because a `target=stored` restart otherwise re-consumes and
+    // re-dead-letters every one of these records, forever.
+    withTelemetry: telemetry =>
+      val repository = Fixtures.RecordingRepository(events => Future.successful(events.size.toLong))
+      val deadLetters = Fixtures.RecordingDeadLetters()
+      val batch = Vector(poisonAt(0, 7L), poisonAt(0, 8L))
+      checkpointing(repository, deadLetters, ConsumerMetrics(telemetry.registry))
+        .process(batch)
+        .map: committables =>
+          assertEquals(deadLetters.published.size, 2)
+          assertEquals(repository.stored, Fixtures.committedPositions(committables))
+          assertEquals(repository.stored, Map((Fixtures.Topic, 0) -> 9L))
+
+  test("a poison record at the top of a batch does not hold the checkpoint below it"):
+    // `max` over the writable records alone stops at the last one that happened to decode. The offsets in between
+    // are committed to Kafka regardless, so the stored position is left permanently behind the real one.
+    withTelemetry: telemetry =>
+      val repository = Fixtures.RecordingRepository(events => Future.successful(events.size.toLong))
+      val batch = Vector(at("a", 0, 0L), at("b", 0, 1L), poisonAt(0, 2L))
+      checkpointing(repository, Fixtures.RecordingDeadLetters(), ConsumerMetrics(telemetry.registry))
+        .process(batch)
+        .map: committables =>
+          assertEquals(repository.stored, Fixtures.committedPositions(committables))
+          assertEquals(repository.stored, Map((Fixtures.Topic, 0) -> 3L))
+
+  test("a partition whose entire slice was poison still gets a checkpoint row"):
+    // Grouping the writable records by partition cannot invent a partition none of them came from, so the partition
+    // that produced only dead letters disappears from the checkpoint altogether — and never reappears until a
+    // decodable record happens to arrive on it.
+    withTelemetry: telemetry =>
+      val repository = Fixtures.RecordingRepository(events => Future.successful(events.size.toLong))
+      val batch = Vector(at("a", 0, 4L), poisonAt(1, 11L), poisonAt(1, 12L))
+      checkpointing(repository, Fixtures.RecordingDeadLetters(), ConsumerMetrics(telemetry.registry))
+        .process(batch)
+        .map: committables =>
+          assertEquals(repository.stored, Fixtures.committedPositions(committables))
+          assertEquals(repository.stored, Map((Fixtures.Topic, 0) -> 5L, (Fixtures.Topic, 1) -> 13L))
+
+  test("bisection still ends at the batch's high-water mark"):
+    // The isolation path writes each half separately, so the last durable write of a bisected batch has to carry the
+    // whole batch's position — including the offsets of the record it just dead-lettered and of the poison at the top.
+    withTelemetry: telemetry =>
+      val repository = Fixtures.RecordingRepository: events =>
+        if events.exists(event => idOf(event) == "bad") then Future.failed(SQLException("check violation", "23514"))
+        else Future.successful(events.size.toLong)
+      val deadLetters = Fixtures.RecordingDeadLetters()
+      val batch = Vector(at("a", 0, 0L), at("bad", 0, 1L), at("c", 0, 2L), poisonAt(0, 3L))
+      checkpointing(repository, deadLetters, ConsumerMetrics(telemetry.registry))
+        .process(batch)
+        .map: committables =>
+          assertEquals(committables.size, 4)
+          assertEquals(deadLetters.published.size, 2, "one undecodable, one the database refused")
+          assertEquals(repository.stored, Fixtures.committedPositions(committables))
+          assertEquals(repository.stored, Map((Fixtures.Topic, 0) -> 4L))
+
+  test("an unpersistable record at the very top of a batch still moves the stored position"):
+    // The singleton dead-letter path returns without writing anything at all, so a batch that ends on a record the
+    // database refuses leaves the checkpoint one short — and the next `target=stored` restart lands straight back on
+    // the record that cannot be stored.
+    withTelemetry: telemetry =>
+      val repository = Fixtures.RecordingRepository: events =>
+        if events.exists(event => idOf(event) == "bad") then Future.failed(SQLException("bad json", "22P02"))
+        else Future.successful(events.size.toLong)
+      val batch = Vector(at("bad", 0, 5L))
+      checkpointing(repository, Fixtures.RecordingDeadLetters(), ConsumerMetrics(telemetry.registry))
+        .process(batch)
+        .map: committables =>
+          assertEquals(repository.stored, Fixtures.committedPositions(committables))
+          assertEquals(repository.stored, Map((Fixtures.Topic, 0) -> 6L))
+
+  test("a processor with no checkpoint store still writes nothing for an all-poison batch"):
+    // The suites that have no checkpoint store must not gain a round trip: with nothing to externalise, a batch that
+    // produced no rows has no reason to touch the database at all.
+    withTelemetry: telemetry =>
+      val repository = Fixtures.RecordingRepository(events => Future.successful(events.size.toLong))
+      processor(repository, Fixtures.RecordingDeadLetters(), ConsumerMetrics(telemetry.registry))
+        .process(Vector(poisonAt(0, 1L)))
+        .map: _ =>
+          assertEquals(repository.calls.get(), 0)
+          assertEquals(repository.checkpoints, Vector.empty)
 
   test("SQLSTATE classes 22 and 23 are data errors; connection and resource classes are not"):
     assert(BatchProcessor.isDataError(SQLException("bad timestamp", "22007")))

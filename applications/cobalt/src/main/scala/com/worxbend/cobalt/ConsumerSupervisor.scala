@@ -29,6 +29,8 @@ import java.util.concurrent.atomic.AtomicReference
 import org.apache.kafka.common.TopicPartition
 import scala.concurrent.ExecutionContext
 import scala.concurrent.Future
+import scala.concurrent.duration.DurationInt
+import scala.concurrent.duration.FiniteDuration
 import scala.util.Failure
 import scala.util.Success
 import scala.util.control.NonFatal
@@ -89,6 +91,28 @@ final class ConsumerSupervisor(
     */
   private val transition = Object()
 
+  /** Refuses seek coordinates naming a topic this consumer does not own.
+    *
+    * The same check the DLQ replay applies to a dead letter's recorded origin, and for the same reason — see
+    * [[ReplaySkip.foreign]]. Without it the broker accepts `alterConsumerGroupOffsets` for any topic that *exists*, so
+    * a coordinate pasted from another environment answered `200 {"committed": true}` while this group's own offsets
+    * never moved, and the consumer resumed onto the record the operator was trying to skip.
+    *
+    * **Public, and called from two places, because a dry run must refuse what the commit would refuse.** `resolve`
+    * applies it so no caller of `restart` can bypass it, and `SupervisorAdmin` applies it before the dry-run branch,
+    * which never reaches `resolve` at all — it previews from the status it already holds. A preview that echoes a
+    * coordinate the commit will reject is worse than no preview: `dryRun` defaults to true precisely so an operator
+    * checks first, and a check that says "yes" to something the real call refuses teaches them not to bother.
+    */
+  def rejectForeign(explicit: Vector[SeekOffset]): Either[String, Unit] =
+    val foreign = explicit.map(_.topic).distinct.filter(named => ReplaySkip.foreign(named, topic))
+    if foreign.isEmpty then Right(())
+    else
+      Left(
+        s"${ReplaySkip.ForeignTopic.tag}: ${foreign.map(name => s"'$name'").mkString(", ")} " +
+          s"— this consumer can only seek within '$topic'"
+      )
+
   /** The lifecycle state alone, without touching Kafka.
     *
     * Separate from [[status]] because the health probe calls it on a timer and an admin round trip per liveness check
@@ -111,8 +135,16 @@ final class ConsumerSupervisor(
       .map(rows => rows.map(row => TopicPartition(row.topic, row.partition) -> row.nextOffset).toMap)
       .recover { case NonFatal(error) => logger.warn(s"checkpoint read failed: ${error.getMessage}"); Map.empty }
 
-    stored.map: storedOffsets =>
-      val kafka = ConsumerSupervisor.quietly(logger, "kafka offsets")(readPositions()).getOrElse(Map.empty)
+    // Started here, not inside `stored.map`: the checkpoint table and the broker are different systems and neither
+    // answer feeds the other, so awaiting one before asking the other made this endpoint's worst case their *sum*
+    // when it only ever needed to be the larger of the two. That sum is what forced `statusBudget` above the poller's
+    // own interval — a probe whose slowest tick outlasts the gap between ticks.
+    val reading = Future(ConsumerSupervisor.quietly(logger, "kafka offsets")(readPositions()).getOrElse(Map.empty))
+
+    for
+      storedOffsets <- stored
+      kafka <- reading
+    yield
       val partitions = (kafka.keySet ++ storedOffsets.keySet).toList.sortBy(p => (p.topic, p.partition))
       val positions = partitions.map: partition =>
         val (committed, end) = kafka.getOrElse(partition, (None, None))
@@ -207,7 +239,7 @@ final class ConsumerSupervisor(
                 // The consumer is stopped and the seek failed: say so, and leave it stopped rather than starting it
                 // against offsets nobody chose. An operator can retry; a silent start cannot be undone.
                 fail(error)
-                Left(s"could not move offsets: ${Option(error.getMessage).getOrElse(error.getClass.getName)}")
+                Left(s"could not move offsets: ${RecordDecoder.describe(error)}")
 
   /** Resolves a [[SeekTarget]] into concrete offsets, or explains why it cannot.
     *
@@ -222,7 +254,10 @@ final class ConsumerSupervisor(
         case SeekTarget.Latest    => Right(offsets.logEnds(offsets.partitionsOf(topic)))
         case SeekTarget.Explicit  =>
           if explicit.isEmpty then Left("target=explicit needs at least one 'topic/partition/offset'")
-          else Right(explicit.map(spec => TopicPartition(spec.topic, spec.partition) -> spec.offset).toMap)
+          else
+            rejectForeign(explicit).map(_ =>
+              explicit.map(spec => TopicPartition(spec.topic, spec.partition) -> spec.offset).toMap
+            )
         case SeekTarget.Stored =>
           // Blocking on the admin path only. The alternative — threading a Future through a synchronized transition —
           // would make the lock's scope a promise chain, which is how a lock stops meaning what it says.
@@ -246,7 +281,7 @@ final class ConsumerSupervisor(
   private def materialise(): Unit =
     transitionTo(RunState.Starting)
     val handle = factory.start()
-    current.updateAndGet(s => s.copy(handle = Some(handle), generation = s.generation + 1))
+    val started = current.updateAndGet(s => s.copy(handle = Some(handle), generation = s.generation + 1))
     // The stream is watched, not awaited. `restarting` retries on failure with backoff, so this callback fires only
     // once that policy is exhausted — which is exactly the moment `failed` becomes the honest state.
     handle.completion.onComplete:
@@ -254,7 +289,7 @@ final class ConsumerSupervisor(
         // Normal completion means a drain, and `drain` has already set the state it intended. Overwriting it here
         // would turn every deliberate pause into a `stopped` a moment later.
         ()
-      case Failure(error) => fail(error)
+      case Failure(error) => failed(handle, started.generation, error)
     transitionTo(RunState.Running)
 
   private def drain(into: RunState): Unit =
@@ -274,11 +309,53 @@ final class ConsumerSupervisor(
     val updated = current.updateAndGet(s => s.copy(state = state, since = clock.instant()))
     logger.info(s"consumer is ${updated.state.name} (generation ${updated.generation})")
 
+  /** Records a failure of the stream the supervisor is running. Called under the transition lock. */
   private def fail(error: Throwable): Unit =
-    val message = Option(error.getMessage).getOrElse(error.getClass.getName)
+    val message = RecordDecoder.describe(error)
     logger.error(s"the consumer stream failed: $message", error)
-    val _ = current.updateAndGet(s =>
-      s.copy(state = RunState.Failed, since = clock.instant(), lastError = Some(message), restarts = s.restarts + 1)
+    val _ = current.updateAndGet(markFailed(message))
+
+  /** Records a stream failure **only if that stream is still the one the supervisor is running.**
+    *
+    * A handle outlives the supervisor's interest in it. [[drain]] gives up after [[ConsumerSupervisor.DrainTimeout]],
+    * logs, clears the handle and reports the consumer paused or stopped *while the old stream is still alive*; a later
+    * `resume` materialises the next generation. When the abandoned stream finally dies, its completion callback is
+    * still armed — and stamping `failed` from it marks a consumer that is committing normally as dead, on
+    * `/admin/consumer` and on `consume_running` alike, with another restart the only way out.
+    *
+    * The guard is the handle in the snapshot and not the generation number, because a generation survives being
+    * abandoned: `drain` clears the handle without bumping it. "Still in the snapshot" is exactly "still the live
+    * stream", for both the superseded case and the given-up-on-and-never-resumed one. The generation is carried only so
+    * the log line can name which stream this was.
+    *
+    * This is the only mutation of `current` that does not hold the transition lock, which is what makes it the only one
+    * that can arrive on behalf of a stream the supervisor has moved on from. Every other transition runs inside
+    * [[transition]] and therefore acts on the state it just read.
+    *
+    * **One window is left open, knowingly.** Between [[drain]]'s `Await` returning and its `handle = None`, the handle
+    * still matches, so a failure landing there is applied and then half-overwritten: `transitionTo(into)` sets the
+    * state the drain intended but leaves `lastError` set and `restarts` incremented. Closing it would mean taking the
+    * transition lock in a completion callback — a deadlock against the drain that holds it — or additionally requiring
+    * `state.consuming`, which would swallow a genuine failure arriving during a pause. A stale `lastError` beside a
+    * correct state is the smaller wrong answer. If someone later makes `drain` bump the generation, handle identity and
+    * the generation number become equivalent and the paragraph above needs rewriting.
+    */
+  private def failed(handle: ConsumerHandle, generation: Int, error: Throwable): Unit =
+    val message = RecordDecoder.describe(error)
+    val previous = current.getAndUpdate(s => if s.handle.exists(_ eq handle) then markFailed(message)(s) else s)
+    if previous.handle.exists(_ eq handle) then logger.error(s"the consumer stream failed: $message", error)
+    else
+      logger.warn(
+        s"generation $generation failed after the supervisor stopped watching it; the live consumer is " +
+          s"${previous.state.name} (generation ${previous.generation}) and is left as it is: $message"
+      )
+
+  private def markFailed(message: String)(snapshot: ConsumerSupervisor.Snapshot): ConsumerSupervisor.Snapshot =
+    snapshot.copy(
+      state = RunState.Failed,
+      since = clock.instant(),
+      lastError = Some(message),
+      restarts = snapshot.restarts + 1
     )
 
   /** Committed and end offsets in one pass, as `(committed, end)` per partition. */
@@ -311,11 +388,38 @@ object ConsumerSupervisor:
     * Longer than `ConsumerConfig.drainTimeout`, so the connector's own bound is the one that normally fires and this is
     * only the backstop for a drain that hangs entirely.
     */
-  val DrainTimeout: scala.concurrent.duration.FiniteDuration =
-    scala.concurrent.duration.Duration(60, java.util.concurrent.TimeUnit.SECONDS)
+  val DrainTimeout: FiniteDuration = 60.seconds
 
-  val StoreTimeout: scala.concurrent.duration.FiniteDuration =
-    scala.concurrent.duration.Duration(10, java.util.concurrent.TimeUnit.SECONDS)
+  val StoreTimeout: FiniteDuration = 10.seconds
+
+  /** How many admin round trips one [[ConsumerSupervisor.status]] makes, sequentially.
+    *
+    * `readPositions` asks for committed offsets, then the topic's partitions, then their log ends, each bounded by the
+    * `AdminOffsets` request timeout. Three, and sequential, because the third needs both of the first two — the log
+    * ends wanted are for the union of the topic's partitions and the ones the group has committed. The count lives
+    * beside the calls so that adding a fourth is a change to this line too; it used to be counted from the composition
+    * root, in another file, which is a count that goes wrong silently.
+    */
+  private val StatusRoundTrips: Int = 3
+
+  /** The longest one [[ConsumerSupervisor.status]] can honestly take, for a caller that has to await it.
+    *
+    * **A budget has to be able to contain the calls it wraps.** The probe's was `lag.requestTimeout` — the bound on a
+    * *single* admin call — while `status` makes [[StatusRoundTrips]] of them one after another. Under a slow broker the
+    * await therefore expired on every tick before the call it wrapped could return, and `consume.running` and
+    * `consume.checkpoint.divergence` froze: a paused consumer became indistinguishable from a crashed one exactly while
+    * somebody was looking at the dashboard.
+    *
+    * **`max` and not `+`, because the two reads run concurrently.** The checkpoint query and the broker round trips ask
+    * different systems and neither answer feeds the other, so [[ConsumerSupervisor.status]] starts both and awaits
+    * both. Summing them would price a wait that does not happen — and the sum was what pushed this budget past the lag
+    * poller's own interval, giving a slow tick time to overlap the next one.
+    *
+    * [[StoreTimeout]] is the allowance for the checkpoint read: the bound the *seek* path puts on the same query,
+    * borrowed here because the database offers no other number.
+    */
+  def statusBudget(requestTimeout: FiniteDuration): FiniteDuration =
+    requestTimeout * StatusRoundTrips max StoreTimeout
 
   /** The supervisor's whole mutable state, as one immutable value behind one reference.
     *

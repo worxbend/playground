@@ -88,6 +88,37 @@ enum ReplaySkip(val tag: String):
     */
   case BudgetExhausted extends ReplaySkip("budget-exhausted")
 
+object ReplaySkip:
+
+  /** Whether `named` is a topic this consumer does not own — the predicate behind [[ReplaySkip.ForeignTopic]].
+    *
+    * **Shared rather than repeated, because cobalt has two surfaces that take a topic name out of input it does not
+    * control** and only one of them was born with the check: a dead letter's recorded origin, and the coordinates an
+    * operator pastes into `:restart?target=explicit`. The seek path shipped without it, and the failure was silent in
+    * the worst way — Kafka alters offsets for any topic that exists, so a coordinate copied from another environment
+    * answered 200 with `"committed": true` while the group's offsets for its own topic were untouched, and the consumer
+    * resumed onto the poison record the operator was trying to skip.
+    */
+  def foreign(named: String, own: String): Boolean = named != own
+
+/** How much of the DLQ a request got to look at, and what it found there.
+  *
+  * **The scan is reported because a filtered answer can be exact and still read as the wrong thing.** A reason filter
+  * only ever matches inside the records the store fetched, so "there are no unconvertible dead letters" and "there are
+  * none among the newest two hundred" are different statements, and an operator who reads the first when the second is
+  * true stops looking. [[scanned]] says how far the answer reaches; [[truncated]] says the window ran out first.
+  *
+  * @param selected
+  *   the records the request acts on: newest-first for a [[ReplayScope.Recent]] page, named order for a
+  *   [[ReplayScope.Named]] set.
+  * @param missing
+  *   named refs the window did not contain. Non-empty refuses a named replay — see [[ReplayPlan.refusal]].
+  * @param truncated
+  *   the window filled up and the request was still short, so there may be older matches this answer excludes. Never
+  *   true of a full page, because a full page is a complete answer to "the newest N".
+  */
+final case class DlqScan(selected: Vector[DlqRecord], missing: Vector[String], scanned: Int, truncated: Boolean)
+
 /** What a replay operation was asked to act on.
   *
   * Two shapes, because an operator means two different things and they need different failure behaviour.
@@ -107,10 +138,24 @@ enum ReplayScope:
 /** A parsed, bounded replay request. Build it with [[ReplayRequest.parse]]; the fields are validated by then. */
 final case class ReplayRequest(scope: ReplayScope, dryRun: Boolean):
 
-  /** How many DLQ records the store must fetch to answer this. Both shapes are bounded before any I/O happens. */
-  def fetchLimit(maxRecords: Int): Int = scope match
+  /** How many records the caller asked for. Distinct from [[fetchLimit]] on purpose — see there. */
+  def size: Int = scope match
     case ReplayScope.Recent(limit, _) => limit
-    case ReplayScope.Named(_)         => maxRecords
+    case ReplayScope.Named(refs)      => refs.size
+
+  /** How many DLQ records the store must **read** to answer this. Bounded before any I/O happens, in every shape.
+    *
+    * **Not the same as [[size]], and conflating them was a bug.** A reason filter can only match inside the window that
+    * was read, so a filtered request has to read to the configured ceiling rather than to its page size: with a DLQ
+    * holding two hundred newer `malformed-binary` records in front of four thousand `unconvertible` ones,
+    * `?reason=unconvertible&limit=20` read twenty records, matched none, and answered 200 with an empty list — which an
+    * operator reads as "there are none". A named set is bounded by the ceiling for the same reason: the refs may name
+    * records that are not the newest.
+    */
+  def fetchLimit(maxRecords: Int): Int = scope match
+    case ReplayScope.Recent(limit, None) => limit
+    case ReplayScope.Recent(_, Some(_))  => maxRecords
+    case ReplayScope.Named(_)            => maxRecords
 
 object ReplayRequest:
 
@@ -173,15 +218,14 @@ enum ReplayDecision:
   * replay — it *is* the replay, minus the produce loop. An operator who cannot see what a replay would do will not run
   * one during an incident, which makes the tool worthless exactly when it is needed.
   *
-  * @param missing
-  *   named refs that were not among the records fetched. Non-empty means the operation is refused; see [[refusal]].
+  * @param scan
+  *   how much of the DLQ the plan was computed from. Carried through to the response so a short plan can say whether it
+  *   is short because the DLQ is, or because the fetch window ran out.
   */
-final case class ReplayPlan(
-  scope: ReplayScope,
-  dryRun: Boolean,
-  decisions: Vector[ReplayDecision],
-  missing: Vector[String]
-):
+final case class ReplayPlan(scope: ReplayScope, dryRun: Boolean, decisions: Vector[ReplayDecision], scan: DlqScan):
+
+  /** Named refs that were not among the records read. Non-empty means the operation is refused; see [[refusal]]. */
+  def missing: Vector[String] = scan.missing
 
   def replays: Vector[ReplayDecision.Replay] = decisions.collect { case replay: ReplayDecision.Replay => replay }
 
@@ -198,7 +242,14 @@ final case class ReplayPlan(
     case ReplayScope.Recent(_, _) => None
     case ReplayScope.Named(refs)  =>
       if missing.nonEmpty then
-        Some(s"${missing.size} of ${refs.size} named dead letters are not in the fetch window; nothing was published")
+        // Says which of the two it is. "Not on the DLQ" and "older than the ${scan.scanned} records this read
+        // covered" call for different next steps, and only one of them means the operator should stop looking.
+        val window =
+          if scan.truncated then s" (the newest ${scan.scanned} were searched; they may be older than that)" else ""
+        Some(
+          s"${missing.size} of ${refs.size} named dead letters are not in the fetch window$window; " +
+            "nothing was published"
+        )
       else if skips.nonEmpty then
         val reasons = skips.map(_.reason.tag).distinct.sorted.mkString(", ")
         Some(s"${skips.size} of ${refs.size} named dead letters cannot be replayed ($reasons); nothing was published")
@@ -258,32 +309,46 @@ object DeadLetterReplay:
   /** The CloudEvents attributes a listing entry reports, in the order they are useful. */
   private val Attributes: Vector[String] = Vector("id", "type", "source", "subject", "time")
 
-  /** Turns the fetched DLQ records into a complete plan.
+  /** The records a request acts on, out of one fetch window — the **only** place the DLQ is filtered.
     *
-    * `records` arrives newest-first, because "the last N dead letters" is what an operator means and the newest are the
-    * ones from the incident in progress. Publication order is the reverse: [[ReplayPlan.replays]] comes out
-    * oldest-first, so a device's events reach the topic in the order they originally did rather than backwards.
-    * Ordering *within* a partition is preserved for free — the origin key is republished unchanged, so the same
-    * partitioner sends the record to the same partition.
+    * Both operator surfaces come through here: the listing renders [[DlqScan.selected]] and [[plan]] classifies it.
+    * They used to filter separately and identically, which is how they came to share a defect — each applied its reason
+    * filter *after* the fetch bound, so the filter could only ever match inside the newest `limit` records.
+    * [[ReplayRequest.fetchLimit]] is the other half of the fix: it decides how far to read, this decides what counts.
+    *
+    * `fetched` arrives newest-first, because "the last N dead letters" is what an operator means and the newest are the
+    * ones from the incident in progress.
     */
-  def plan(records: Vector[DlqRecord], request: ReplayRequest, ownTopic: String, maxAttempts: Int): ReplayPlan =
-    val (candidates, missing) = request.scope match
+  def select(fetched: Vector[DlqRecord], request: ReplayRequest, maxRecords: Int): DlqScan =
+    val full = fetched.size >= request.fetchLimit(maxRecords)
+    request.scope match
       case ReplayScope.Recent(limit, reason) =>
-        val matching = records.filter(record => reason.forall(want => record.entry.exists(_.reason == want)))
-        (matching.take(limit), Vector.empty[String])
+        val matching = fetched.filter(record => reason.forall(want => record.entry.exists(_.reason == want)))
+        DlqScan(matching.take(limit), Vector.empty, fetched.size, full && matching.size < limit)
       case ReplayScope.Named(refs) =>
-        val byRef = records.iterator.map(record => record.ref -> record).toMap
-        (refs.flatMap(byRef.get), refs.filterNot(byRef.contains))
+        val byRef = fetched.iterator.map(record => record.ref -> record).toMap
+        val missing = refs.filterNot(byRef.contains)
+        DlqScan(refs.flatMap(byRef.get), missing, fetched.size, full && missing.nonEmpty)
+
+  /** Turns a [[select]]ed scan into a complete plan.
+    *
+    * Publication order is the reverse of selection order: [[ReplayPlan.replays]] comes out oldest-first, so a device's
+    * events reach the topic in the order they originally did rather than backwards. Ordering *within* a partition is
+    * preserved for free — the origin key is republished unchanged, so the same partitioner sends the record to the same
+    * partition.
+    */
+  def plan(scan: DlqScan, request: ReplayRequest, ownTopic: String, maxAttempts: Int): ReplayPlan =
     val ordered =
-      candidates.sortBy(record => (record.timestamp.getOrElse(Long.MinValue), record.partition, record.offset))
-    ReplayPlan(request.scope, request.dryRun, ordered.map(classify(_, ownTopic, maxAttempts)), missing)
+      scan.selected.sortBy(record => (record.timestamp.getOrElse(Long.MinValue), record.partition, record.offset))
+    ReplayPlan(request.scope, request.dryRun, ordered.map(classify(_, ownTopic, maxAttempts)), scan)
 
   /** The per-record decision. Total: every candidate becomes a `Replay` or a `Skip` with a stated reason. */
   def classify(record: DlqRecord, ownTopic: String, maxAttempts: Int): ReplayDecision =
     record.entry match
       case Left(_)           => ReplayDecision.Skip(record, ReplaySkip.Undecodable)
       case Right(deadLetter) =>
-        if deadLetter.origin.topic != ownTopic then ReplayDecision.Skip(record, ReplaySkip.ForeignTopic)
+        if ReplaySkip.foreign(deadLetter.origin.topic, ownTopic) then
+          ReplayDecision.Skip(record, ReplaySkip.ForeignTopic)
         else
           ReplayHeaders.attemptsOf(deadLetter.headers) match
             case Left(_)                            => ReplayDecision.Skip(record, ReplaySkip.BudgetExhausted)

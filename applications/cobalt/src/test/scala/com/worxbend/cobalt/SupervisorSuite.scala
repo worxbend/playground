@@ -21,7 +21,13 @@
 
 package com.worxbend.cobalt
 
+import com.worxbend.kernel.event.Topics
+import java.util.concurrent.TimeoutException
 import munit.FunSuite
+import scala.concurrent.Await
+import scala.concurrent.ExecutionContext
+import scala.concurrent.Future
+import scala.concurrent.duration.DurationInt
 
 /** The lifecycle state machine and the operator input that drives it.
   *
@@ -145,17 +151,135 @@ final class SupervisorSuite extends FunSuite:
     assertEquals(json.hcursor.get[Long]("stored").toOption, Some(140L))
     assertEquals(json.hcursor.get[Long]("lag").toOption, Some(100L))
 
+  // --- the lifecycle, driven against a scripted handle --------------------------------------------------------
+
+  /** Inline, so every transition and every completion callback runs on the test's own thread and the assertions need no
+    * polling. The supervisor performs its transition synchronously inside the lock before it returns a future, so
+    * `state` is safe to read the moment a command returns.
+    */
+  private given ExecutionContext = ExecutionContext.parasitic
+
+  private def statusOf(supervisor: ConsumerSupervisor): ConsumerStatus = Await.result(supervisor.status, 10.seconds)
+
+  test("a stream abandoned by a drain that did not finish cannot fail the consumer that replaced it"):
+    // The sequence: `pause` drains, the drain does not finish cleanly, so the supervisor logs it, clears the handle
+    // and reports `paused` while the old stream is still alive. `resume` materialises generation 2. The abandoned
+    // stream finally dies and its callback is still armed — and without a guard it stamps `failed` and a restart over
+    // a consumer that is committing normally. /admin/consumer and consume_running then report an outage that only
+    // another restart can clear, while lag is shrinking.
+    val abandoned = Fixtures.ScriptedHandle(() => Future.failed(TimeoutException("the drain did not finish")))
+    val live = Fixtures.ScriptedHandle()
+    val supervisor = Fixtures.supervisorOver(Fixtures.factoryOf(abandoned, live))
+
+    val _ = supervisor.start()
+    val _ = supervisor.pause()
+    assertEquals(supervisor.state, RunState.Paused)
+    val _ = supervisor.resume()
+    assertEquals(supervisor.state, RunState.Running)
+
+    abandoned.die(RuntimeException("the abandoned stream finally died"))
+
+    val status = statusOf(supervisor)
+    assertEquals(status.state, RunState.Running, "a superseded generation must not be able to fail the live one")
+    assertEquals(status.generation, 2)
+    assertEquals(status.restarts, 0)
+    assertEquals(status.lastError, None)
+
+  test("the live stream's own failure is still a failure"):
+    // The guard must be a guard and not a mute button. When the restart policy gives up on the stream the supervisor
+    // is actually running, `failed` with the cause is the honest state and the entire reason the callback exists.
+    val handle = Fixtures.ScriptedHandle()
+    val supervisor = Fixtures.supervisorOver(Fixtures.factoryOf(handle))
+    val _ = supervisor.start()
+
+    handle.die(IllegalStateException("the broker went away for good"))
+
+    val status = statusOf(supervisor)
+    assertEquals(status.state, RunState.Failed)
+    assertEquals(status.restarts, 1)
+    assert(status.lastError.exists(_.contains("the broker went away for good")), status.lastError)
+
+  test("an explicit seek naming a topic this consumer does not own is refused before anything stops"):
+    // Kafka alters offsets for any topic that exists, so without this the operator gets 200 and "committed": true
+    // while the group's offsets for its own topic are untouched — the consumer resumes exactly where it was, onto the
+    // poison record the seek was meant to skip, and the pipeline wedges again while the seek is believed to have
+    // worked. `ReplaySkip.ForeignTopic` is the same check on the DLQ's side; this path shipped without it.
+    val supervisor = Fixtures.supervisorOver(Fixtures.factoryOf(Fixtures.ScriptedHandle()))
+    val _ = supervisor.start()
+
+    val refused = Await.result(
+      supervisor.restart(SeekTarget.Explicit, Vector(SeekOffset(Topics.CloudEventsDlq, 0, 5000L))),
+      10.seconds
+    )
+
+    assert(refused.swap.exists(_.contains(ReplaySkip.ForeignTopic.tag)), refused)
+    assert(refused.swap.exists(_.contains(Topics.CloudEventsDlq)), refused)
+    assertEquals(supervisor.state, RunState.Running, "a coordinate this consumer does not own must not cost a drain")
+
+  test("the status budget contains the calls it wraps, and still fits inside a poller tick"):
+    // Two properties, and the defect was that they cannot both be satisfied by the same arithmetic if the reads run
+    // one after the other. The budget must exceed what `status` can take, or the probe's await expires every tick
+    // under a slow broker and the supervisor gauges freeze — a paused consumer looking exactly like a crashed one on
+    // the dashboard, precisely when somebody is watching. And it must not exceed the interval between ticks, or a slow
+    // tick overlaps the next. Summing a 10s checkpoint read onto 3x5s of broker calls gave 25s against a 20s
+    // interval; running the two concurrently makes the honest number the larger, not the total.
+    val requestTimeout = 5.seconds
+    val budget = ConsumerSupervisor.statusBudget(requestTimeout)
+
+    assert(budget >= requestTimeout * 3, s"a budget that cannot contain three sequential admin calls: $budget")
+    assert(budget >= ConsumerSupervisor.StoreTimeout, s"a budget that cannot contain the checkpoint read: $budget")
+    assertEquals(budget, 15.seconds)
+    // The default `lag.refresh-interval`, which is what the probe ticks on.
+    assert(budget < 20.seconds, s"a tick that can outlast the gap to the next tick: $budget")
+
+  test("a dry run refuses the coordinate the commit would refuse"):
+    // `dryRun` defaults to true so an operator checks before a seek costs a rebalance. That is worth nothing if the
+    // check approves what the real call rejects: the guard used to live only in `resolve`, which a dry run never
+    // reaches — it previews from the status it already holds — so `dryRun=true` echoed a foreign coordinate under
+    // `wouldSeek` and the operator learned the answer only from the call that was supposed to be safe. Worse than a
+    // missing preview, because it teaches them to skip the preview.
+    val telemetry = Fixtures.telemetry()
+    try
+      val admin = SupervisorAdmin(Fixtures.idleSupervisor, 5.seconds, SupervisorMetrics(telemetry.registry))
+      val foreign = s"${Topics.CloudEventsDlq}/0/5000"
+
+      val previewed = admin.restart(SeekTarget.Explicit.name, foreign, dryRun = true)
+      val committed = admin.restart(SeekTarget.Explicit.name, foreign, dryRun = false)
+
+      // Both refuse, both name the same rule, and neither reports a position it would move to.
+      assertEquals(previewed.status, committed.status, "a preview that disagrees with the commit is the whole defect")
+      assert(previewed.body.contains(ReplaySkip.ForeignTopic.tag), previewed.body)
+      assert(committed.body.contains(ReplaySkip.ForeignTopic.tag), committed.body)
+      assert(!previewed.body.contains("wouldSeek"), previewed.body)
+
+      // And the consumer's own topic still gets a preview, so the guard refuses only what it is for.
+      val own = admin.restart(SeekTarget.Explicit.name, s"${Fixtures.Topic}/0/7", dryRun = true)
+      assert(!own.body.contains(ReplaySkip.ForeignTopic.tag), own.body)
+    finally telemetry.close()
+
+  test("an explicit seek on the consumer's own topic still reaches the broker"):
+    // The other half of the guard: it must refuse the foreign coordinate and only the foreign coordinate. Here the
+    // resolution succeeds, the consumer is drained, and the failure that comes back is the unreachable broker's.
+    val supervisor = Fixtures.supervisorOver(Fixtures.factoryOf(Fixtures.ScriptedHandle()))
+    val _ = supervisor.start()
+
+    val own = Vector(SeekOffset(Fixtures.Topic, 0, 7L))
+    val attempted = Await.result(supervisor.restart(SeekTarget.Explicit, own), 10.seconds)
+
+    assert(attempted.swap.exists(_.startsWith("could not move offsets")), attempted)
+    assert(!supervisor.state.consuming, "the seek got as far as draining, which is what makes an alter take effect")
+
   // --- what a batch checkpoints -------------------------------------------------------------------------------
+
+  private def accounted(coordinates: (Int, Long)*): BatchProcessor.Accounted =
+    BatchProcessor.Accounted.of(coordinates.toVector.map { case (partition, offset) =>
+      Fixtures.pendingWrite("e", partition, offset).record
+    })
 
   test("a batch checkpoints the highest offset per partition, plus one"):
     // Plus one is Kafka's commit convention — the offset of the *next* record. Storing the last processed offset
     // reads identically and is off by one at every seek.
-    val records = Vector(
-      Fixtures.pendingWrite("a", partition = 0, offset = 4L),
-      Fixtures.pendingWrite("b", partition = 0, offset = 9L),
-      Fixtures.pendingWrite("c", partition = 3, offset = 2L)
-    )
-    val commit = BatchProcessor.Checkpointing("g", Some("replica-1")).commit(records)
+    val commit = BatchProcessor.Checkpointing("g", Some("replica-1")).commit(accounted(0 -> 4L, 0 -> 9L, 3 -> 2L))
     assertEquals(commit.groupId, "g")
     assertEquals(commit.owner, Some("replica-1"))
     val byPartition = commit.positions.map(p => p.partition -> p.nextOffset).toMap
@@ -165,19 +289,40 @@ final class SupervisorSuite extends FunSuite:
     // `groupedWithin` assembles a batch across partitions and does not order it by offset within one, so taking the
     // final element would checkpoint whichever record happened to arrive last — and rewind the position if that
     // record was an earlier offset.
-    val outOfOrder = Vector(
-      Fixtures.pendingWrite("a", partition = 0, offset = 9L),
-      Fixtures.pendingWrite("b", partition = 0, offset = 4L)
-    )
-    val commit = BatchProcessor.Checkpointing("g", None).commit(outOfOrder)
+    val commit = BatchProcessor.Checkpointing("g", None).commit(accounted(0 -> 9L, 0 -> 4L))
     assertEquals(commit.positions.map(_.nextOffset), Vector(10L))
 
   test("records counts the batch's own contribution, which the store then accumulates"):
-    val records = Vector(
-      Fixtures.pendingWrite("a", partition = 0, offset = 1L),
-      Fixtures.pendingWrite("b", partition = 0, offset = 2L)
-    )
-    assertEquals(BatchProcessor.Checkpointing("g", None).commit(records).positions.map(_.records), Vector(2L))
+    val commit = BatchProcessor.Checkpointing("g", None).commit(accounted(0 -> 1L, 0 -> 2L))
+    assertEquals(commit.positions.map(_.records), Vector(2L))
+
+  test("bisecting a batch keeps its offset and counts each record once"):
+    // Both halves of a bisection write the same partition, and the store ADDS `records` on conflict, so the second
+    // write cannot carry the whole batch's count — it would add the first half's records a second time, compounding
+    // at every level of the recursion. It also cannot carry only its own half's offsets: the right half need not
+    // hold the highest one, and the store's `WHERE EXCLUDED.next_offset > …` guard would then leave the stored
+    // position short of what was committed to Kafka, which is the shortfall `isolate` exists to close.
+    val whole = accounted(0 -> 1L, 0 -> 2L, 0 -> 3L, 0 -> 4L)
+    val leftRecords = Vector(1L, 2L).map(offset => Fixtures.pendingWrite("e", 0, offset).record)
+
+    val left = BatchProcessor.Accounted.of(leftRecords)
+    val right = whole.less(leftRecords)
+
+    // The batch's own position survives on the write that lands last...
+    assertEquals(right.positions.map(_.nextOffset), Vector(5L))
+    // ...and the two writes sum to the batch, not to the batch plus its left half.
+    assertEquals(left.positions.map(_.records).sum + right.positions.map(_.records).sum, 4L)
+
+  test("subtracting more than a partition contributed floors at zero rather than failing the write"):
+    // `records` is `CHECK (records >= 0)`. A drifted diagnostic must not roll back the transaction that carries the
+    // offset — that would trade a wrong number for a stalled consumer.
+    val whole = accounted(0 -> 1L)
+    val overspent = whole.less(Vector(1L, 2L, 3L).map(offset => Fixtures.pendingWrite("e", 0, offset).record))
+    assertEquals(overspent.positions.map(_.records), Vector(0L))
+    // A partition the earlier write never touched is untouched here too.
+    val twoPartitions = accounted(0 -> 1L, 1 -> 1L)
+    val onlyZeroSpent = twoPartitions.less(Vector(Fixtures.pendingWrite("e", 0, 1L).record))
+    assertEquals(onlyZeroSpent.positions.map(p => p.partition -> p.records).toMap, Map(0 -> 0L, 1 -> 1L))
 
   // --- the supervisor's own metrics -------------------------------------------------------------------------------
 

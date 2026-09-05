@@ -34,7 +34,6 @@ import com.worxbend.persistence.repository.PostgresEventRepository
 import com.zaxxer.hikari.metrics.micrometer.MicrometerMetricsTrackerFactory
 import java.util.concurrent.Executors
 import java.util.concurrent.ThreadFactory
-import java.util.concurrent.atomic.AtomicReference
 import org.apache.kafka.clients.admin.Admin
 import org.apache.pekko.Done
 import org.apache.pekko.actor.ActorSystem
@@ -118,33 +117,8 @@ object CobaltApp extends StrictLogging:
     val health = HealthChecks.create()
     val metrics = ConsumerMetrics(telemetry.registry)
     val admin = Admin.create(adminProperties(config).asJava)
-    val supervisorMetrics = SupervisorMetrics(telemetry.registry)
-
-    // A late binding rather than reordering construction: the supervisor needs the admin client the probes are
-    // built around, and the probes need a way to read the supervisor. One `var` visible in this scope alone is
-    // smaller than the alternative, which is a second admin client or a lazily-initialised holder type.
-    // An `AtomicReference` and not a captured `var`, and the difference is a real bug rather than a style
-    // preference. A mutable local captured by a closure compiles to an `ObjectRef` whose `elem` field is **not
-    // volatile**, so there is no happens-before edge between the boot thread's assignment below and the scheduled
-    // probe thread's read. The poller could observe `None` for the life of the process — and the symptom would be
-    // that `consume.running` and `consume.checkpoint.divergence` sit at their initial values forever, which are
-    // precisely the gauges somebody reaches for after a rebalance. Silent, and worse than no gauge at all.
-    val supervisorRef = AtomicReference[Option[ConsumerSupervisor]](None)
-    def supervisorReading(): Unit =
-      supervisorRef.get().foreach: active =>
-        supervisorMetrics.observe(Await.result(active.status, config.lag.requestTimeout))
-
-    val probes = Probes(
-      offsets = AdminOffsets(admin, config.lag.requestTimeout),
-      gauge = ConsumerLagGauge(telemetry.registry, config.consumer.groupId),
-      groupId = config.consumer.groupId,
-      dataSource = pools.read.get(),
-      health = health,
-      validationTimeout = database.read.validationTimeout,
-      // Deferred: the supervisor does not exist yet at this point, and the probe only ever runs it later.
-      supervisorState = Some(() => supervisorReading())
-    )
-    val poller = Probes.start(probes, config.lag.refreshInterval)
+    // Sized to the probe interval: three missed ticks is a poller that has stopped, one is a slow broker.
+    val supervisorMetrics = SupervisorMetrics(telemetry.registry, config.lag.refreshInterval * 3)
 
     // Before the consumer exists, not after. A fresh deployment of this build has whatever partitions
     // `V1__events.sql` created and nothing else, so the first batch through the stream would either fail with
@@ -184,7 +158,6 @@ object CobaltApp extends StrictLogging:
       groupId = config.consumer.groupId,
       topic = config.consumer.topic
     )
-    supervisorRef.set(Some(supervisor))
     val started = Await.result(supervisor.start(), ConsumerSupervisor.DrainTimeout)
     logger.info(s"consumer supervisor: ${started.status.state.name}")
 
@@ -198,6 +171,31 @@ object CobaltApp extends StrictLogging:
       ownTopic = config.consumer.topic,
       dlqTopic = config.consumer.dlqTopic
     )
+
+    // The probes go last, because both of the readings they take need something built above them. An earlier revision
+    // built them first and handed them an `AtomicReference` the supervisor was dropped into afterwards; the deferral
+    // was unnecessary — the admin client the probes are built around is created above and shared, so nothing here is
+    // actually circular — and it made a whole reading easy to forget. `dlq.depth` was registered and never written
+    // for exactly that reason. If a reading ever does need something constructed later, move the construction, not
+    // the reading: and if a reference must be deferred, it has to be an `AtomicReference` and not a captured `var`,
+    // because a mutable local captured by a closure compiles to a non-volatile `ObjectRef` field and the probe thread
+    // may then never observe the assignment at all.
+    val supervisorProbe = SupervisorProbe(
+      metrics = supervisorMetrics,
+      status = () => supervisor.status,
+      dlqDepth = () => deadLetterStore.depth().outstanding,
+      budget = ConsumerSupervisor.statusBudget(config.lag.requestTimeout)
+    )
+    val probes = Probes(
+      offsets = AdminOffsets(admin, config.lag.requestTimeout),
+      gauge = ConsumerLagGauge(telemetry.registry, config.consumer.groupId),
+      groupId = config.consumer.groupId,
+      dataSource = pools.read.get(),
+      health = health,
+      validationTimeout = database.read.validationTimeout,
+      supervisorState = Some(() => supervisorProbe.tick())
+    )
+    val poller = Probes.start(probes, config.lag.refreshInterval)
 
     // Boot fails here, not on the first authenticated request. Every way a verifier can be misconfigured — an unknown
     // algorithm, an HMAC algorithm with no secret, an RSA algorithm with an unparseable key — is a sentence naming the

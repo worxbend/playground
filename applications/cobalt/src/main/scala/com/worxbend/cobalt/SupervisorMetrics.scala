@@ -21,11 +21,17 @@
 
 package com.worxbend.cobalt
 
+import com.typesafe.scalalogging.StrictLogging
 import com.worxbend.observability.Meters
 import io.micrometer.core.instrument.Gauge
 import io.micrometer.core.instrument.MeterRegistry
 import io.micrometer.core.instrument.Tags
-import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
+import scala.concurrent.Await
+import scala.concurrent.Future
+import scala.concurrent.duration.DurationInt
+import scala.concurrent.duration.FiniteDuration
+import scala.util.control.NonFatal
 
 /** The consumer supervisor's own state, as metrics.
   *
@@ -37,15 +43,30 @@ import java.util.concurrent.atomic.AtomicLong
   *
   * **Gauges, not counters, and fed from a poller rather than from the transition.** A gauge set only when the state
   * changes reports the truth right up until the process restarts, at which point it reports whatever the constructor
-  * left there. Micrometer's gauge holds a weak reference to the state object and reads it at scrape time, so an
-  * `AtomicLong` updated by the same poller that already computes lag is both cheaper and more honest: it converges on
-  * the real value within one interval no matter what happened before.
+  * left there. Micrometer's gauge holds a weak reference to the state object and reads it at scrape time, so a value
+  * updated by the same poller that already computes lag is both cheaper and more honest: it converges on the real value
+  * within one interval no matter what happened before.
+  *
+  * **An unread gauge reports `NaN`, never its last value and never zero.** This is the other half of the same idea and
+  * it is a correction: these gauges used to hold their reading indefinitely, so a poller whose `Await` was timing out
+  * left `consume.running` frozen at 1 for the whole incident — the exact number an operator uses to rule the consumer
+  * *out* as the cause. Prometheus renders `NaN` and every aggregation over it drops out, so "the probe has stopped
+  * reporting" looks like absence rather than like a healthy zero. The cost is that the first scrape after a boot shows
+  * gaps until the first probe lands, which is the truth.
+  *
+  * @param freshFor
+  *   how long a reading stays believable. Comfortably more than the probe interval, because one slow tick is not an
+  *   incident; [[SupervisorProbe]]'s caller sizes it from that interval.
   */
-final class SupervisorMetrics(registry: MeterRegistry):
+final class SupervisorMetrics(
+  registry: MeterRegistry,
+  freshFor: FiniteDuration = SupervisorMetrics.DefaultFreshFor,
+  nanoTime: () => Long = () => System.nanoTime()
+):
 
-  private val running = AtomicLong(0L)
-  private val divergence = AtomicLong(0L)
-  private val dlqDepth = AtomicLong(0L)
+  private val running = SupervisorMetrics.Reading(freshFor, nanoTime)
+  private val divergence = SupervisorMetrics.Reading(freshFor, nanoTime)
+  private val dlqDepth = SupervisorMetrics.Reading(freshFor, nanoTime)
 
   gauge(Meters.ConsumeRunning, running)
   gauge(Meters.ConsumeCheckpointDivergence, divergence)
@@ -85,10 +106,69 @@ final class SupervisorMetrics(registry: MeterRegistry):
       )
       .increment()
 
-  private def gauge(name: String, state: AtomicLong): Unit =
-    val _ = Gauge.builder(name, state, (value: AtomicLong) => value.get().toDouble).register(registry)
+  private def gauge(name: String, state: SupervisorMetrics.Reading): Unit =
+    val _ = Gauge.builder(name, state, (reading: SupervisorMetrics.Reading) => reading.value).register(registry)
+
+/** The supervisor's readings, taken together on the probe's tick.
+  *
+  * **This type exists so that a registered gauge cannot go unwritten.** `dlq.depth` shipped registered and with no
+  * writer at all: `/metrics` reported a flat `0` while the DLQ filled, the dashboard panel stayed at zero, and
+  * `docs/operations.md` told the operator that gauge was how you check whether a fix worked. Nothing in the code said
+  * the wiring was missing, because a gauge with no writer looks exactly like a gauge reporting good news. Both readings
+  * now live behind one method with one caller, and `SupervisorMetricsSuite` asserts that a single [[tick]] leaves no
+  * registered gauge unread — which is the assertion whose absence let that ship.
+  *
+  * **Each reading is taken independently and neither can take the other down.** They come from different systems and
+  * the moment one of them fails is precisely the moment somebody is reading the other.
+  *
+  * @param budget
+  *   the bound on [[ConsumerSupervisor.status]], and **it has to be able to contain the calls it wraps**. `status` is a
+  *   checkpoint read followed by three sequential admin round trips, each already bounded by the admin request timeout;
+  *   a budget of one request timeout expires before the call it wraps can possibly return, so under a slow broker every
+  *   tick threw and both gauges froze — the failure the poller was introduced to prevent, reintroduced one layer up.
+  */
+final class SupervisorProbe(
+  metrics: SupervisorMetrics,
+  status: () => Future[ConsumerStatus],
+  dlqDepth: () => Long,
+  budget: FiniteDuration
+) extends StrictLogging:
+
+  def tick(): Unit =
+    reading("the consumer status")(metrics.observe(Await.result(status(), budget)))
+    reading("the dead-letter depth")(metrics.observeDlq(dlqDepth()))
+
+  /** Logged and dropped, but not hidden: the gauge this reading feeds goes stale and starts reporting `NaN`, so a
+    * reading that has stopped arriving is distinguishable from one that keeps arriving as zero.
+    */
+  private def reading(what: String)(take: => Unit): Unit =
+    try take
+    catch
+      case NonFatal(error) => logger.warn(s"$what could not be read: ${RecordDecoder.describe(error)}")
 
 object SupervisorMetrics:
+
+  /** The staleness window when nobody chooses one. Three minutes is nine of the default 20-second probe intervals —
+    * long enough that a slow tick is not a gap, short enough that an operator watching an incident is not reading a
+    * number from before it started.
+    */
+  val DefaultFreshFor: FiniteDuration = 3.minutes
+
+  /** One gauge's value together with when it was taken.
+    *
+    * Mutable state read at scrape time, which is Micrometer's model; the [[AtomicReference]] holds value and timestamp
+    * together so a scrape cannot observe a fresh timestamp beside a stale value.
+    */
+  final private[cobalt] class Reading(freshFor: FiniteDuration, nanoTime: () => Long):
+
+    private val taken = AtomicReference[Option[(Long, Long)]](None)
+
+    def set(value: Long): Unit = taken.set(Some((value, nanoTime())))
+
+    /** The reading, or `NaN` if it was never taken or is older than `freshFor`. */
+    def value: Double = taken.get() match
+      case Some((reading, at)) if nanoTime() - at <= freshFor.toNanos => reading.toDouble
+      case _                                                          => Double.NaN
 
   /** The largest gap between Kafka's committed offset and the externalised checkpoint, across partitions.
     *

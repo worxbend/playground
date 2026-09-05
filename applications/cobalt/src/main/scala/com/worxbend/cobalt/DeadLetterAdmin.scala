@@ -107,24 +107,28 @@ final class DeadLetterAdmin(
     * different on every partition, or a promise of stability the topic cannot keep. What an operator needs is the tail
     * and a filter, and both are here — anything deeper than `max-records` is a job for `kcat`, and the listing gives
     * the exact refs to feed it.
+    *
+    * **`scanned` and `truncated` are part of the answer, not decoration.** A reason filter matches inside the window
+    * that was read, so a short list means one of two very different things and the operator acts on them differently:
+    * "the DLQ has none of those" or "none in the newest N, and there may be older ones". Saying which is the whole
+    * difference between an operator reaching for `kcat` and an operator closing the tab.
     */
   def records(limit: Int, reason: String): AdminReply =
     ReplayRequest.parse(limit, reason, "", dryRun = true, config.maxRecords) match
       case Left(problem)  => AdminRoutes.json(400, Json.obj("error" -> Json.fromString(problem)))
       case Right(request) =>
         guard("read the dead-letter topic"):
-          val wanted = Option(reason).map(_.trim).filter(_.nonEmpty)
-          val fetched = store.recent(request.fetchLimit(config.maxRecords))
-          val matching = fetched.filter(record => wanted.forall(want => record.entry.exists(_.reason == want)))
+          val found = scan(request)
           AdminRoutes.json(
             200,
             Json.obj(
               "topic" -> Json.fromString(dlqTopic),
-              "limit" -> Json.fromInt(request.fetchLimit(config.maxRecords)),
-              "reason" -> wanted.fold(Json.Null)(Json.fromString),
-              "fetched" -> Json.fromInt(fetched.size),
-              "returned" -> Json.fromInt(matching.size),
-              "records" -> Json.arr(matching.map(DeadLetterReplay.render)*)
+              "limit" -> Json.fromInt(request.size),
+              "reason" -> Option(reason).map(_.trim).filter(_.nonEmpty).fold(Json.Null)(Json.fromString),
+              "scanned" -> Json.fromInt(found.scanned),
+              "truncated" -> Json.fromBoolean(found.truncated),
+              "returned" -> Json.fromInt(found.selected.size),
+              "records" -> Json.arr(found.selected.map(DeadLetterReplay.render)*)
             )
           )
 
@@ -163,11 +167,18 @@ final class DeadLetterAdmin(
           )
         else
           guard("read the dead-letter topic"):
-            val fetched = store.recent(request.fetchLimit(config.maxRecords))
-            val plan = DeadLetterReplay.plan(fetched, request, ownTopic, config.maxAttempts)
+            val plan = DeadLetterReplay.plan(scan(request), request, ownTopic, config.maxAttempts)
             plan.refusal match
               case Some(problem) => refused(plan, problem)
               case None          => if dryRun then planned(plan) else commit(plan)
+
+  /** One fetch, bounded by what the request needs to *see* rather than by what it asked for, filtered in one place.
+    *
+    * Both endpoints go through here so the bound and the filter cannot drift apart again — they were separate, and both
+    * got the ordering wrong in the same way. See [[ReplayRequest.fetchLimit]] and [[DeadLetterReplay.select]].
+    */
+  private def scan(request: ReplayRequest): DlqScan =
+    DeadLetterReplay.select(store.recent(request.fetchLimit(config.maxRecords)), request, config.maxRecords)
 
   /** A dry run: the plan, nothing published, and the operation counted as [[Meters.Outcomes.Skipped]]. */
   private def planned(plan: ReplayPlan): AdminReply =
@@ -240,6 +251,8 @@ final class DeadLetterAdmin(
             )
           case ReplayScope.Named(refs) =>
             Json.obj("kind" -> Json.fromString("named"), "refs" -> Json.arr(refs.map(Json.fromString)*))),
+      "scanned" -> Json.fromInt(plan.scan.scanned),
+      "truncated" -> Json.fromBoolean(plan.scan.truncated),
       "selected" -> Json.fromInt(plan.decisions.size),
       "replayable" -> Json.fromInt(plan.replays.size),
       "published" -> Json.fromInt(outcome.published.size),

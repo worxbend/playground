@@ -85,6 +85,11 @@ final class SupervisorAdmin(
             // otherwise get a successful response that silently did something else with the pipeline.
             Left(s"offsets were supplied but target is '${seekTarget.name}'; use target=explicit or drop them")
           else Right(Vector.empty)
+        // Here rather than only in `resolve`, because the dry run never reaches `resolve` — it previews from the
+        // status it already holds. Validating in the request means both branches refuse the same coordinates, which
+        // is the whole point of a `dryRun` that defaults to true: a preview that approves what the commit rejects
+        // teaches an operator to skip the preview.
+        _ <- supervisor.rejectForeign(explicit)
       yield (seekTarget, explicit)
 
     request match

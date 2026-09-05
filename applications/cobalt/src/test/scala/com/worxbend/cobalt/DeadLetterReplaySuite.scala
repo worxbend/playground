@@ -44,6 +44,12 @@ final class DeadLetterReplaySuite extends munit.FunSuite:
   private def letter(id: String, partition: Int = 0, offset: Long = 0L) =
     Fixtures.deadLetter(Fixtures.record(Fixtures.envelope(id), partition, offset))
 
+  /** Selection and planning, in the order the endpoints run them. One filter, one bound, one place — see
+    * `DeadLetterReplay.select`.
+    */
+  private def planOf(records: Vector[DlqRecord], request: ReplayRequest, maxRecords: Int = MaxRecords): ReplayPlan =
+    DeadLetterReplay.plan(DeadLetterReplay.select(records, request, maxRecords), request, Fixtures.Topic, MaxAttempts)
+
   // --- bounding -----------------------------------------------------------------------------------------------
 
   test("a limit over the ceiling is refused, not silently clamped"):
@@ -83,6 +89,36 @@ final class DeadLetterReplaySuite extends munit.FunSuite:
       Right(ReplayScope.Recent(5, None))
     )
 
+  test("a filtered request reads to the ceiling; an unfiltered one only reads its page"):
+    // The bound and the filter have to agree about which comes first. Filtering after the bound is exactly why
+    // ?reason=unconvertible could only ever match inside the newest `limit` records, and answered "none" otherwise.
+    val filtered = ReplayRequest(ReplayScope.Recent(20, Some("unconvertible")), dryRun = true)
+    val page = ReplayRequest(ReplayScope.Recent(20, None), dryRun = true)
+    assertEquals(filtered.fetchLimit(MaxRecords), MaxRecords)
+    assertEquals(page.fetchLimit(MaxRecords), 20)
+    assertEquals(filtered.size, 20, "how many to read and how many were asked for are different questions")
+
+  test("a scan that filled its window and came up short says so"):
+    val wall = (1 to 4).toVector.map(i => Fixtures.dlqRecord(letter(s"m$i", offset = i.toLong), offset = i.toLong))
+    val scan = DeadLetterReplay.select(wall, ReplayRequest(ReplayScope.Recent(2, Some("x")), dryRun = true), 4)
+    assertEquals(scan.selected, Vector.empty)
+    assertEquals(scan.scanned, 4)
+    assert(scan.truncated, "the window filled and the request was still short, so older matches may exist")
+
+  test("a full page is a complete answer and is never reported as truncated"):
+    val page = (1 to 2).toVector.map(i => Fixtures.dlqRecord(letter(s"m$i", offset = i.toLong), offset = i.toLong))
+    val scan = DeadLetterReplay.select(page, ReplayRequest(ReplayScope.Recent(2, None), dryRun = true), 4)
+    assertEquals(scan.selected.size, 2)
+    assert(!scan.truncated, "a full page answers 'the newest N' completely, however much is behind it")
+
+  test("a named ref the window did not reach is refused with the size of the window"):
+    // "not on the DLQ" and "older than the records this read covered" call for different next steps, and only one of
+    // them means the operator should stop looking.
+    val present = Fixtures.dlqRecord(letter("a", offset = 1L), offset = 1L)
+    val request = ReplayRequest(ReplayScope.Named(Vector(present.ref, "missing/0/9")), dryRun = false)
+    val plan = planOf(Vector(present), request, maxRecords = 1)
+    assert(plan.refusal.exists(_.contains("the newest 1 were searched")), plan.refusal)
+
   // --- selection ----------------------------------------------------------------------------------------------
 
   test("the newest N are selected, but they are published oldest first"):
@@ -94,7 +130,7 @@ final class DeadLetterReplaySuite extends munit.FunSuite:
       Fixtures.dlqRecord(letter("a", offset = 1L), offset = 1L, timestamp = 100L)
     )
     val request = ReplayRequest(ReplayScope.Recent(2, None), dryRun = true)
-    val plan = DeadLetterReplay.plan(records, request, Fixtures.Topic, MaxAttempts)
+    val plan = planOf(records, request)
     assertEquals(plan.replays.map(_.deadLetter.origin.offset), Vector(2L, 3L))
 
   test("a reason filter keeps only that category, and drops records that have no category at all"):
@@ -108,27 +144,27 @@ final class DeadLetterReplaySuite extends munit.FunSuite:
     )
     val request = ReplayRequest(ReplayScope.Recent(10, Some("unconvertible")), dryRun = true)
     val records = Vector(malformed, unconvertible, Fixtures.unreadableDlqRecord(offset = 3L))
-    val plan = DeadLetterReplay.plan(records, request, Fixtures.Topic, MaxAttempts)
+    val plan = planOf(records, request)
     assertEquals(plan.decisions.size, 1)
     assertEquals(plan.replays.map(_.deadLetter.detail), Vector("y"))
 
   test("a named ref that is not in the fetch window refuses the whole operation"):
     val present = Fixtures.dlqRecord(letter("a", offset = 1L), offset = 1L)
     val request = ReplayRequest(ReplayScope.Named(Vector(present.ref, "missing/0/9")), dryRun = false)
-    val plan = DeadLetterReplay.plan(Vector(present), request, Fixtures.Topic, MaxAttempts)
+    val plan = planOf(Vector(present), request)
     assertEquals(plan.missing, Vector("missing/0/9"))
     assert(plan.refusal.isDefined, "one absent ref must refuse the whole named set")
 
   test("a named ref that cannot be replayed also refuses the whole operation"):
     val unreadable = Fixtures.unreadableDlqRecord(offset = 1L)
     val request = ReplayRequest(ReplayScope.Named(Vector(unreadable.ref)), dryRun = false)
-    val plan = DeadLetterReplay.plan(Vector(unreadable), request, Fixtures.Topic, MaxAttempts)
+    val plan = planOf(Vector(unreadable), request)
     assert(plan.refusal.exists(_.contains("undecodable")), plan.refusal)
 
   test("a recent selection never refuses — a skipped record is an answer, not a failure"):
     val records = Vector(Fixtures.unreadableDlqRecord(offset = 1L), Fixtures.dlqRecord(letter("a"), offset = 2L))
     val request = ReplayRequest(ReplayScope.Recent(10, None), dryRun = false)
-    val plan = DeadLetterReplay.plan(records, request, Fixtures.Topic, MaxAttempts)
+    val plan = planOf(records, request)
     assertEquals(plan.refusal, None)
     assertEquals(plan.skips.map(_.reason), Vector(ReplaySkip.Undecodable))
     assertEquals(plan.replays.size, 1)

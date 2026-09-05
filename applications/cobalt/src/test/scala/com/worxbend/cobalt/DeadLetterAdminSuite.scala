@@ -65,6 +65,17 @@ final class DeadLetterAdminSuite extends munit.FunSuite:
   private def dlq(id: String, offset: Long, timestamp: Long): DlqRecord =
     Fixtures.dlqRecord(letter(id, offset), offset = offset, timestamp = timestamp)
 
+  /** A dead letter of the *other* reason, used to build the wall of newer records a reason filter has to see past. */
+  private def malformed(id: String, offset: Long): DlqRecord =
+    Fixtures.dlqRecord(
+      Fixtures.deadLetter(
+        Fixtures.record(Fixtures.envelope(id), offset = offset),
+        DecodeFailure.MalformedBinary("the headers are not a CloudEvent")
+      ),
+      offset = offset,
+      timestamp = offset
+    )
+
   // --- inspection ---------------------------------------------------------------------------------------------
 
   test("the summary reports the depth as a sum and says it is an upper bound"):
@@ -111,8 +122,42 @@ final class DeadLetterAdminSuite extends munit.FunSuite:
       )
     )
     val body = json(admin(store, SimpleMeterRegistry()).records(10, "unconvertible"))
-    assertEquals(body.get[Int]("fetched").toOption, Some(2))
+    assertEquals(body.get[Int]("scanned").toOption, Some(2))
     assertEquals(body.get[Int]("returned").toOption, Some(1))
+
+  test("a reason filter reads past the page size, because a filter applied after the bound cannot match"):
+    // The DLQ holds a wall of newer malformed-binary records in front of the unconvertible ones the operator wants.
+    // Fetching `limit` and filtering afterwards answers {"returned": 0} with a 200, which reads as "there are no
+    // unconvertible dead letters" — and the operator stops looking.
+    val newest = (1 to 8).toVector.map(i => malformed(s"m$i", i.toLong + 100L))
+    val store = Fixtures.StubDeadLetterStore(records = newest ++ Vector(dlq("u1", 2L, 2L), dlq("u2", 1L, 1L)))
+    val body = json(admin(store, SimpleMeterRegistry()).records(3, "unconvertible"))
+    assertEquals(body.get[Int]("returned").toOption, Some(2))
+    assertEquals(store.limits.peek(), config.maxRecords, "a filtered read is bounded by the ceiling, not by the page")
+
+  test("a filtered read that ran out of window says so rather than reporting an empty DLQ"):
+    // "we looked at ten and found none" is honest; "0 records" is not, and the difference is what decides whether an
+    // operator reaches for kcat or closes the tab.
+    val store = Fixtures.StubDeadLetterStore(records = (1 to 12).toVector.map(i => malformed(s"m$i", i.toLong)))
+    val body = json(admin(store, SimpleMeterRegistry()).records(3, "unconvertible"))
+    assertEquals(body.get[Int]("returned").toOption, Some(0))
+    assertEquals(body.get[Int]("scanned").toOption, Some(config.maxRecords))
+    assertEquals(body.get[Boolean]("truncated").toOption, Some(true))
+
+  test("a read that saw the whole DLQ is not reported as truncated"):
+    val store = Fixtures.StubDeadLetterStore(records = Vector(malformed("m", 2L), dlq("u", 1L, 1L)))
+    val body = json(admin(store, SimpleMeterRegistry()).records(3, "unconvertible"))
+    assertEquals(body.get[Int]("returned").toOption, Some(1))
+    assertEquals(body.get[Boolean]("truncated").toOption, Some(false))
+
+  test("a reason-scoped replay is bounded by the ceiling too, not by how many it was asked to publish"):
+    // Same defect on the replay path: `plan` filtered the fetch window, so a reason-scoped replay silently published
+    // fewer records than it was asked for and reported that as a success.
+    val newest = (1 to 8).toVector.map(i => malformed(s"m$i", i.toLong + 100L))
+    val store = Fixtures.StubDeadLetterStore(records = newest ++ Vector(dlq("u1", 2L, 200L), dlq("u2", 1L, 100L)))
+    val body = json(admin(store, SimpleMeterRegistry()).replay(2, "unconvertible", "", dryRun = false))
+    assertEquals(body.get[Int]("published").toOption, Some(2))
+    assertEquals(store.published.size, 2)
 
   // --- the dry-run / commit split -----------------------------------------------------------------------------
 

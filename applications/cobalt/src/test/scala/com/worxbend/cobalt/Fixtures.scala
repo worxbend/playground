@@ -38,6 +38,7 @@ import com.worxbend.kernel.search.Filter
 import com.worxbend.observability.Telemetry
 import com.worxbend.observability.TelemetryConfig
 import com.worxbend.observability.Tracing
+import com.worxbend.persistence.repository.CheckpointCommit
 import com.worxbend.persistence.repository.CheckpointWrite
 import com.worxbend.persistence.repository.EventDetail
 import com.worxbend.persistence.repository.EventRef
@@ -68,6 +69,7 @@ import scala.concurrent.ExecutionContext
 import scala.concurrent.Future
 import scala.concurrent.Promise
 import scala.concurrent.duration.DurationInt
+import scala.concurrent.duration.FiniteDuration
 import scala.jdk.CollectionConverters.*
 
 /** Hand-built doubles for everything the consumer talks to.
@@ -152,6 +154,19 @@ object Fixtures:
   def offsetOf(committable: Committable): Long = committable match
     case offset: CommittableOffset => offset.partitionOffset.offset
     case _                         => -1L
+
+  /** Where Kafka's committed offset would land, per partition, given the offsets a batch handed to the committer.
+    *
+    * The externalised checkpoint has to equal this, partition for partition — that equality is what makes
+    * `consume.checkpoint.divergence` mean anything, and asserting it is cheaper than asserting the two halves apart.
+    */
+  def committedPositions(committables: Vector[Committable]): Map[(String, Int), Long] =
+    committables
+      .collect { case offset: CommittableOffset => offset.partitionOffset }
+      .groupBy(position => (position.key.topic, position.key.partition))
+      .view
+      .mapValues(_.map(_.offset).max + 1L)
+      .toMap
 
   def committableMessage(
     record: ConsumerRecord[String, Array[Byte]],
@@ -240,10 +255,19 @@ object Fixtures:
     def find(ref: EventRef): Future[Option[EventDetail]] = unused
     def countAtMost(filter: Option[Filter], cap: Int): Future[Long] = unused
 
-  /** Records every batch it was handed and answers with `respond`. */
-  final class RecordingRepository(respond: Vector[NewEvent] => Future[Long]) extends WriteOnlyRepository:
+  /** Records every batch it was handed and answers with `respond`.
+    *
+    * A [[com.worxbend.persistence.repository.CheckpointingWriter]] as well, because the production repository is one
+    * and [[BatchProcessor]] picks its write path by matching on that type. A double that were not one would exercise
+    * the fallback branch in every test and leave the checkpointed path — the one carrying the at-least-once invariant —
+    * covered nowhere.
+    */
+  final class RecordingRepository(respond: Vector[NewEvent] => Future[Long])
+      extends WriteOnlyRepository
+      with com.worxbend.persistence.repository.CheckpointingWriter:
 
     private val queue: ConcurrentLinkedQueue[Vector[NewEvent]] = ConcurrentLinkedQueue[Vector[NewEvent]]()
+    private val commits: ConcurrentLinkedQueue[CheckpointCommit] = ConcurrentLinkedQueue[CheckpointCommit]()
     val calls: AtomicInteger = AtomicInteger(0)
 
     def insertAll(events: Vector[NewEvent]): Future[Long] =
@@ -251,7 +275,34 @@ object Fixtures:
       val _ = calls.incrementAndGet()
       respond(events)
 
+    /** Records the commit only once the insert has succeeded, because that is when the real transaction commits.
+      *
+      * Recording the *attempt* would let a checkpoint that rolled back count as a stored position, which is precisely
+      * the confusion these tests exist to catch.
+      */
+    def insertAllCheckpointed(events: Vector[NewEvent], commit: CheckpointCommit): Future[Long] =
+      given ExecutionContext = ExecutionContext.parasitic
+      insertAll(events).map: rows =>
+        val _ = commits.add(commit)
+        rows
+
     def batches: Vector[Vector[NewEvent]] = queue.asScala.toVector
+
+    /** Every checkpoint this repository was asked to commit, in the order it was asked. */
+    def checkpoints: Vector[CheckpointCommit] = commits.asScala.toVector
+
+    /** The highest `nextOffset` per partition across every checkpoint, which is where the group would resume.
+      *
+      * The store enforces monotonicity in SQL, so "where would a `target=stored` restart land" is the maximum and not
+      * the last write — and that is the number the divergence gauge compares against Kafka.
+      */
+    def stored: Map[(String, Int), Long] =
+      checkpoints
+        .flatMap(_.positions)
+        .groupBy(position => (position.topic, position.partition))
+        .view
+        .mapValues(_.map(_.nextOffset).max)
+        .toMap
 
   /** A `Telemetry` with a no-op tracer and a real Prometheus registry, so meters can be asserted on without exporting
     * anything anywhere.
@@ -272,6 +323,62 @@ object Fixtures:
       com.worxbend.persistence.repository.NewEvent.from(message).fold(problem => sys.error(problem), identity)
     )
 
+  /** A [[ConsumerHandle]] whose drain outcome is fixed up front and whose stream dies when the test says so.
+    *
+    * The supervisor's interesting transitions are the ones where a handle outlives the supervisor's interest in it — a
+    * drain that did not finish cleanly, then a resume, then the abandoned stream failing. None of that is reachable
+    * unless the test decides *when* the old stream dies, which is what [[die]] is for.
+    */
+  final class ScriptedHandle(
+    drainOutcome: () => Future[org.apache.pekko.Done] = () => Future.successful(org.apache.pekko.Done)
+  ) extends ConsumerHandle:
+
+    private val done: Promise[org.apache.pekko.Done] = Promise[org.apache.pekko.Done]()
+
+    def drain(): Future[org.apache.pekko.Done] = drainOutcome()
+
+    def completion: Future[org.apache.pekko.Done] = done.future
+
+    /** Ends the stream the way [[ConsumerStream.restarting]] giving up ends it. */
+    def die(error: Throwable): Unit =
+      val _ = done.failure(error)
+
+  /** Hands out `handles` in materialisation order, and refuses to invent one it was not given.
+    *
+    * Refusing matters: a test that asserts "generation 2 is live" is worthless if an unexpected third materialisation
+    * quietly produced a fresh handle instead of failing.
+    */
+  def factoryOf(handles: ConsumerHandle*): ConsumerFactory =
+    val remaining = ConcurrentLinkedQueue[ConsumerHandle](handles.asJava)
+    () =>
+      Option(remaining.poll()).getOrElse(throw IllegalStateException("the supervisor asked for an unscripted stream"))
+
+  /** A supervisor over a caller-supplied factory, with no broker and no checkpoints behind it.
+    *
+    * `adminTimeout` is a millisecond because every lifecycle command ends in a `status` and `status` makes three admin
+    * round trips against a bootstrap address that does not answer. All three are best-effort on that path, so failing
+    * them instantly changes nothing a transition can observe and saves the suite a connect timeout per command.
+    */
+  def supervisorOver(
+    factory: ConsumerFactory,
+    adminTimeout: FiniteDuration = 1.millisecond
+  )(using ExecutionContext): ConsumerSupervisor =
+    val checkpoints = new com.worxbend.persistence.repository.CheckpointStore:
+      def record(groupId: String, owner: Option[String], positions: Vector[CheckpointWrite])(using DbTx): Unit = ()
+      def load(groupId: String): Future[Vector[com.worxbend.persistence.repository.Checkpoint]] =
+        Future.successful(Vector.empty)
+      def clear(groupId: String): Future[Int] = Future.successful(0)
+    ConsumerSupervisor(
+      factory = factory,
+      offsets = AdminOffsets(
+        org.apache.kafka.clients.admin.Admin.create(java.util.Map.of("bootstrap.servers", "127.0.0.1:1")),
+        adminTimeout
+      ),
+      checkpoints = checkpoints,
+      groupId = "test-group",
+      topic = Topic
+    )
+
   /** A supervisor whose stream never actually starts, and whose Kafka and checkpoint lookups answer nothing.
     *
     * For suites that need a supervisor to *exist* rather than to run — the admin-path constants, the route wiring. The
@@ -279,21 +386,4 @@ object Fixtures:
     * in `CobaltIngestIT`.
     */
   def idleSupervisor(using ExecutionContext): ConsumerSupervisor =
-    val handle = new ConsumerHandle:
-      def drain(): Future[org.apache.pekko.Done] = Future.successful(org.apache.pekko.Done)
-      def completion: Future[org.apache.pekko.Done] = Promise[org.apache.pekko.Done]().future
-    val checkpoints = new com.worxbend.persistence.repository.CheckpointStore:
-      def record(groupId: String, owner: Option[String], positions: Vector[CheckpointWrite])(using DbTx): Unit = ()
-      def load(groupId: String): Future[Vector[com.worxbend.persistence.repository.Checkpoint]] =
-        Future.successful(Vector.empty)
-      def clear(groupId: String): Future[Int] = Future.successful(0)
-    ConsumerSupervisor(
-      factory = () => handle,
-      offsets = AdminOffsets(
-        org.apache.kafka.clients.admin.Admin.create(java.util.Map.of("bootstrap.servers", "127.0.0.1:1")),
-        1.second
-      ),
-      checkpoints = checkpoints,
-      groupId = "test-group",
-      topic = Topic
-    )
+    supervisorOver(() => ScriptedHandle(), 1.second)
