@@ -7,8 +7,8 @@ The framework is John Ousterhout's *A Philosophy of Software Design*. Rather tha
 translates its principles into **this** codebase, names the places we already follow them, and — where we don't —
 says so.
 
-> **Read these too, and don't expect them repeated here.** [`CLAUDE.md`](CLAUDE.md) is the operating manual:
-> commands, toolchain constraints, compiler flags, per-service rules. [The maintainer's
+> **Read these too, and don't expect them repeated here.** [Development](docs/development.md) is the operating
+> manual: commands, the two test tiers, toolchain constraints, compiler flags. [The maintainer's
 > handbook](docs/architecture/maintainers.md) has the recipes and the trap catalogue. [The class
 > index](docs/architecture/classes.md) is the type-by-type map. Duplicated documentation goes stale in one copy
 > and misleads; this page links instead.
@@ -183,8 +183,8 @@ first would have shipped a metric that lied.
 
 ### 8. Comments describe what isn't obvious from the code
 
-`CLAUDE.md` already sets the register — *document **why**, not what* — and that is exactly this principle. What
-follows is how to apply it.
+This codebase documents **why**, not what — the register every Scaladoc here is written in, and exactly this
+principle. What follows is how to apply it.
 
 **Write the interface comment first.** Before the body. It's a design tool: if you can't describe a method
 simply and completely, the method is wrong, and you've learned that before writing it rather than after. Comments

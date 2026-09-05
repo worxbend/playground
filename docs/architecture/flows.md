@@ -147,12 +147,18 @@ sequenceDiagram
     Note over Q: the dead letter is itself a CloudEvent, carrying reason, detail,<br/>the origin coordinates and the original value bytes and headers verbatim
     Q-->>P: ack
 
-    P->>G: the rest of the batch, ON CONFLICT DO NOTHING
+    P->>G: the rest of the batch + the checkpoint for the WHOLE batch, one transaction
     G-->>P: rows written
     P-->>M: committables for the WHOLE batch, poison record included
     M->>B: commit
     Note over M,B: the one case where an offset moves past an event that was<br/>never persisted. Defensible only because the DLQ record is durable<br/>and carries why, where and what.
 ```
+
+The checkpoint in step 9 covers the poison record's offset too, and that is not incidental: `process` hands the
+committer a `Committable` for every record in the batch, so anything the checkpoint leaves out becomes permanent
+`consume_checkpoint_divergence` and a `restart?target=stored` that rewinds onto records already on the DLQ. A batch
+that dead-lettered *everything* therefore still writes a checkpoint, with no rows beside it —
+`BatchProcessor.Accounted` is the type that keeps the two sets from drifting apart.
 
 A record the *database* rejects follows the same road by a longer route. `BatchProcessor` retries the whole batch
 first — a database blip is not a data problem — then bisects, halving until the failure is attributed to one record,
@@ -178,10 +184,11 @@ sequenceDiagram
 
     O->>L: POST /admin/dlq:replay?limit=50<br/>Bearer with the write scope
     Note over L: dryRun defaults to TRUE at the route, so the shape that<br/>publishes takes one extra deliberate keystroke
-    L->>S: recent(fetchLimit)
+    L->>S: recent(request.fetchLimit) — the CEILING when a reason filter is in play,<br/>because a filter applied after the bound cannot match past it
     S->>Q: poll newest-first
     Q-->>S: DlqRecords
     S-->>L: Vector[DlqRecord]
+    Note over L: DeadLetterReplay.select filters and bounds ONCE, for both endpoints,<br/>and reports scanned + truncated so a short answer says which kind it is
     Note over L: DeadLetterReplay.plan classifies every candidate:<br/>Undecodable, ForeignTopic, BudgetExhausted, or Replay(attempt = n+1)
     L-->>O: 200 with the full plan. Nothing was published.
 
@@ -205,7 +212,9 @@ sequenceDiagram
 
 Three bounds are worth naming because they are what keep this endpoint from being a general-purpose producer:
 `ForeignTopic` refuses a dead letter whose origin topic is not the one this consumer owns (the destination is read out
-of the record's own payload); `max-records` caps one operation; and `ReplayHeaders.Attempt` caps the poison loop at
+of the record's own payload) — `ReplaySkip.foreign` is that check, and `ConsumerSupervisor.resolve` applies the same one
+to an explicit seek coordinate, which is the other place a topic name arrives from input cobalt does not control;
+`max-records` caps one operation; and `ReplayHeaders.Attempt` caps the poison loop at
 `max-attempts` generations, because a record that fails again lands back on the DLQ under a *new* key and compaction
 does nothing to stop it accumulating.
 

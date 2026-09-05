@@ -188,7 +188,7 @@ The largest application, because it owns both a stream and the API that controls
 | `ConsumerStream` | The Pekko Streams graph: consume → decode → batch → write → **commit**. The committer is downstream of the write, and that ordering is at-least-once delivery. |
 | `EventConsumer` | The consumer's lifecycle around that graph. |
 | `RecordDecoder` | Record → `Observed`, or a `DecodeFailure` routed to the DLQ. Decoding and refinement are separate steps. |
-| `BatchProcessor` | The batched write, with a `Checkpointing` variant that writes rows and the offset in one transaction. |
+| `BatchProcessor` | The batched write, with a `Checkpointing` variant that writes rows and the offset in one transaction. `Accounted` is the offsets one write is answerable for — built from every record in the batch, dead letters included, so the checkpoint and the Kafka commit cannot describe different positions. |
 | `ConsumerMetrics` | Throughput, decode duration, batch shape. |
 
 ### The supervisor
@@ -199,7 +199,7 @@ The largest application, because it owns both a stream and the API that controls
 | `ConsumerHandle`, `ConsumerFactory` | The running stream and how to make a new one. |
 | `RunState`, `ConsumerStatus`, `SeekTarget`, `SeekOffset`, `LifecycleResult` | The supervisor's state and command model. |
 | `ConsumerLag`, `ConsumerLagGauge`, `AdminOffsets` | Lag measurement via the Kafka admin client. |
-| `SupervisorAdmin`, `SupervisorMetrics` | The API handlers and the gauges. `consume.running` is what separates a deliberate pause from an outage. |
+| `SupervisorAdmin`, `SupervisorMetrics`, `SupervisorProbe` | The API handlers, the gauges, and the tick that writes every one of them. `consume.running` is what separates a deliberate pause from an outage; an unwritten or stale gauge reads `NaN` rather than zero. |
 
 ### Dead letters
 
@@ -209,7 +209,8 @@ The largest application, because it owns both a stream and the API that controls
 | `DeadLetterStore`, `KafkaDeadLetterStore` | Reading it back — the DLQ topic *is* the store. |
 | `DeadLetterAdmin` | The browse/replay handlers. |
 | `DeadLetterReplay` | The replay decision: scope, skips, headers. Pure, so every replay rule is unit-tested. |
-| `ReplayRequest`, `ReplayScope`, `ReplayDecision`, `ReplaySkip`, `ReplayHeaders` | Its model. |
+| `ReplayRequest`, `ReplayScope`, `ReplayDecision`, `ReplaySkip`, `ReplayHeaders` | Its model. `ReplayRequest.fetchLimit` decides how far to read, `ReplaySkip.foreign` is the own-topic check the seek path shares. |
+| `DlqScan` | What one bounded read of the DLQ saw: the selected records, plus `scanned` and `truncated` so a short answer can say whether the DLQ is empty or the window ran out. |
 | `ReplayMetrics` | Replay outcomes. |
 
 ### Admin surface
@@ -248,7 +249,8 @@ flowchart LR
 | --- | --- |
 | `AppRouter`, `WebRouter`, `OpsRouter`, `AssetsRouter`, `Paths` | SIRD routing. **There is no `conf/routes` file** — adding one would need the routes compiler this build omits. |
 | `EventsController`, `OverviewController`, `OpsController`, `TailController` | Thin: parse, delegate, render. |
-| `SearchService`, `SearchQuery`, `SearchShape` | Query construction and execution. `SearchQuery` is pure and carries the parse errors. |
+| `Unhandled` | One recovery per controller for a repository call that never came back, so no failure leaves without this application's response contract. |
+| `SearchService`, `SearchQuery`, `SearchShape` | Query construction and execution. `SearchQuery` is pure, carries the parse errors, and is **the** representation of a search: `fields` is every parameter it is spelled as, and the permalink, the form and every UI link are all renderings of that one list. |
 | `OverviewService`, `OverviewRange` | The rollup-backed dashboard. |
 | `TailService`, `TailCursor` | The SSE live tail. Polls with a keyset cursor rather than holding a transaction open. |
 | `SearchExecutionContext` | A bounded pool for blocking reads, separate from Play's default — a slow query must not starve request handling. |

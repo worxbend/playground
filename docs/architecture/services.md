@@ -213,11 +213,13 @@ classDiagram
     DeadLetterAdmin --> DeadLetterStore
     SupervisorAdmin --> ConsumerSupervisor
     Probes --> HealthChecks : writes
-    Probes ..> ConsumerSupervisor : late-bound var
+    Probes --> SupervisorProbe : on the same tick
+    SupervisorProbe --> ConsumerSupervisor : status()
+    SupervisorProbe --> DeadLetterStore : depth()
 ```
 
-*Which objects does a request under `/admin` actually touch, and how does the health probe reach a supervisor that
-does not exist yet when the probe is built?*
+*Which objects does a request under `/admin` actually touch, and what does the health probe read on its tick besides
+lag?*
 
 `guard` is the only door: it takes the required `AdminScope`, calls `AdminAuth`, and evaluates the handler by name, so
 an unauthenticated request never reaches a Kafka admin client, a database or the DLQ consumer. `AdminRoutes.Access`
@@ -225,11 +227,17 @@ declares which door each path uses; `AdminAccessSuite` compares that map against
 directions and `AdminAuthIT` drives every entry over a real socket — so a route added without an entry fails a unit
 test rather than answering 200 to anybody.
 
-The dotted edge is the honest one. `Probes` is built before `ConsumerSupervisor` — the supervisor needs the same Kafka
-`Admin` client the probes are built around, and the probes need a way to read the supervisor. The composition root
-closes that loop with a single `var supervisorRef` visible in `start`'s scope alone, and the probe then reads the
-supervisor's gauges on the same tick it reads lag, rather than opening a second timer against the same broker. The
-alternatives were a second admin client or a lazily-initialised holder type.
+`SupervisorProbe` is the edge worth looking at. The supervisor's gauges ride the lag tick rather than owning a second
+timer against the same broker, and they come from two different systems — `ConsumerSupervisor.status` for
+`consume.running` and `consume.checkpoint.divergence`, `DeadLetterStore.depth` for `dlq.depth`. Both readings live
+behind one `tick()` with one caller, because they used not to: `dlq.depth` was registered by `SupervisorMetrics` and
+written by nothing at all, and `/metrics` reported a flat zero while the DLQ filled. `SupervisorMetricsSuite` now
+asserts that one tick leaves no registered gauge unread.
+
+Which is also why `Probes` is constructed **last** in `CobaltApp.start`, after the supervisor and the DLQ store. An
+earlier revision built it first and dropped the supervisor into an `AtomicReference` afterwards; nothing about that
+deferral was necessary — the `Admin` client both are built around is created above them and shared — and it made a
+whole reading easy to forget.
 
 Two more asymmetries the graph hides unless you look for them:
 

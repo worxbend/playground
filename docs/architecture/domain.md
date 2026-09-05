@@ -282,8 +282,8 @@ classDiagram
 
 Split by *caller*, not by table. ferrite binds the `EventRepository` type only — it never names `CheckpointingWriter`,
 so a reader cannot forget a checkpoint it has no offsets for, and its provider passes the *read* transactor for both
-constructor arguments. cobalt gets the write pair, and gets it by a runtime type test: `BatchProcessor.insert` matches
-`(Some(checkpointing), writer: CheckpointingWriter)` and falls back to a plain `insertAll` otherwise. That fallback is
+constructor arguments. cobalt gets the write pair, and gets it by a runtime type test: `BatchProcessor` resolves
+`(writer: CheckpointingWriter, Some(group))` once into a field and falls back to a plain `insertAll` otherwise. That fallback is
 deliberate — a second transaction would reintroduce the window the checkpoint table removes — but it does mean the
 atomic path is selected at run time and not by the type checker.
 

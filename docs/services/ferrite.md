@@ -37,7 +37,9 @@ testable without rendering HTML.*
   showing the decoded observation beside the raw CloudEvent.
 - Turning a query string into a `kernel` `Filter` **totally** — a malformed permalink is rendered back into the
   filter bar with each bad value still in the input that produced it, never a 500 and never a silently dropped
-  parameter.
+  parameter. The one thing dropped without a word is a parameter whose *value* is empty, which no leaf of the
+  grammar accepts and which is what a browser sends for a form field nobody touched — see the two carve-outs under
+  "Query parameters" below.
 - Producing every URL the application can emit (`Urls`), so links and routes are the same strings by construction.
 - Serving its own Prometheus exposition and the two health probes.
 
@@ -108,10 +110,28 @@ to `FilterQuery` in `modules/kernel`.
 | `v` | kernel | Grammar version. Required by `FilterQuery`… |
 | `q`, `type`, `source`, `device`, `room`, `person`, `tag`, `severity`, `data`, `from`, `until` | kernel | The filter grammar. Repeats are meaningful (a facet is a multi-value selection). |
 
-…with one carve-out: **an empty filter half means no filter, not an error.** `FilterQuery` demands an explicit
-`v=1` precisely so a future grammar change is detectable, but the landing page `/events` legitimately carries no
-filter and must not be greeted with "missing 'v' parameter". The filter bar renders `v=1` as a hidden input, so
-every query the UI itself produces is versioned, and only a truly empty query takes the shortcut.
+…with two carve-outs.
+
+**An empty filter half means no filter, not an error.** `FilterQuery` demands an explicit `v=1` precisely so a
+future grammar change is detectable, but the landing page `/events` legitimately carries no filter and must not be
+greeted with "missing 'v' parameter". The filter bar renders `v=1` as a hidden input, so every query the UI itself
+produces is versioned, and only a truly empty query takes the shortcut.
+
+**A present-but-empty parameter is absent, not invalid.** A `<form method="get">` serialises every named control it
+has and spells "the user left this one alone" as the empty string, so typing `kitchen` in the search box sends
+`?v=1&q=kitchen&from=&until=&severity=`. The rule lives in `FilterQuery.decode` because that is the only place it
+*can* live — only a `disabled` control is left out of a submit, and this bar has to work with JavaScript off — and
+it costs nothing, because no leaf of the grammar accepts the empty string in the first place. `SearchQuery` applies
+the same rule to the three control parameters, which never reach that codec.
+
+### One search, one list of parameters
+
+`SearchQuery.fields` is **every parameter this search is spelled as**: the filter half with `v` re-stamped, then
+each control whose value is not the default. `permalink` renders it, and the filter bar renders the four controls
+it has inputs for and emits *everything else in that list* as a hidden field. Taking the complement is what makes
+"the form submits the search it is showing" true by construction: a parameter can only be lost by being rendered
+wrong, never by being forgotten. `TemplateSuite` submits the rendered form back and asserts it parses to the same
+search, which is the assertion that would have caught `sort` and `limit` being dropped on every keystroke.
 
 Parsing evaluates **every** part and reports **every** failure. Short-circuiting would show one broken parameter,
 the user would fix it, and the next reload would show the next one.
@@ -152,7 +172,7 @@ The `events.dim_*` / `events.device` autocomplete tables exist in the schema and
 ## The overview
 
 `/` used to be a `302` to `/events`, which answered "find me these events" for someone who had asked "what is
-happening". Monitoring is a first-class activity in this product (PLAN.md) and it needs a screen of its own.
+happening". Monitoring is a first-class activity in this product and it needs a screen of its own.
 
 **It reads `events.event_rollup_hourly`, and that is the whole reason it can exist.** The view holds one row per
 `(hour, ce_type, ce_source, severity)`, so a thirty-day chart is a few thousand rows rather than a scan of a
@@ -188,7 +208,10 @@ Three deliberate limits worth knowing:
   the view exists to avoid. That is why `RollupTotals` carries no device count either.
 - **A severity row can be un-clickable.** The view stores `coalesce(severity, 'none')` — it must, because a `NULL`
   in a unique-index column is what would make `REFRESH … CONCURRENTLY` illegal — and the filter grammar has no way
-  to express "no severity". That row renders as text rather than as a link that would 400.
+  to express "no severity". That row renders as text rather than as a link that would 400. The same guard covers
+  the search page's severity facet, whose values come from `lower(raw #>> '{data,severity}')` and are therefore
+  whatever a producer wrote: it is one function, `SearchQuery.severityAtLeast`, because it is one fact about one
+  grammar, and it lived in two places for exactly as long as it took one of them to be shipped without it.
 - **Bucket boundaries are aligned to the Unix epoch, not to `now - span`.** `date_bin` would accept any origin, but
   an unaligned one shifts every boundary by however many seconds have passed since the last reload, so two
   screenshots of the same dashboard cannot be compared and no bar starts on a time a human reads off a clock.
@@ -394,10 +417,17 @@ re-running facets, histogram and count on every scroll would triple the cost of 
 away.
 
 Error responses come from a `Failure` value that carries **both** the status and the rendered body
-(`Presenter.badQuery` → 400, `Presenter.rejected` → 400, `Presenter.notFound` → 404), so a 400 can never be served
-with a body that reads like a 404. A rejected permalink additionally comes back *inside the filter bar*
-(`SearchQuery.lenient` preserves the raw pairs) — an error page without the bar would leave the user holding a URL
-they can neither see nor edit.
+(`Presenter.badQuery` → 400, `Presenter.rejected` → 400, `Presenter.notFound` → 404, `Presenter.unavailable` →
+503), so a 400 can never be served with a body that reads like a 404. A rejected permalink additionally comes back
+*inside the filter bar* (`SearchQuery.lenient` preserves the raw pairs and the controls it can read) — an error
+page without the bar would leave the user holding a URL they can neither see nor edit.
+
+Every repository call in `EventsController` and `OverviewController` is inside `Unhandled.recovered`, one handler
+per controller rather than one per call site. A `Future` that fails otherwise leaves through Play's own error
+handler, and that response carries none of this controller's contract: no `Vary: HX-Request`, so htmx splices a
+whole `<html>` document inside `<section id="results">` and a shared proxy may cache the 500 against the un-varied
+URL. `TailController` and `OpsController` do not have the hole — the first is synchronous and the second already
+answers a failed probe with a status — so neither was changed.
 
 ---
 
@@ -501,7 +531,8 @@ have it honoured.
 | Cursor malformed, or minted for a different filter | `400` from `SearchRequest.of`, rendered as a `Failure` with a link back to the unpaged search |
 | `limit` out of range | `400` naming the bound |
 | Event id not a UUID, or `at` missing/unparseable | `400` |
-| Event not found | `404`, with a way back to the search the user came from (`backUrl` = this request's query string minus `at`) |
+| Event not found | `404`, with a way back to the search the user came from (this request's query string minus `at`) |
+| Repository call fails — statement timeout, pool exhaustion | `503` from `Presenter.unavailable`, rendered as a fragment or a page like every other response and carrying `Vary: HX-Request`. The cause is logged once, with the exception, and deliberately kept off the page |
 | Live tail: malformed filter | `400` **as plain text**, not the HTML failure page — the only caller is `EventSource`, which cannot render a document and whose `onerror` hands the page no body at all |
 | Live tail: replica already serving its cap | `503` naming the limit. `503` and not `429`: it is a capacity limit on one replica, not a quota on the caller, and a retry after a tab is closed succeeds |
 | Live tail: client disconnects | Play cancels the source, the ticker stops, `watchTermination` returns the slot |

@@ -460,10 +460,10 @@ that file; below is what Prometheus actually serves. Tags listed are the ones th
 | `consume_decode_duration_seconds` | timer, buckets | Which half of the consumer slowed down. Decode is CPU on the stream's thread; the batch write is a blocking round trip on a pool. When throughput drops, exactly one of the two moved. |
 | `consume_records_poison_total{reason}` | counter | Records routed to the DLQ. Any sustained non-zero rate is a page. |
 | `consume_group_lag{group,topic,partition}` | gauge | How far behind the group is, measured from an `AdminClient` and **not** from the consumer's `records-lag-max` — the client metric covers only partitions currently being fetched, so it reads zero during a rebalance and vanishes when the consumer is down. A partition with no committed offset is omitted rather than reported as zero. |
-| `consume_running` | gauge | Whether lag is an outage or somebody's maintenance window. 1 while consuming, 0 while paused. Alerting on lag alone cannot tell those apart, which is how a planned pause pages the on-call. |
+| `consume_running` | gauge | Whether lag is an outage or somebody's maintenance window. 1 while consuming, 0 while paused. Alerting on lag alone cannot tell those apart, which is how a planned pause pages the on-call. **`NaN` means the probe has not reported** — before the first tick, or after three missed ones — and is deliberately not 0: a frozen gauge reading "paused" during an outage is the number that gets the consumer ruled out as the cause. |
 | `consume_lifecycle_commands_total{command,outcome}` | counter | Who has been driving the pipeline. `http_server_requests_seconds` would record that a POST happened; this records which verb and whether it changed anything, and an unexpected rate here means something automated is issuing them. |
-| `consume_checkpoint_divergence` | gauge | Whether the externalised checkpoint and Kafka's committed offset still agree. **Zero is the only healthy value**, and it is the reason `events.consumer_checkpoint` exists: checkpoint ahead of Kafka is events that will be replayed, Kafka ahead of checkpoint is events whose durability nobody can prove. Both are silent everywhere else. |
-| `dlq_depth` | gauge | The dead-letter backlog, as an **upper bound** — computed from partition offsets, and the DLQ is compacted by key, so some offsets may be superseded. `consume_records_poison_total` gives the rate; this says whether a fix worked. |
+| `consume_checkpoint_divergence` | gauge | Whether the externalised checkpoint and Kafka's committed offset still agree. **Zero is the only healthy value**, and it is the reason `events.consumer_checkpoint` exists: checkpoint ahead of Kafka is events that will be replayed, Kafka ahead of checkpoint is events whose durability nobody can prove. Both are silent everywhere else. Every offset a batch commits is checkpointed, dead letters included, so a steady non-zero reading is a real defect and not the DLQ. `NaN` when the probe has not reported, as above. |
+| `dlq_depth` | gauge | The dead-letter backlog, as an **upper bound** — computed from partition offsets, and the DLQ is compacted by key, so some offsets may be superseded. `consume_records_poison_total` gives the rate; this says whether a fix worked. Sampled on the lag probe interval (`LAG_REFRESH_INTERVAL`, 20s), so it lags a replay by up to one tick; `NaN` when the DLQ reader could not be reached. |
 | `dlq_replay_operations_total{outcome}` | counter | How many times a human decided to put records back. `outcome="skipped"` is a dry run, kept out of `success` because "an operator is looking" and "an operator has acted" must not share a series. |
 | `dlq_replay_records_total{outcome}` | counter | How much a replay moved. One operation replaying 200 records and 200 operations replaying one each are identical here and very different situations — which is why both counters exist. Not tagged by skip reason: that is in the response body and the log line. |
 
@@ -858,7 +858,11 @@ Symptom: `rate(consume_records_poison_total[15m]) > 0`.
    ```
 
    The listing is bounded on purpose — an unbounded one is a way to OOM the service that is supposed to be telling
-   you it is unhealthy. See `docs/services/cobalt.md` for the full surface. A Kafka console consumer still works
+   you it is unhealthy. **Read `scanned` and `truncated` before you conclude anything from an empty list**: a
+   `reason` filter matches only inside the records that were read, so `truncated: true` with `returned: 0` means
+   "none among the newest `scanned`", not "none on the DLQ", and the next step is `kcat` rather than closing the
+   tab. A filtered request reads to `REPLAY_MAX_RECORDS` rather than to `limit`, so the window is as wide as this
+   deployment allows. See `docs/services/cobalt.md` for the full surface. A Kafka console consumer still works
    and needs no service to be up, which is why it is worth knowing:
 
    ```bash
@@ -1116,7 +1120,11 @@ Ordered by operational blast radius.
     build touches it, so the `?s=…` short-link fallback ADR §6.3 promises for a filter too long for a URL does not
     exist. Either implement it or drop the table.
 
-Fixed, and no longer listed: **cobalt's unauthenticated admin API** (every `/admin` route now requires a scoped
+Fixed, and no longer listed: **the supervisor probe's timeout computed in the composition root** (it is
+`ConsumerSupervisor.statusBudget` now, beside the `StatusRoundTrips` it counts, so a fourth round trip changes the
+budget in the same file — and the checkpoint read now runs *concurrently* with the broker round trips rather than
+before them, so the budget is the larger of the two rather than their sum, which is what brings it back under
+`LAG_REFRESH_INTERVAL` instead of exceeding it); **cobalt's unauthenticated admin API** (every `/admin` route now requires a scoped
 JWT — §3.2 — and `AdminAuthIT` drives every one of them over a socket); **the three decorative security workflows**
 (Snyk could not read an sbt 2 build, Sonar's token was from 2020, and the ZAP scan pointed at zaproxy.org — replaced
 by an SBOM-plus-OSV gate that needs no account and fails the build); **the `package` and compose-config CI jobs**

@@ -328,6 +328,18 @@ is supposed to be telling you it is unhealthy**:
 
 A request over `max-records` is refused with `400` rather than trimmed, for the same reason a replay is.
 
+**`reason` widens the read rather than trimming the page.** A filter can only match inside the records that were
+fetched, so a filtered request reads to `max-records` and *then* takes `limit` — `ReplayRequest.fetchLimit` is the
+one place that decides, and `DeadLetterReplay.select` is the one place that filters. Both endpoints go through
+them, which is the point: they used to filter separately, both applied the filter *after* the fetch bound, and the
+result was that a DLQ holding 4 800 `unconvertible` dead letters behind 200 newer `malformed-binary` ones answered
+`?reason=unconvertible` with `{"returned": 0}` and a `200`. An operator reads that as "there are none".
+
+Every listing and every replay response therefore carries `scanned` and `truncated`: how many records the answer
+was computed from, and whether the window filled up while the request was still short. "We looked at 200 and found
+none" is honest and tells you to reach for `kcat`; "0 records" is not. `truncated` is never true of a full page —
+a full page is a complete answer to "the newest N", however much sits behind it.
+
 The identity fields are best effort, and they are absent when they have to be: a record is usually on the DLQ
 *because* its attributes could not be read. The `ce_*` headers are tried first (the main topic is binary mode),
 the payload JSON second (for a structured record). A record that yields neither is still listed — "a dead letter
@@ -386,6 +398,18 @@ A dead letter is *skipped* — reported, counted, never published — for exactl
 this consumer owns. `budget-exhausted`: see below. The middle one is the check that keeps this endpoint from being
 a general-purpose producer — the destination comes out of the record's own payload, so without it the DLQ is a way
 to make cobalt write to any topic in the cluster that a foreign record can name.
+
+The same check, `ReplaySkip.foreign`, now also guards `POST /admin/consumer:restart?target=explicit`. cobalt has
+two surfaces that take a topic name out of input it does not control — a dead letter's recorded origin and a seek
+coordinate an operator pastes — and only the first was born with it. The seek path shipped without it, and Kafka
+alters offsets for any topic that exists, so `offsets=events.cloudevents.v1.dlq/0/5000` returned `200` with
+`"committed": true` while the group's own offsets never moved: the consumer resumed exactly where it was, onto the
+poison record the seek was meant to skip.
+
+The guard is `ConsumerSupervisor.rejectForeign`, and it is applied twice on purpose: in `resolve`, so no caller of
+`restart` can bypass it, and in `SupervisorAdmin` before the dry-run branch, which never reaches `resolve` at all —
+a dry run previews from the status it already holds. One call site would have left `dryRun=true` echoing a
+coordinate under `wouldSeek` that the real call refuses.
 
 Selection is newest-first, because "the last N" is what an operator means. Publication is oldest-first, so a
 device's events reach the topic in the order they originally did rather than backwards.
@@ -490,7 +514,9 @@ Cross-cutting: `SERVICE_VERSION`, `HOSTNAME`, `OTEL_*` (traces only; `OTEL_SDK_D
 | Broker unreachable | Restart backoff; `health.broker` goes down within one lag interval; readiness → 503 |
 | PostgreSQL unreachable | Inserts fail as transient, stream restarts; `health.database` down; readiness → 503 |
 | Restart budget exhausted (50 restarts in 10 min) | The stream **fails permanently**, deliberately. An unbounded retry loop against a broker that is never coming back looks identical from the outside to a healthy consumer with no traffic — same process, same Ready pod, only lag as a symptom |
-| Replay: a named ref is absent or unreplayable | `422`, **nothing published**; the response names every missing and every skipped ref |
+| A drain does not finish within `DrainTimeout`, and the abandoned stream dies later | The supervisor cleared its handle and reported `paused`/`stopped` at the timeout; the late failure is logged and **discarded**, because the handle it fires for is no longer the one in the snapshot. Without that guard a `pause`, a `resume` and a slow death stamp `failed` over a consumer that is committing normally, and only another restart clears it |
+| Seek: `target=explicit` names a topic this consumer does not own | Refused as `foreign-topic` before anything is drained, and refused identically by `dryRun=true` — `dryRun` defaults to true so an operator checks first, and a preview that approves what the commit rejects teaches them to skip the preview. Kafka would accept the alter for any topic that exists, so the alternative is `200` with `"committed": true` and offsets that never moved |
+| Replay: a named ref is absent or unreplayable | `422`, **nothing published**; the response names every missing and every skipped ref. When the fetch window filled up first, the message says so — "not on the DLQ" and "older than the records we read" need different next steps |
 | Replay: the broker refuses a produce part way | The loop stops; `500`, with `published` and the ref it stopped on. Retrying is safe — the insert is idempotent |
 | Replay: the replayed record fails again | A new dead letter one generation on, `x-worxbend-replay-attempt` incremented; refused once `max-attempts` is reached |
 | Replay: the DLQ topic is unreachable | `503`, not `500` — the same request will work when the broker is back |
@@ -580,6 +606,15 @@ overlapping runs against a struggling dependency; a failure inside the poller is
 because an exception escaping a `ScheduledExecutorService` task silently cancels all subsequent runs, freezing
 both the gauge and the readiness answer; and the database check is `Connection.isValid`, not `SELECT 1` — the JDBC
 contract's own liveness check, bounded by a timeout the driver honours and consuming no statement-cache slot.
+
+The supervisor's three gauges ride this same tick, through `SupervisorProbe`: `ConsumerSupervisor.status` feeds
+`consume_running` and `consume_checkpoint_divergence`, `DeadLetterStore.depth` feeds `dlq_depth`. Two things about it
+are deliberate and both are corrections. The readings are taken **independently**, because a broker that cannot answer
+one of them is exactly the situation in which somebody is reading the other. And a reading that does not arrive leaves
+its gauge reporting **`NaN`** rather than its last value: the budget on `status` used to be a single
+`LAG_REQUEST_TIMEOUT` while `status` itself makes three sequential admin calls, so under a slow broker every tick
+expired and `consume_running` stayed pinned at whatever it last said — a paused consumer indistinguishable from a
+crashed one, precisely when somebody was looking.
 
 ---
 

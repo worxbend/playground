@@ -483,3 +483,9 @@ site/
 # Claude Code scratch: agent worktrees are real git worktrees of THIS repo.
 # Committing them makes the checkout an embedded repository and breaks clones.
 .claude/worktrees/
+
+# Local agent briefing. Kept on disk, deliberately not in the repo: everything in it that is a real
+# constraint — the sbt 2 `testFull` inversion, the `_sbt2_3` plugin suffix, the Play 3.1.0-M9 pin, the
+# `-Werror` flag set, ferrite's absent `conf/routes` — is documented in `docs/` and `CONTRIBUTING.md`,
+# which are the copies a contributor reads. Tracking it would make the same rule live in two places.
+CLAUDE.md

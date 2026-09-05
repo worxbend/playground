@@ -330,7 +330,9 @@ number in front of them.
 
 - A key that starts with `data.` or `ext.` is always one of these leaves or a `FilterError`, never an unknown
   parameter and never a silent skip. `data.a b=>1` is reported against `data.a b`; `ext.Tenant=acme` against
-  `ext.Tenant`.
+  `ext.Tenant`. The one exception is a **value that is empty**, which is dropped everywhere in the grammar as
+  "unset" rather than reported — see `FilterQuery.decode`. That is not the silent skip this rule forbids: no leaf
+  accepts the empty string, so `ext.tenantid=` never described a filter that could be lost.
 - **Repeating `ext.<name>` is an error.** The grammar has only equality on an extension, so two values for one name
   conjoin into something no row can satisfy; reporting it beats an empty page that reads as "nothing matched".
   Repeating `data.<path>` is *not* an error — `data.t=>18&data.t=<24` is how the grammar spells a range.
