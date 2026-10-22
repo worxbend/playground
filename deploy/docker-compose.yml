@@ -166,7 +166,7 @@ services:
         limits: { memory: 2G }
 
   kafka:
-    image: apache/kafka:4.3.1
+    image: apache/kafka:4.3.2
     restart: unless-stopped
     environment:
       # KRaft single-node: no ZooKeeper. Fine for a homelab; not for production HA.
@@ -213,7 +213,7 @@ services:
 
   # One-shot: creates the topics, since auto-creation is disabled above.
   kafka-init:
-    image: apache/kafka:4.3.1
+    image: apache/kafka:4.3.2
     restart: "no"
     depends_on:
       kafka: { condition: service_healthy }
