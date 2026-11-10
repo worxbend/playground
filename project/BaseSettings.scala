@@ -39,7 +39,7 @@ object BaseSettings:
     licenses := Seq(License.MIT),
     versionScheme := Some("semver-spec"),
     version := buildVersion,
-    scalaVersion := "3.8.4",
+    scalaVersion := "3.10.1",
     scalacOptions := scalacFlags,
     Test / testOptions += Tests.Argument(TestFrameworks.ScalaTest, "-oD"),
     // ScalaTest's `assert` returns an Assertion, so every intermediate assertion in
