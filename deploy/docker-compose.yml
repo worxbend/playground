@@ -350,7 +350,7 @@ services:
   # scrape happens seconds after start, and against a database still running recovery it
   # publishes pg_up=0, which would fire PostgresDown on every boot of the stack.
   postgres-exporter:
-    image: quay.io/prometheuscommunity/postgres-exporter:v0.19.0
+    image: quay.io/prometheuscommunity/postgres-exporter:v0.20.1
     restart: unless-stopped
     depends_on:
       postgres: { condition: service_healthy }
