@@ -387,7 +387,7 @@ services:
         limits: { memory: 128M }
 
   otel-collector:
-    image: otel/opentelemetry-collector-contrib:0.157.0
+    image: otel/opentelemetry-collector-contrib:0.165.0
     restart: unless-stopped
     command: ["--config=/etc/otel/config.yaml"]
     volumes:
