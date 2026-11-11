@@ -425,7 +425,7 @@ services:
         limits: { memory: 1G }
 
   grafana:
-    image: grafana/grafana:13.1.1
+    image: grafana/grafana:13.3.1
     restart: unless-stopped
     depends_on: [prometheus]
     environment:
