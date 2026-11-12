@@ -65,7 +65,7 @@ x-service-defaults: &service-defaults
 
 services:
   postgres:
-    image: postgres:18.4-alpine
+    image: postgres:18.7-alpine
     restart: unless-stopped
     environment:
       POSTGRES_DB: ${POSTGRES_DB:-observatory}
